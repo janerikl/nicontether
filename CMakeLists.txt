@@ -23,6 +23,7 @@ add_executable(nikontether
     src/capture/SessionManager.cpp
     src/capture/NefPreview.cpp
     src/ui/MainWindow.cpp
+    src/ui/TetherView.cpp
     src/ui/LiveViewWidget.cpp
     src/ui/PannableScrollArea.cpp
     src/ui/ControlsPanel.cpp
