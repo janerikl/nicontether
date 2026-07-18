@@ -8,6 +8,7 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QVBoxLayout>
+#include <cmath>
 
 MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     auto *root = new QVBoxLayout(this);
@@ -52,6 +53,8 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     m_brushSize->setRange(1, 40); // percent of image width
     m_brushSizeLabel = new QLabel("Brush size:");
     shape->addRow(m_brushSizeLabel, m_brushSize);
+    m_autoMask = new QCheckBox("Auto Mask (stop at edges)");
+    shape->addRow(m_autoMask);
     root->addLayout(shape);
 
     // Tone/colour sliders.
@@ -88,10 +91,19 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
                 if (!m_syncing) emit selectMaskRequested(i);
             });
     connect(m_invert, &QCheckBox::toggled, this, [this] { emitShape(); });
+    connect(m_autoMask, &QCheckBox::toggled, this, [this] { emitShape(); });
     for (QSlider *s : {m_feather, m_hardness, m_brushSize})
         connect(s, &QSlider::valueChanged, this, [this] { emitShape(); });
 
     clear();
+}
+
+void MaskPanel::setBrushRadius(double radiusNorm) {
+    if (m_active < 0 || m_active >= m_masks.size()) return;
+    m_masks[m_active].brushRadius = radiusNorm;
+    m_syncing = true;
+    m_brushSize->setValue(int(std::lround(radiusNorm * 100)));
+    m_syncing = false;
 }
 
 void MaskPanel::clear() {
@@ -126,7 +138,7 @@ void MaskPanel::loadActive() {
     m_syncing = true;
     // Shape/adjust controls only make sense with an active mask.
     for (QWidget *w : std::initializer_list<QWidget *>{
-             m_invert, m_feather, m_hardness, m_brushSize, m_delete,
+             m_invert, m_feather, m_hardness, m_brushSize, m_autoMask, m_delete,
              m_brightness, m_contrast, m_highlights, m_shadows, m_saturation,
              m_vibrance, m_temperature, m_tint})
         w->setEnabled(has);
@@ -136,11 +148,13 @@ void MaskPanel::loadActive() {
         m_feather->setValue(int(m.feather * 100));
         m_hardness->setValue(int(m.hardness * 100));
         m_brushSize->setValue(int(m.brushRadius * 100));
+        m_autoMask->setChecked(m.autoMask);
         const bool brush = m.type == MaskType::Brush;
         m_hardnessLabel->setVisible(brush);
         m_hardness->setVisible(brush);
         m_brushSizeLabel->setVisible(brush);
         m_brushSize->setVisible(brush);
+        m_autoMask->setVisible(brush);
         m_feather->setEnabled(m.type != MaskType::Brush);
         const MaskAdjust &a = m.adj;
         m_brightness->setValue(a.brightness);
@@ -173,5 +187,6 @@ void MaskPanel::emitShape() {
     if (m_syncing) return;
     emit maskShapeChanged(m_invert->isChecked(), m_feather->value() / 100.0,
                           m_hardness->value() / 100.0,
-                          m_brushSize->value() / 100.0);
+                          m_brushSize->value() / 100.0,
+                          m_autoMask->isChecked());
 }

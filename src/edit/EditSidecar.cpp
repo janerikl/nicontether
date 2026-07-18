@@ -85,9 +85,10 @@ bool save(const QString &imagePath, const Adjustments &a) {
             j["p1y"] = m.p1.y();
             j["brushRadius"] = m.brushRadius;
             j["hardness"] = m.hardness;
+            j["autoMask"] = m.autoMask;
             QJsonArray stroke;
-            for (const QPointF &pt : m.stroke)
-                stroke.append(QJsonArray{pt.x(), pt.y()});
+            for (const BrushStrokePoint &sp : m.stroke)
+                stroke.append(QJsonArray{sp.pt.x(), sp.pt.y(), sp.erase});
             j["stroke"] = stroke;
             QJsonObject ad;
             ad["brightness"] = m.adj.brightness;
@@ -185,10 +186,13 @@ bool load(const QString &imagePath, Adjustments &out) {
         m.p1 = QPointF(j["p1x"].toDouble(0.5), j["p1y"].toDouble(0.6));
         m.brushRadius = j["brushRadius"].toDouble(0.06);
         m.hardness = j["hardness"].toDouble(0.5);
+        m.autoMask = j["autoMask"].toBool(false);
         for (const QJsonValue &sv : j["stroke"].toArray()) {
             QJsonArray p = sv.toArray();
-            if (p.size() == 2)
-                m.stroke.append(QPointF(p[0].toDouble(), p[1].toDouble()));
+            if (p.size() >= 2)
+                m.stroke.append(BrushStrokePoint{
+                    QPointF(p[0].toDouble(), p[1].toDouble()),
+                    p.size() >= 3 && p[2].toBool()});
         }
         QJsonObject ad = j["adj"].toObject();
         m.adj.brightness = ad["brightness"].toInt();

@@ -22,6 +22,9 @@ public:
 
     void setMasks(const QVector<Mask> &masks, int activeIndex);
     void clear();
+    // Reflect a brush radius change (e.g. ctrl+wheel on the canvas) without
+    // rebuilding the whole mask list.
+    void setBrushRadius(double radiusNorm);
 
 signals:
     void addMaskRequested(MaskType type);
@@ -29,7 +32,7 @@ signals:
     void deleteMaskRequested();
     void maskAdjustChanged(const MaskAdjust &a);
     void maskShapeChanged(bool inverted, double feather, double hardness,
-                          double brushRadius);
+                          double brushRadius, bool autoMask);
 
 private:
     void emitAdjust();
@@ -53,6 +56,7 @@ private:
     QSlider *m_hardness = nullptr;
     QLabel *m_brushSizeLabel = nullptr;
     QSlider *m_brushSize = nullptr;
+    QCheckBox *m_autoMask = nullptr;
 
     QSlider *m_brightness = nullptr;
     QSlider *m_contrast = nullptr;

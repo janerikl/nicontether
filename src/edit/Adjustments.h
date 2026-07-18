@@ -77,6 +77,17 @@ struct MaskAdjust {
 
 enum class MaskType { Radial, Linear, Brush };
 
+// One sampled point of a brush stroke (width-normalized). `erase` marks a dab
+// painted while holding Alt, which subtracts coverage instead of adding it.
+struct BrushStrokePoint {
+    QPointF pt;
+    bool erase = false;
+
+    bool operator==(const BrushStrokePoint &o) const {
+        return pt == o.pt && erase == o.erase;
+    }
+};
+
 // A local adjustment mask. All geometry is stored normalized to the image WIDTH
 // (x' = x/W, y' = y/W) so it is resolution-independent and scales uniformly
 // between the display preview and full-res export. Applied after the global
@@ -97,9 +108,12 @@ struct Mask {
     QPointF p1{0.5, 0.6};
 
     // Brush: stroke points (width-normalized), radius, and edge hardness.
-    QVector<QPointF> stroke;
+    QVector<BrushStrokePoint> stroke;
     double brushRadius = 0.06;
     double hardness = 0.5;
+    // Auto Mask (brush only): constrains each dab to pixels colour-similar to
+    // the point under the cursor, so the stroke stops at edges (Lightroom-style).
+    bool autoMask = false;
 
     MaskAdjust adj;
 
@@ -111,7 +125,8 @@ struct Mask {
                std::abs(angle - o.angle) < 1e-9 && p0 == o.p0 && p1 == o.p1 &&
                stroke == o.stroke &&
                std::abs(brushRadius - o.brushRadius) < 1e-9 &&
-               std::abs(hardness - o.hardness) < 1e-9 && adj == o.adj;
+               std::abs(hardness - o.hardness) < 1e-9 && autoMask == o.autoMask &&
+               adj == o.adj;
     }
     bool operator!=(const Mask &o) const { return !(*this == o); }
 };
@@ -195,6 +210,14 @@ bool hasToneEdits(const Adjustments &adj);
 // vignette. Pure and side-effect free: safe to unit-test and to run on a
 // full-res base (export) or a display-scaled copy (interactive).
 QImage applyAdjustments(const QImage &base, const Adjustments &adj);
+
+// Build a tinted, semi-transparent overlay (ARGB, alpha = mask weight × maxAlpha)
+// visualizing a single mask's coverage, for live "see the mask" feedback while
+// editing. Computed at a reduced internal resolution (scaled by the caller).
+// `source` is the (already-adjusted) preview image, used to sample colours for
+// Auto Mask edge detection; pass a null QImage if the mask has autoMask off.
+QImage maskCoverageOverlay(const Mask &m, int w, int h, const QColor &tint,
+                           int maxAlpha = 140, const QImage &source = QImage());
 
 // Human-readable name of what changed between two committed snapshots. Returns
 // the primary changed field's label (e.g. "Brightness", "Crop", "Spot Heal").

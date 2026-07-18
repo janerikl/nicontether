@@ -40,6 +40,8 @@ public:
     // pipeline). Coordinates are emitted width-normalized.
     void setMaskMode(MaskType kind, bool on);
     void setActiveMask(bool has, const Mask &m);
+    // Live coverage preview shown while painting a brush mask, independent of
+    // whether any local adjustment sliders have been touched yet.
     // Existing heal spots, shown as a reddish overlay while hovering in heal
     // mode (Lightroom-style "visualize spots"); hidden once the mouse leaves.
     void setHealSpots(const QVector<HealMarker> &spots);
@@ -57,11 +59,12 @@ signals:
     void healAt(const QPoint &imagePoint);
     void zoomChanged(double percent);
     void healBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while healing
+    void maskBrushRadiusChanged(double radiusNorm); // ctrl+wheel resize while brush-masking
 
     // Mask geometry edits (all points width-normalized).
     void maskRadialDragged(const QPointF &centerNorm, double radiusNorm);
     void maskLinearDragged(const QPointF &p0Norm, const QPointF &p1Norm);
-    void maskBrushPoint(const QPointF &ptNorm); // one stroke sample
+    void maskBrushPoint(const QPointF &ptNorm, bool erase); // one stroke sample
     void maskEditFinished();                    // drag released → commit history
 
 protected:
@@ -102,8 +105,10 @@ private:
     bool m_maskMode = false;
     MaskType m_maskKind = MaskType::Radial;
     bool m_hasActiveMask = false;
-    Mask m_activeMask;        // geometry to draw as a gizmo
+    Mask m_activeMask;
+    QImage m_maskOverlay; // cached brush-coverage preview for m_activeMask        // geometry to draw as a gizmo
     bool m_maskDragging = false;
+    bool m_maskErasing = false; // Alt held while brush-masking: erase instead of paint
     QPointF m_maskCenterNorm; // radial centre / linear p0 captured at press
     QPointF m_lastBrushNorm{-1, -1};
     QPointF normPointAt(const QPoint &pos) const; // widget → width-normalized

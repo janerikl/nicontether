@@ -12,6 +12,9 @@ constexpr double kMinScale = 0.05;
 constexpr double kMaxScale = 8.0;
 constexpr int kHealBrushMin = 4;
 constexpr int kHealBrushMax = 80;
+constexpr double kMaskBrushMin = 0.01;
+constexpr double kMaskBrushMax = 0.40;
+constexpr double kMaskBrushStep = 0.01;
 }
 
 ImageCanvas::ImageCanvas(QWidget *parent) : QWidget(parent) {
@@ -76,6 +79,13 @@ void ImageCanvas::setActiveMask(bool has, const Mask &m) {
     m_hasActiveMask = has;
     m_activeMask = m;
     if (has) m_maskKind = m.type;
+    // Recompute the live brush-coverage preview so the painted area is visible
+    // immediately, even before any adjustment slider has been touched.
+    if (has && m.type == MaskType::Brush && !m.stroke.isEmpty() && !m_img.isNull())
+        m_maskOverlay = maskCoverageOverlay(m, m_img.width(), m_img.height(),
+                                            QColor(120, 200, 255), 140, m_img);
+    else
+        m_maskOverlay = QImage();
     update();
 }
 
@@ -348,10 +358,19 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
             p.setBrush(line);
             p.drawEllipse(a, 3, 3);
             p.drawEllipse(b, 3, 3);
-        } else { // Brush: show the brush cursor
+        } else { // Brush: show painted coverage plus the brush cursor
+            if (!m_maskOverlay.isNull())
+                p.drawImage(tr, m_maskOverlay);
             double rad = m.brushRadius * W * m_scale;
-            p.setPen(QPen(QColor(255, 255, 255, 200), 1));
-            p.setBrush(QColor(120, 200, 255, 30));
+            // While Alt is held the brush erases instead of paints; tint the
+            // cursor red so that's obvious before the user clicks.
+            if (m_maskErasing) {
+                p.setPen(QPen(QColor(255, 90, 90, 220), 1));
+                p.setBrush(QColor(255, 60, 60, 40));
+            } else {
+                p.setPen(QPen(QColor(255, 255, 255, 200), 1));
+                p.setBrush(QColor(120, 200, 255, 30));
+            }
             p.drawEllipse(QPointF(m_mousePos), rad, rad);
         }
     }
@@ -392,13 +411,14 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         m_maskDragging = true;
         m_maskCenterNorm = n;
         m_mousePos = ev->pos();
+        m_maskErasing = ev->modifiers().testFlag(Qt::AltModifier);
         if (m_maskKind == MaskType::Radial)
             emit maskRadialDragged(n, 0.0);
         else if (m_maskKind == MaskType::Linear)
             emit maskLinearDragged(n, n);
         else {
             m_lastBrushNorm = n;
-            emit maskBrushPoint(n);
+            emit maskBrushPoint(n, m_maskErasing);
         }
         update();
         return;
@@ -459,9 +479,12 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
                 double dy = n.y() - m_lastBrushNorm.y();
                 if (dx * dx + dy * dy > 0.004 * 0.004) { // throttle stroke samples
                     m_lastBrushNorm = n;
-                    emit maskBrushPoint(n);
+                    m_maskErasing = ev->modifiers().testFlag(Qt::AltModifier);
+                    emit maskBrushPoint(n, m_maskErasing);
                 }
             }
+        } else if (m_maskKind == MaskType::Brush) {
+            m_maskErasing = ev->modifiers().testFlag(Qt::AltModifier);
         }
         update();
         return;
@@ -607,6 +630,15 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
             int step = ev->angleDelta().y() > 0 ? 2 : -2;
             m_brushRadius = std::clamp(m_brushRadius + step, kHealBrushMin, kHealBrushMax);
             emit healBrushRadiusChanged(m_brushRadius);
+            update();
+            ev->accept();
+            return;
+        }
+        // In brush-mask mode, ctrl+wheel resizes the mask brush the same way.
+        if (m_maskMode && m_maskKind == MaskType::Brush) {
+            double step = ev->angleDelta().y() > 0 ? kMaskBrushStep : -kMaskBrushStep;
+            double r = std::clamp(m_activeMask.brushRadius + step, kMaskBrushMin, kMaskBrushMax);
+            emit maskBrushRadiusChanged(r);
             update();
             ev->accept();
             return;

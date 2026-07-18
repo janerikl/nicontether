@@ -54,7 +54,7 @@ public:
     void deleteActiveMask();
     void setActiveMaskAdjust(const MaskAdjust &a);
     void setActiveMaskShape(bool inverted, double feather, double hardness,
-                            double brushRadius);
+                            double brushRadius, bool autoMask);
     const QVector<Mask> &masks() const { return m_adj.masks; }
     int activeMaskIndex() const { return m_activeMask; }
     void showOriginal(bool on); // press-and-hold before/after
@@ -94,6 +94,7 @@ signals:
     void healBrushChanged(int radiusDisplayPx); // ctrl+wheel resized the brush
     void previewUpdated(); // a new toned preview render is available
     void masksChanged();   // mask list or active-mask geometry changed
+    void maskBrushChanged(double radiusNorm); // ctrl+wheel resized the mask brush
 
 private slots:
     void onDecodeFinished();
@@ -103,7 +104,7 @@ private slots:
     void onRenderDone(const QImage &result);
     void onMaskRadial(const QPointF &centerNorm, double radiusNorm);
     void onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm);
-    void onMaskBrushPoint(const QPointF &ptNorm);
+    void onMaskBrushPoint(const QPointF &ptNorm, bool erase);
     void onMaskEditFinished();
 
 private:

@@ -151,19 +151,45 @@ double linearWeight(const Mask &m, double nx, double ny) {
     return m.inverted ? 1.0 - w : w;
 }
 
+// Cheap perceptual ("redmean") weighted colour distance — no colourspace
+// conversion needed, good enough to decide "same object or not" for Auto Mask.
+inline double colorDist(QRgb a, QRgb b) {
+    const double dr = qRed(a) - qRed(b);
+    const double dg = qGreen(a) - qGreen(b);
+    const double db = qBlue(a) - qBlue(b);
+    const double rmean = (qRed(a) + qRed(b)) / 2.0;
+    const double d2 = (2.0 + rmean / 256.0) * dr * dr + 4.0 * dg * dg +
+                      (2.0 + (255.0 - rmean) / 256.0) * db * db;
+    return std::sqrt(d2);
+}
+
+// Auto Mask tolerance: pixels farther than this (redmean colour distance) from
+// the seed colour under a dab are excluded, so the stroke stops at edges.
+constexpr double kAutoMaskTolerance = 45.0;
+
 // Rasterize a brush mask into a coverage buffer (0..255) at image resolution.
-void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h) {
+// Dabs are applied in stroke order: normal dabs union (max) into the coverage,
+// Alt-painted (erase) dabs subtract from it, so painting after erasing (or
+// vice versa) behaves like Lightroom's brush eraser. `ref`, if non-null and
+// matching (w,h), enables Auto Mask edge-aware limiting.
+void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
+                    const QImage *ref = nullptr) {
     cov.assign(size_t(w) * h, 0);
     const double W = w;
     const double rad = std::max(1.0, m.brushRadius * W);
     const double inner = clampd(m.hardness, 0.0, 1.0) * rad;
     const double band = std::max(1e-6, rad - inner);
-    for (const QPointF &pt : m.stroke) {
-        const double px = pt.x() * W, py = pt.y() * W;
+    const bool autoMask = m.autoMask && ref && ref->width() == w && ref->height() == h;
+    for (const BrushStrokePoint &sp : m.stroke) {
+        const double px = sp.pt.x() * W, py = sp.pt.y() * W;
         const int x0 = std::max(0, int(px - rad));
         const int x1 = std::min(w - 1, int(px + rad));
         const int y0 = std::max(0, int(py - rad));
         const int y1 = std::min(h - 1, int(py + rad));
+        QRgb seed = 0;
+        if (autoMask)
+            seed = ref->pixel(std::clamp(int(std::lround(px)), 0, w - 1),
+                              std::clamp(int(std::lround(py)), 0, h - 1));
         for (int y = y0; y <= y1; ++y) {
             for (int x = x0; x <= x1; ++x) {
                 double dx = x - px, dy = y - py;
@@ -171,9 +197,16 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h) {
                 double v = dist <= inner ? 1.0
                            : dist >= rad ? 0.0
                                          : smoothstep01((rad - dist) / band);
+                if (v <= 0.0) continue;
+                if (autoMask) {
+                    double cd = colorDist(ref->pixel(x, y), seed);
+                    v *= 1.0 - smoothstep01(cd / kAutoMaskTolerance);
+                    if (v <= 0.0) continue;
+                }
                 uchar iv = uchar(std::lround(v * 255.0));
                 uchar &dst = cov[size_t(y) * w + x];
-                if (iv > dst) dst = iv;
+                if (sp.erase) dst = uchar(std::max(0, int(dst) - int(iv)));
+                else if (iv > dst) dst = iv;
             }
         }
     }
@@ -190,7 +223,7 @@ void applyMasks(QImage &img, const QVector<Mask> &masks) {
         if (m.adj.isZero()) continue;
         if (m.type == MaskType::Brush && m.stroke.isEmpty()) continue;
         const LocalParams lp = makeLocalParams(m.adj);
-        if (m.type == MaskType::Brush) rasterizeBrush(m, cov, w, h);
+        if (m.type == MaskType::Brush) rasterizeBrush(m, cov, w, h, &img);
         for (int y = 0; y < h; ++y) {
             QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
             for (int x = 0; x < w; ++x) {
@@ -275,6 +308,49 @@ static bool hasMaskEdits(const Adjustments &adj) {
         return true;
     }
     return false;
+}
+
+QImage maskCoverageOverlay(const Mask &m, int w, int h, const QColor &tint,
+                           int maxAlpha, const QImage &source) {
+    if (w <= 0 || h <= 0) return QImage();
+    // Compute at a reduced resolution so live painting stays responsive; the
+    // caller scales it up to the display rect.
+    const int longEdge = std::max(w, h);
+    const double s = longEdge > 512 ? 512.0 / longEdge : 1.0;
+    const int ow = std::max(1, int(w * s)), oh = std::max(1, int(h * s));
+    QImage img(ow, oh, QImage::Format_ARGB32);
+    img.fill(Qt::transparent);
+    const double W = ow;
+    std::vector<uchar> cov;
+    if (m.type == MaskType::Brush) {
+        if (m.stroke.isEmpty()) return img;
+        QImage ref;
+        const QImage *refPtr = nullptr;
+        if (m.autoMask && !source.isNull()) {
+            ref = (source.width() == ow && source.height() == oh)
+                      ? source
+                      : source.scaled(ow, oh, Qt::IgnoreAspectRatio,
+                                      Qt::SmoothTransformation);
+            refPtr = &ref;
+        }
+        rasterizeBrush(m, cov, ow, oh, refPtr);
+    }
+    const int tr = tint.red(), tg = tint.green(), tb = tint.blue();
+    for (int y = 0; y < oh; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        for (int x = 0; x < ow; ++x) {
+            double wgt;
+            if (m.type == MaskType::Radial)
+                wgt = radialWeight(m, x / W, y / W);
+            else if (m.type == MaskType::Linear)
+                wgt = linearWeight(m, x / W, y / W);
+            else
+                wgt = cov[size_t(y) * ow + x] / 255.0;
+            if (wgt <= 0.0) continue;
+            line[x] = qRgba(tr, tg, tb, int(std::lround(wgt * maxAlpha)));
+        }
+    }
+    return img;
 }
 
 bool Adjustments::hasCurve() const {

@@ -53,6 +53,14 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     connect(m_canvas, &ImageCanvas::maskLinearDragged, this, &RetouchTab::onMaskLinear);
     connect(m_canvas, &ImageCanvas::maskBrushPoint, this, &RetouchTab::onMaskBrushPoint);
     connect(m_canvas, &ImageCanvas::maskEditFinished, this, &RetouchTab::onMaskEditFinished);
+    connect(m_canvas, &ImageCanvas::maskBrushRadiusChanged, this, [this](double r) {
+        if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+        m_adj.masks[m_activeMask].brushRadius = r;
+        pushMaskGizmo();
+        retone();
+        markEdited();
+        emit maskBrushChanged(r);
+    });
 
     m_canvas->setPlaceholder("Decoding RAW…");
 
@@ -420,13 +428,15 @@ void RetouchTab::setActiveMaskAdjust(const MaskAdjust &a) {
 }
 
 void RetouchTab::setActiveMaskShape(bool inverted, double feather,
-                                    double hardness, double brushRadius) {
+                                    double hardness, double brushRadius,
+                                    bool autoMask) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
     Mask &m = m_adj.masks[m_activeMask];
     m.inverted = inverted;
     m.feather = feather;
     m.hardness = hardness;
     m.brushRadius = brushRadius;
+    m.autoMask = autoMask;
     pushMaskGizmo();
     retone();
     markEdited();
@@ -450,13 +460,21 @@ void RetouchTab::onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm) {
     retone();
 }
 
-void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm) {
+void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm, bool erase) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
-    m_adj.masks[m_activeMask].stroke.append(ptNorm);
+    m_adj.masks[m_activeMask].stroke.append(BrushStrokePoint{ptNorm, erase});
+    pushMaskGizmo(); // show the painted coverage right away
     retone();
 }
 
 void RetouchTab::onMaskEditFinished() {
+    // Once a brush stroke is committed, hide its overlay/gizmo again so it
+    // doesn't sit on top of the image; it reappears while actively painting
+    // (onMaskBrushPoint) or when explicitly reselected from the mask list.
+    if (m_activeMask >= 0 && m_activeMask < m_adj.masks.size() &&
+        m_adj.masks[m_activeMask].type == MaskType::Brush) {
+        m_canvas->setActiveMask(false, Mask{});
+    }
     markEdited(); // schedule one coalesced undo step for the whole drag
 }
 

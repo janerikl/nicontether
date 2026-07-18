@@ -723,9 +723,9 @@ void RetouchWindow::buildMaskDock() {
                 if (tab) tab->setActiveMaskAdjust(a);
             });
     connect(m_maskPanel, &MaskPanel::maskShapeChanged, this,
-            [this](bool inv, double f, double h, double br) {
+            [this](bool inv, double f, double h, double br, bool am) {
                 RetouchTab *tab = currentTab();
-                if (tab) tab->setActiveMaskShape(inv, f, h, br);
+                if (tab) tab->setActiveMaskShape(inv, f, h, br, am);
             });
 }
 
@@ -905,6 +905,10 @@ void RetouchWindow::openPhoto(const QString &path) {
         if (tab != currentTab()) return;
         QSignalBlocker b(m_healBrush);
         m_healBrush->setValue(radius); // reflect ctrl+wheel resize in the dock
+    });
+    connect(tab, &RetouchTab::maskBrushChanged, this, [this, tab](double radiusNorm) {
+        if (tab != currentTab() || !m_maskPanel) return;
+        m_maskPanel->setBrushRadius(radiusNorm); // reflect ctrl+wheel resize in the dock
     });
     connect(tab, &RetouchTab::previewUpdated, this, [this, tab] {
         if (tab == currentTab()) m_levelsPanel->setImage(tab->previewImage());
