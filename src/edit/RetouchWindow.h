@@ -20,6 +20,7 @@ class QToolBar;
 class QStackedWidget;
 class QDockWidget;
 class QListWidget;
+class TetherView;
 
 // Separate top-level window for retouching photos. Own filmstrip selector plus
 // one tab per open photo, an adjustments dock, and JPEG/PNG export.
@@ -58,6 +59,17 @@ private:
     FilmstripWidget *m_filmstrip = nullptr;
     QSet<QString> m_filmstripPaths;
     QMap<QString, RetouchTab *> m_openTabs;
+
+    // Unified window: central stack swaps editing tabs (page 0) / tether (page 1).
+    QStackedWidget *m_modeStack = nullptr;
+    TetherView *m_tetherView = nullptr;
+    QDockWidget *m_controlsDock = nullptr; // camera controls, shown in Tether mode
+    QToolBar *m_tetherToolBar = nullptr;   // Connect/Disconnect/LiveView/Capture/…
+
+    // Promoted from constructor locals so mode chrome can enable/disable them.
+    class QAction *m_saveAction = nullptr;
+    class QAction *m_saveAllAction = nullptr;
+    class QAction *m_exportAction = nullptr;
 
     // View menu togglable panels.
     QToolBar *m_toolsBar = nullptr; // left icon bar: Zoom / Crop / Spot Heal

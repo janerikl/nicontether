@@ -4,6 +4,8 @@
 #include "edit/CurveEditor.h"
 #include "edit/EditSidecar.h"
 #include "ui/FilmstripWidget.h"
+#include "ui/TetherView.h"
+#include "ui/ControlsPanel.h"
 #include "capture/NefPreview.h"
 
 #include <QScrollArea>
@@ -95,29 +97,29 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
 
     auto *toolbar = addToolBar("Main");
     toolbar->setMovable(false);
-    QAction *saveAction = toolbar->addAction("Save");
-    saveAction->setShortcut(QKeySequence::Save); // Ctrl+S
-    QAction *saveAllAction = toolbar->addAction("Save All");
+    m_saveAction = toolbar->addAction("Save");
+    m_saveAction->setShortcut(QKeySequence::Save); // Ctrl+S
+    m_saveAllAction = toolbar->addAction("Save All");
     toolbar->addSeparator();
-    QAction *exportAction = toolbar->addAction("Export…");
+    m_exportAction = toolbar->addAction("Export…");
     // Open Session/Photos moved out of the toolbar (still in the File menu)
     // to make room for the contextual tool-options row below.
     auto *openSessionAction = new QAction("Open Session…", this);
     auto *openPhotosAction = new QAction("Open Photos…", this);
     connect(openSessionAction, &QAction::triggered, this, &RetouchWindow::onOpenSession);
     connect(openPhotosAction, &QAction::triggered, this, &RetouchWindow::onOpenPhotos);
-    connect(saveAction, &QAction::triggered, this, &RetouchWindow::onSave);
-    connect(saveAllAction, &QAction::triggered, this, &RetouchWindow::onSaveAll);
-    connect(exportAction, &QAction::triggered, this, &RetouchWindow::onExport);
+    connect(m_saveAction, &QAction::triggered, this, &RetouchWindow::onSave);
+    connect(m_saveAllAction, &QAction::triggered, this, &RetouchWindow::onSaveAll);
+    connect(m_exportAction, &QAction::triggered, this, &RetouchWindow::onExport);
 
     auto *fileMenu = menuBar()->addMenu("File");
     fileMenu->addAction(openSessionAction);
     fileMenu->addAction(openPhotosAction);
     fileMenu->addSeparator();
-    fileMenu->addAction(saveAction);
-    fileMenu->addAction(saveAllAction);
+    fileMenu->addAction(m_saveAction);
+    fileMenu->addAction(m_saveAllAction);
     fileMenu->addSeparator();
-    fileMenu->addAction(exportAction);
+    fileMenu->addAction(m_exportAction);
 
     auto *editMenu = menuBar()->addMenu("Edit");
     m_undoAction = editMenu->addAction("Undo");
@@ -135,7 +137,8 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
         if (tab) tab->redo();
     });
 
-    // Center: tabs + filmstrip selector below.
+    // Center: a stack (editing tabs / tether) with the shared filmstrip below,
+    // so the filmstrip is visible in both modes.
     auto *central = new QWidget;
     auto *vbox = new QVBoxLayout(central);
     vbox->setContentsMargins(0, 0, 0, 0);
@@ -147,11 +150,17 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     connect(m_tabs, &QTabWidget::tabCloseRequested, this,
             &RetouchWindow::onTabCloseRequested);
 
+    m_tetherView = new TetherView;
+
+    m_modeStack = new QStackedWidget;
+    m_modeStack->addWidget(m_tabs);       // index 0 = Retouch
+    m_modeStack->addWidget(m_tetherView); // index 1 = Tether
+
     m_filmstrip = new FilmstripWidget;
     connect(m_filmstrip, &FilmstripWidget::frameSelected, this,
             &RetouchWindow::onFilmstripSelected);
 
-    vbox->addWidget(m_tabs, 1);
+    vbox->addWidget(m_modeStack, 1);
     vbox->addWidget(m_filmstrip, 0);
     setCentralWidget(central);
 
@@ -160,6 +169,25 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     buildDock();
     buildHistoryDock();
     buildViewMenu();
+
+    // Tether chrome: camera controls dock + tether action toolbar. Visibility is
+    // driven by mode in Task 3; created hidden here.
+    m_controlsDock = new QDockWidget("Controls", this);
+    m_controlsDock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    m_controlsDock->setWidget(m_tetherView->controlsPanel());
+    addDockWidget(Qt::RightDockWidgetArea, m_controlsDock);
+    m_controlsDock->hide();
+
+    m_tetherToolBar = addToolBar("Tether");
+    m_tetherToolBar->setMovable(false);
+    m_tetherToolBar->addActions(m_tetherView->tetherActions());
+    m_tetherToolBar->hide();
+
+    // Captures flow into the shared filmstrip; tether status into the status bar.
+    connect(m_tetherView, &TetherView::captureComplete, this,
+            [this](const QString &path) { addToFilmstrip(path); });
+    connect(m_tetherView, &TetherView::statusMessage, this,
+            [this](const QString &msg) { m_statusLabel->setText(msg); });
 
     m_statusLabel = new QLabel("Open a photo to begin");
     statusBar()->addWidget(m_statusLabel);
