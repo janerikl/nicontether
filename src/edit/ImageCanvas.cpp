@@ -399,8 +399,23 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         m_mp1 = ev->pos();
         update();
     } else if (m_cropMode) {
-        setCursor(selectionRect().contains(ev->pos()) ? Qt::SizeAllCursor
-                                                       : Qt::CrossCursor);
+        Handle h = handleAt(ev->pos());
+        Qt::CursorShape c = Qt::CrossCursor;
+        switch (h) {
+            case Handle::TopLeft:
+            case Handle::BottomRight: c = Qt::SizeFDiagCursor; break;
+            case Handle::TopRight:
+            case Handle::BottomLeft:  c = Qt::SizeBDiagCursor; break;
+            case Handle::Top:
+            case Handle::Bottom:      c = Qt::SizeVerCursor; break;
+            case Handle::Left:
+            case Handle::Right:       c = Qt::SizeHorCursor; break;
+            case Handle::None:
+                c = selectionRect().contains(ev->pos()) ? Qt::SizeAllCursor
+                                                        : Qt::CrossCursor;
+                break;
+        }
+        setCursor(c);
     } else if (m_healMode) {
         m_mousePos = ev->pos();
         update(); // move the brush-size circle
