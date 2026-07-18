@@ -47,6 +47,7 @@ private slots:
 private:
     void buildDock();
     void buildToolPanel(); // narrow left icon toolbar: Zoom / Crop / Spot Heal tools
+    void deselectAllTools(); // uncheck all left-bar tools and exit their modes
     void buildToolOptionsBar(); // contextual per-tool options row under the main toolbar
     RetouchTab *currentTab() const;
     void syncDockFromTab();

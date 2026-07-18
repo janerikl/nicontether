@@ -8,6 +8,7 @@
 
 #include <QScrollArea>
 #include <QKeySequence>
+#include <QShortcut>
 #include <cmath>
 
 #include <QTabWidget>
@@ -162,6 +163,10 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     statusBar()->addWidget(m_statusLabel);
 
     setDockEnabled(false);
+
+    auto *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    escShortcut->setContext(Qt::WindowShortcut);
+    connect(escShortcut, &QShortcut::activated, this, &RetouchWindow::deselectAllTools);
 }
 
 // View menu: toggle visibility of the Tools bar, Adjustments dock, and the
@@ -583,11 +588,8 @@ void RetouchWindow::onFilmstripSelected(const QString &path) {
     openPhoto(path);
 }
 
-void RetouchWindow::onTabChanged(int) {
+void RetouchWindow::deselectAllTools() {
     RetouchTab *tab = currentTab();
-    bool ready = tab && tab->isReady();
-    setDockEnabled(ready);
-    m_toolOptionsBar->setVisible(false);
     if (m_toolZoom) {
         QSignalBlocker b(m_toolZoom);
         m_toolZoom->setChecked(false);
@@ -597,7 +599,7 @@ void RetouchWindow::onTabChanged(int) {
         QSignalBlocker b(m_cropToggle);
         m_cropToggle->setChecked(false);
     }
-    m_cropApply->setEnabled(false);
+    if (m_cropApply) m_cropApply->setEnabled(false);
     if (m_wbPick) {
         QSignalBlocker b(m_wbPick);
         m_wbPick->setChecked(false);
@@ -608,6 +610,14 @@ void RetouchWindow::onTabChanged(int) {
         m_healToggle->setChecked(false);
     }
     if (tab) tab->setHealMode(false);
+    if (m_toolOptionsBar) m_toolOptionsBar->setVisible(false);
+}
+
+void RetouchWindow::onTabChanged(int) {
+    RetouchTab *tab = currentTab();
+    bool ready = tab && tab->isReady();
+    setDockEnabled(ready);
+    deselectAllTools();
     m_undoAction->setEnabled(tab && tab->canUndo());
     m_redoAction->setEnabled(tab && tab->canRedo());
     syncDockFromTab();
