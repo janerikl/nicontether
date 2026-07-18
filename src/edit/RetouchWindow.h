@@ -19,6 +19,7 @@ class QLabel;
 class QToolBar;
 class QStackedWidget;
 class QDockWidget;
+class QListWidget;
 
 // Separate top-level window for retouching photos. Own filmstrip selector plus
 // one tab per open photo, an adjustments dock, and JPEG/PNG export.
@@ -47,6 +48,7 @@ private slots:
 private:
     void buildDock();
     void buildToolPanel(); // narrow left icon toolbar: Zoom / Crop / Spot Heal tools
+    void deselectAllTools(); // uncheck all left-bar tools and exit their modes
     void buildToolOptionsBar(); // contextual per-tool options row under the main toolbar
     RetouchTab *currentTab() const;
     void syncDockFromTab();
@@ -60,7 +62,11 @@ private:
     // View menu togglable panels.
     QToolBar *m_toolsBar = nullptr; // left icon bar: Zoom / Crop / Spot Heal
     QDockWidget *m_adjustmentsDock = nullptr;
+    QDockWidget *m_historyDock = nullptr;
+    QListWidget *m_historyList = nullptr;
     void buildViewMenu();
+    void buildHistoryDock();
+    void refreshHistoryPanel(); // rebuild the list from the current tab
 
     // Dock controls.
     QSlider *m_brightness = nullptr;

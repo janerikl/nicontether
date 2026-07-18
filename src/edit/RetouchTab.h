@@ -60,6 +60,10 @@ public:
     bool canUndo() const { return m_histIndex > 0; }
     bool canRedo() const { return m_histIndex >= 0 && m_histIndex < m_history.size() - 1; }
 
+    const QVector<Adjustments> &history() const { return m_history; }
+    int historyIndex() const { return m_histIndex; }
+    void jumpToHistory(int index); // set position to index and apply it
+
     QImage renderFullRes() const; // for export
 
 signals:
@@ -71,6 +75,7 @@ signals:
     void editStateChanged(bool dirty, bool hasEdits);
     void zoomChanged(double percent);
     void historyChanged(bool canUndo, bool canRedo);
+    void historyListChanged(); // history entries or current index changed
     void adjustmentsReplaced(); // undo/redo swapped the whole adjustment set
     void healBrushChanged(int radiusDisplayPx); // ctrl+wheel resized the brush
 

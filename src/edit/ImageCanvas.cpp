@@ -167,6 +167,29 @@ QPoint ImageCanvas::constrainedCorner(const QPoint &pos) const {
     return m_p0 + QPoint(int(sx * w), int(sy * h));
 }
 
+ImageCanvas::Handle ImageCanvas::handleAt(const QPoint &pos) const {
+    QRect r = selectionRect();
+    if (r.isEmpty()) return Handle::None;
+    const int t = 10; // grab tolerance in widget px
+    auto near = [&](int a, int b) { return std::abs(a - b) <= t; };
+    bool onLeft   = near(pos.x(), r.left());
+    bool onRight  = near(pos.x(), r.right());
+    bool onTop    = near(pos.y(), r.top());
+    bool onBottom = near(pos.y(), r.bottom());
+    // Only count edge hits when the other axis is within the rect span (± tol).
+    bool inX = pos.x() >= r.left() - t && pos.x() <= r.right() + t;
+    bool inY = pos.y() >= r.top() - t && pos.y() <= r.bottom() + t;
+    if (onTop && onLeft)       return Handle::TopLeft;
+    if (onTop && onRight)      return Handle::TopRight;
+    if (onBottom && onLeft)    return Handle::BottomLeft;
+    if (onBottom && onRight)   return Handle::BottomRight;
+    if (onTop && inX)          return Handle::Top;
+    if (onBottom && inX)       return Handle::Bottom;
+    if (onLeft && inY)         return Handle::Left;
+    if (onRight && inY)        return Handle::Right;
+    return Handle::None;
+}
+
 QRect ImageCanvas::selectionInImage() const {
     QRect tr = targetRect();
     if (m_img.isNull() || tr.isEmpty()) return QRect();
@@ -205,6 +228,33 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
             p.setClipping(false);
             p.setPen(QPen(Qt::white, 1, Qt::DashLine));
             p.drawRect(sel);
+
+            // Rule-of-thirds gridlines, only while actively dragging.
+            if (m_drag != Drag::None) {
+                p.setPen(QPen(QColor(255, 255, 255, 90), 1));
+                for (int i = 1; i <= 2; ++i) {
+                    int x = sel.left() + sel.width() * i / 3;
+                    int y = sel.top() + sel.height() * i / 3;
+                    p.drawLine(x, sel.top(), x, sel.bottom());
+                    p.drawLine(sel.left(), y, sel.right(), y);
+                }
+            }
+
+            // Corner brackets (L-shapes) + edge ticks.
+            const int leg = std::min(18, std::min(sel.width(), sel.height()) / 3);
+            p.setPen(QPen(Qt::white, 2));
+            const int l = sel.left(), t = sel.top(), r = sel.right(), b = sel.bottom();
+            // corners
+            p.drawLine(l, t, l + leg, t); p.drawLine(l, t, l, t + leg);
+            p.drawLine(r, t, r - leg, t); p.drawLine(r, t, r, t + leg);
+            p.drawLine(l, b, l + leg, b); p.drawLine(l, b, l, b - leg);
+            p.drawLine(r, b, r - leg, b); p.drawLine(r, b, r, b - leg);
+            // edge midpoint ticks
+            int mx = (l + r) / 2, my = (t + b) / 2;
+            p.drawLine(mx - leg / 2, t, mx + leg / 2, t);
+            p.drawLine(mx - leg / 2, b, mx + leg / 2, b);
+            p.drawLine(l, my - leg / 2, l, my + leg / 2);
+            p.drawLine(r, my - leg / 2, r, my + leg / 2);
         }
     }
 
@@ -268,7 +318,12 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
 
     // Crop mode.
     if (m_cropMode && ev->button() == Qt::LeftButton) {
-        if (selectionRect().contains(ev->pos())) {
+        Handle h = handleAt(ev->pos());
+        if (h != Handle::None) {
+            m_drag = Drag::Resizing;
+            m_activeHandle = h;
+            m_rectAtDragStart = selectionRect();
+        } else if (selectionRect().contains(ev->pos())) {
             m_drag = Drag::Moving;
             m_moveStart = ev->pos();
             m_rectAtMoveStart = selectionRect();
@@ -314,6 +369,54 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         m_p0 = r.topLeft();
         m_p1 = r.bottomRight();
         update();
+    } else if (m_drag == Drag::Resizing) {
+        QRect tr = targetRect();
+        QRect r = m_rectAtDragStart;
+        QPoint pos = ev->pos();
+        // Move the edge(s) owned by the active handle to follow the cursor,
+        // clamped to the image bounds.
+        int L = r.left(), T = r.top(), R = r.right(), B = r.bottom();
+        auto cx = [&](int x) { return std::clamp(x, tr.left(), tr.right()); };
+        auto cy = [&](int y) { return std::clamp(y, tr.top(), tr.bottom()); };
+        switch (m_activeHandle) {
+            case Handle::Left:        L = cx(pos.x()); break;
+            case Handle::Right:       R = cx(pos.x()); break;
+            case Handle::Top:         T = cy(pos.y()); break;
+            case Handle::Bottom:      B = cy(pos.y()); break;
+            case Handle::TopLeft:     L = cx(pos.x()); T = cy(pos.y()); break;
+            case Handle::TopRight:    R = cx(pos.x()); T = cy(pos.y()); break;
+            case Handle::BottomLeft:  L = cx(pos.x()); B = cy(pos.y()); break;
+            case Handle::BottomRight: R = cx(pos.x()); B = cy(pos.y()); break;
+            case Handle::None:        break;
+        }
+        QRect nr = QRect(QPoint(L, T), QPoint(R, B)).normalized();
+
+        if (m_cropAspect > 0) {
+            // Preserve aspect: anchor the corner opposite the moving one and
+            // reuse constrainedCorner (which anchors at m_p0). Edge handles are
+            // treated as their adjacent "grow" corner.
+            QPoint anchor, moving;
+            switch (m_activeHandle) {
+                case Handle::TopLeft:     anchor = r.bottomRight(); moving = nr.topLeft(); break;
+                case Handle::TopRight:    anchor = r.bottomLeft();  moving = nr.topRight(); break;
+                case Handle::BottomLeft:  anchor = r.topRight();    moving = nr.bottomLeft(); break;
+                case Handle::BottomRight: anchor = r.topLeft();     moving = nr.bottomRight(); break;
+                case Handle::Left:        anchor = r.bottomRight(); moving = QPoint(nr.left(), nr.top()); break;
+                case Handle::Right:       anchor = r.topLeft();     moving = QPoint(nr.right(), nr.bottom()); break;
+                case Handle::Top:         anchor = r.bottomRight(); moving = QPoint(nr.left(), nr.top()); break;
+                case Handle::Bottom:      anchor = r.topLeft();     moving = QPoint(nr.right(), nr.bottom()); break;
+                case Handle::None:        anchor = r.topLeft();     moving = nr.bottomRight(); break;
+            }
+            QPoint savedP0 = m_p0;
+            m_p0 = anchor;                       // constrainedCorner anchors at m_p0
+            QPoint c = constrainedCorner(moving);
+            m_p0 = savedP0;
+            nr = QRect(anchor, c).normalized();
+        }
+
+        m_p0 = nr.topLeft();
+        m_p1 = nr.bottomRight();
+        update();
     } else if (m_panning) {
         m_topLeft += QPointF(ev->pos() - m_panLast);
         m_panLast = ev->pos();
@@ -323,8 +426,23 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         m_mp1 = ev->pos();
         update();
     } else if (m_cropMode) {
-        setCursor(selectionRect().contains(ev->pos()) ? Qt::SizeAllCursor
-                                                       : Qt::CrossCursor);
+        Handle h = handleAt(ev->pos());
+        Qt::CursorShape c = Qt::CrossCursor;
+        switch (h) {
+            case Handle::TopLeft:
+            case Handle::BottomRight: c = Qt::SizeFDiagCursor; break;
+            case Handle::TopRight:
+            case Handle::BottomLeft:  c = Qt::SizeBDiagCursor; break;
+            case Handle::Top:
+            case Handle::Bottom:      c = Qt::SizeVerCursor; break;
+            case Handle::Left:
+            case Handle::Right:       c = Qt::SizeHorCursor; break;
+            case Handle::None:
+                c = selectionRect().contains(ev->pos()) ? Qt::SizeAllCursor
+                                                        : Qt::CrossCursor;
+                break;
+        }
+        setCursor(c);
     } else if (m_healMode) {
         m_mousePos = ev->pos();
         update(); // move the brush-size circle
@@ -334,6 +452,7 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
 void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
     if (m_drag != Drag::None && ev->button() == Qt::LeftButton) {
         m_drag = Drag::None;
+        m_activeHandle = Handle::None;
         setCursor(m_cropMode ? Qt::CrossCursor : Qt::ArrowCursor);
         update();
         emit cropSelected(selectionInImage());

@@ -8,6 +8,7 @@
 
 #include <QScrollArea>
 #include <QKeySequence>
+#include <QShortcut>
 #include <cmath>
 
 #include <QTabWidget>
@@ -23,6 +24,7 @@
 #include <QLabel>
 #include <QToolBar>
 #include <QStackedWidget>
+#include <QListWidget>
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
@@ -156,12 +158,17 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     buildToolPanel();
     buildToolOptionsBar();
     buildDock();
+    buildHistoryDock();
     buildViewMenu();
 
     m_statusLabel = new QLabel("Open a photo to begin");
     statusBar()->addWidget(m_statusLabel);
 
     setDockEnabled(false);
+
+    auto *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    escShortcut->setContext(Qt::WindowShortcut);
+    connect(escShortcut, &QShortcut::activated, this, &RetouchWindow::deselectAllTools);
 }
 
 // View menu: toggle visibility of the Tools bar, Adjustments dock, and the
@@ -170,6 +177,7 @@ void RetouchWindow::buildViewMenu() {
     auto *viewMenu = menuBar()->addMenu("View");
     if (m_toolsBar) viewMenu->addAction(m_toolsBar->toggleViewAction());
     if (m_adjustmentsDock) viewMenu->addAction(m_adjustmentsDock->toggleViewAction());
+    if (m_historyDock) viewMenu->addAction(m_historyDock->toggleViewAction());
 
     auto *filmstripAction = new QAction("Filmstrip", this);
     filmstripAction->setCheckable(true);
@@ -495,6 +503,40 @@ void RetouchWindow::buildDock() {
     addDockWidget(Qt::RightDockWidgetArea, dock);
 }
 
+void RetouchWindow::buildHistoryDock() {
+    auto *dock = new QDockWidget("History", this);
+    m_historyDock = dock;
+    dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    m_historyList = new QListWidget;
+    m_historyList->setSelectionMode(QAbstractItemView::SingleSelection);
+    connect(m_historyList, &QListWidget::itemClicked, this,
+            [this](QListWidgetItem *item) {
+                RetouchTab *tab = currentTab();
+                if (tab) tab->jumpToHistory(m_historyList->row(item));
+            });
+    dock->setWidget(m_historyList);
+    addDockWidget(Qt::RightDockWidgetArea, dock);
+    // Stack under the Adjustments dock as a tab if both are on the right.
+    if (m_adjustmentsDock) tabifyDockWidget(m_adjustmentsDock, dock);
+}
+
+void RetouchWindow::refreshHistoryPanel() {
+    if (!m_historyList) return;
+    RetouchTab *tab = currentTab();
+    QSignalBlocker block(m_historyList);
+    m_historyList->clear();
+    if (!tab || !tab->isReady()) return;
+    const QVector<Adjustments> &hist = tab->history();
+    for (int i = 0; i < hist.size(); ++i) {
+        QString label = (i == 0) ? QStringLiteral("Original")
+                                 : historyStepLabel(hist[i - 1], hist[i]);
+        m_historyList->addItem(label);
+    }
+    int cur = tab->historyIndex();
+    if (cur >= 0 && cur < m_historyList->count())
+        m_historyList->setCurrentRow(cur);
+}
+
 RetouchTab *RetouchWindow::currentTab() const {
     return qobject_cast<RetouchTab *>(m_tabs->currentWidget());
 }
@@ -527,6 +569,7 @@ void RetouchWindow::openPhoto(const QString &path) {
         if (tab == currentTab()) {
             setDockEnabled(ok);
             syncDockFromTab();
+            refreshHistoryPanel();
             m_statusLabel->setText(ok ? "Ready: " + QFileInfo(tab->path()).fileName()
                                       : "Failed to decode " + QFileInfo(tab->path()).fileName());
         }
@@ -555,6 +598,10 @@ void RetouchWindow::openPhoto(const QString &path) {
                 m_undoAction->setEnabled(canUndo);
                 m_redoAction->setEnabled(canRedo);
             });
+    connect(tab, &RetouchTab::historyListChanged, this, [this, tab] {
+        if (tab != currentTab()) return;
+        refreshHistoryPanel();
+    });
     connect(tab, &RetouchTab::adjustmentsReplaced, this, [this, tab] {
         if (tab != currentTab()) return;
         syncDockFromTab(); // reflect undone/redone values in the dock
@@ -583,11 +630,8 @@ void RetouchWindow::onFilmstripSelected(const QString &path) {
     openPhoto(path);
 }
 
-void RetouchWindow::onTabChanged(int) {
+void RetouchWindow::deselectAllTools() {
     RetouchTab *tab = currentTab();
-    bool ready = tab && tab->isReady();
-    setDockEnabled(ready);
-    m_toolOptionsBar->setVisible(false);
     if (m_toolZoom) {
         QSignalBlocker b(m_toolZoom);
         m_toolZoom->setChecked(false);
@@ -597,7 +641,7 @@ void RetouchWindow::onTabChanged(int) {
         QSignalBlocker b(m_cropToggle);
         m_cropToggle->setChecked(false);
     }
-    m_cropApply->setEnabled(false);
+    if (m_cropApply) m_cropApply->setEnabled(false);
     if (m_wbPick) {
         QSignalBlocker b(m_wbPick);
         m_wbPick->setChecked(false);
@@ -608,9 +652,18 @@ void RetouchWindow::onTabChanged(int) {
         m_healToggle->setChecked(false);
     }
     if (tab) tab->setHealMode(false);
+    if (m_toolOptionsBar) m_toolOptionsBar->setVisible(false);
+}
+
+void RetouchWindow::onTabChanged(int) {
+    RetouchTab *tab = currentTab();
+    bool ready = tab && tab->isReady();
+    setDockEnabled(ready);
+    deselectAllTools();
     m_undoAction->setEnabled(tab && tab->canUndo());
     m_redoAction->setEnabled(tab && tab->canRedo());
     syncDockFromTab();
+    refreshHistoryPanel();
     if (ready) {
         QSignalBlocker b(m_zoomSlider);
         int pct = int(std::lround(tab->zoomPercent()));

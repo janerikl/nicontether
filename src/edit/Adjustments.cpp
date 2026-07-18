@@ -254,3 +254,28 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj) {
 
     return img;
 }
+
+QString historyStepLabel(const Adjustments &prev, const Adjustments &curr) {
+    if (prev == curr) return QStringLiteral("No change");
+    if (curr.brightness != prev.brightness)   return QStringLiteral("Brightness");
+    if (curr.contrast != prev.contrast)       return QStringLiteral("Contrast");
+    if (curr.highlights != prev.highlights)   return QStringLiteral("Highlights");
+    if (curr.shadows != prev.shadows)         return QStringLiteral("Shadows");
+    if (curr.saturation != prev.saturation)   return QStringLiteral("Saturation");
+    if (curr.vibrance != prev.vibrance)       return QStringLiteral("Vibrance");
+    if (curr.temperature != prev.temperature) return QStringLiteral("Temperature");
+    if (curr.tint != prev.tint)               return QStringLiteral("Tint");
+    if (curr.wbR != prev.wbR || curr.wbG != prev.wbG || curr.wbB != prev.wbB)
+        return QStringLiteral("White Balance");
+    if (curr.clarity != prev.clarity)         return QStringLiteral("Clarity");
+    if (curr.sharpen != prev.sharpen)         return QStringLiteral("Sharpen");
+    if (curr.vignette != prev.vignette)       return QStringLiteral("Vignette");
+    if (curr.curve != prev.curve)             return QStringLiteral("Curve");
+    if (curr.heals != prev.heals)             return QStringLiteral("Spot Heal");
+    if (curr.rotationQuadrants != prev.rotationQuadrants)
+        return QStringLiteral("Rotate");
+    if (curr.flipH != prev.flipH || curr.flipV != prev.flipV)
+        return QStringLiteral("Flip");
+    if (curr.cropRect != prev.cropRect)       return QStringLiteral("Crop");
+    return QStringLiteral("Adjust");
+}

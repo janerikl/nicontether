@@ -60,16 +60,19 @@ protected:
     void leaveEvent(QEvent *) override;
 
 private:
+    enum class Drag { None, Creating, Moving, Resizing };
+    enum class Handle { None, TopLeft, Top, TopRight, Right,
+                        BottomRight, Bottom, BottomLeft, Left };
+
     QRect targetRect() const;          // where the image is painted (zoom+pan)
     QRect selectionRect() const;       // current rubber band in widget coords
     QRect selectionInImage() const;    // current rubber band mapped to image coords
     QPoint constrainedCorner(const QPoint &pos) const; // apply aspect + bounds
+    Handle handleAt(const QPoint &pos) const; // which crop handle is under pos
 
     void relayoutFit();  // recompute scale/offset to fit + centre
     void zoomTo(double newScale, const QPointF &anchorWidgetPos);
     void clampPan();
-
-    enum class Drag { None, Creating, Moving };
 
     QImage m_img;
     QString m_placeholder = "Decoding…";
@@ -85,6 +88,8 @@ private:
     QPoint m_p0, m_p1; // crop selection corners (widget coords)
     QPoint m_moveStart;
     QRect m_rectAtMoveStart;
+    Handle m_activeHandle = Handle::None;
+    QRect m_rectAtDragStart; // selection rect (widget coords) captured at press
 
     // Zoom / pan.
     double m_scale = 1.0;   // widget px per image px
