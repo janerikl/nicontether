@@ -3,6 +3,7 @@
 #include "ui/MainWindow.h"
 #include "edit/RetouchWindow.h"
 #include "edit/RetouchTab.h"
+#include "ui/AppIcon.h"
 #include <QElapsedTimer>
 #include <cstdio>
 #include <cstring>
@@ -11,6 +12,7 @@ int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("NikonTether");
     app.setOrganizationName("NikonTether");
+    app.setWindowIcon(makeShutterIcon());
 
     if (argc >= 3 && std::strcmp(argv[1], "--undotest") == 0) {
         RetouchWindow w;
