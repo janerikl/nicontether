@@ -60,7 +60,8 @@ install(CODE "
     set(ICON_DIR \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps\")
     file(MAKE_DIRECTORY \"\${ICON_DIR}\")
     execute_process(
-        COMMAND \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/nikontether\" --export-icon \"\${ICON_DIR}/nikontether.png\"
+        COMMAND \${CMAKE_COMMAND} -E env QT_QPA_PLATFORM=offscreen
+                \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/nikontether\" --export-icon \"\${ICON_DIR}/nikontether.png\"
         RESULT_VARIABLE _rc
     )
     if(NOT _rc EQUAL 0)
