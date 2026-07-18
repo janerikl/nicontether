@@ -167,6 +167,29 @@ QPoint ImageCanvas::constrainedCorner(const QPoint &pos) const {
     return m_p0 + QPoint(int(sx * w), int(sy * h));
 }
 
+ImageCanvas::Handle ImageCanvas::handleAt(const QPoint &pos) const {
+    QRect r = selectionRect();
+    if (r.isEmpty()) return Handle::None;
+    const int t = 10; // grab tolerance in widget px
+    auto near = [&](int a, int b) { return std::abs(a - b) <= t; };
+    bool onLeft   = near(pos.x(), r.left());
+    bool onRight  = near(pos.x(), r.right());
+    bool onTop    = near(pos.y(), r.top());
+    bool onBottom = near(pos.y(), r.bottom());
+    // Only count edge hits when the other axis is within the rect span (± tol).
+    bool inX = pos.x() >= r.left() - t && pos.x() <= r.right() + t;
+    bool inY = pos.y() >= r.top() - t && pos.y() <= r.bottom() + t;
+    if (onTop && onLeft)       return Handle::TopLeft;
+    if (onTop && onRight)      return Handle::TopRight;
+    if (onBottom && onLeft)    return Handle::BottomLeft;
+    if (onBottom && onRight)   return Handle::BottomRight;
+    if (onTop && inX)          return Handle::Top;
+    if (onBottom && inX)       return Handle::Bottom;
+    if (onLeft && inY)         return Handle::Left;
+    if (onRight && inY)        return Handle::Right;
+    return Handle::None;
+}
+
 QRect ImageCanvas::selectionInImage() const {
     QRect tr = targetRect();
     if (m_img.isNull() || tr.isEmpty()) return QRect();
@@ -268,7 +291,12 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
 
     // Crop mode.
     if (m_cropMode && ev->button() == Qt::LeftButton) {
-        if (selectionRect().contains(ev->pos())) {
+        Handle h = handleAt(ev->pos());
+        if (h != Handle::None) {
+            m_drag = Drag::Resizing;
+            m_activeHandle = h;
+            m_rectAtDragStart = selectionRect();
+        } else if (selectionRect().contains(ev->pos())) {
             m_drag = Drag::Moving;
             m_moveStart = ev->pos();
             m_rectAtMoveStart = selectionRect();
