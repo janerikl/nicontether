@@ -1,7 +1,6 @@
 #include <QApplication>
 #include <QPixmap>
 
-#include "ui/MainWindow.h"
 #include "edit/RetouchWindow.h"
 #include "edit/RetouchTab.h"
 #include "ui/AppIcon.h"
@@ -92,7 +91,7 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    MainWindow window;
+    RetouchWindow window;
     window.show();
     return app.exec();
 }

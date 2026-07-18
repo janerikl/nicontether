@@ -93,7 +93,7 @@ QIcon makeHealIcon() {
 } // namespace
 
 RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
-    setWindowTitle("Retouch");
+    setWindowTitle("NikonTether");
     resize(1200, 820);
 
     auto *toolbar = addToolBar("Main");
