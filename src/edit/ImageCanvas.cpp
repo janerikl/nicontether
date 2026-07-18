@@ -228,6 +228,33 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
             p.setClipping(false);
             p.setPen(QPen(Qt::white, 1, Qt::DashLine));
             p.drawRect(sel);
+
+            // Rule-of-thirds gridlines, only while actively dragging.
+            if (m_drag != Drag::None) {
+                p.setPen(QPen(QColor(255, 255, 255, 90), 1));
+                for (int i = 1; i <= 2; ++i) {
+                    int x = sel.left() + sel.width() * i / 3;
+                    int y = sel.top() + sel.height() * i / 3;
+                    p.drawLine(x, sel.top(), x, sel.bottom());
+                    p.drawLine(sel.left(), y, sel.right(), y);
+                }
+            }
+
+            // Corner brackets (L-shapes) + edge ticks.
+            const int leg = std::min(18, std::min(sel.width(), sel.height()) / 3);
+            p.setPen(QPen(Qt::white, 2));
+            const int l = sel.left(), t = sel.top(), r = sel.right(), b = sel.bottom();
+            // corners
+            p.drawLine(l, t, l + leg, t); p.drawLine(l, t, l, t + leg);
+            p.drawLine(r, t, r - leg, t); p.drawLine(r, t, r, t + leg);
+            p.drawLine(l, b, l + leg, b); p.drawLine(l, b, l, b - leg);
+            p.drawLine(r, b, r - leg, b); p.drawLine(r, b, r, b - leg);
+            // edge midpoint ticks
+            int mx = (l + r) / 2, my = (t + b) / 2;
+            p.drawLine(mx - leg / 2, t, mx + leg / 2, t);
+            p.drawLine(mx - leg / 2, b, mx + leg / 2, b);
+            p.drawLine(l, my - leg / 2, l, my + leg / 2);
+            p.drawLine(r, my - leg / 2, r, my + leg / 2);
         }
     }
 
