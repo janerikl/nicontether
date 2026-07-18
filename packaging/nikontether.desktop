@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NikonTether
+Comment=Tethered capture for Nikon cameras
+Exec=nikontether
+Icon=nikontether
+Terminal=false
+Categories=Graphics;Photography;
