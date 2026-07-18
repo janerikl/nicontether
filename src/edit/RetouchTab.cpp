@@ -262,6 +262,7 @@ void RetouchTab::requestRender(const QImage &src, const Adjustments &adj) {
 void RetouchTab::onRenderDone(const QImage &result) {
     m_lastEdited = result;
     if (!m_showingOriginal) m_canvas->setImage(result);
+    emit previewUpdated();
     m_rendering = false;
     if (m_hasPending) {
         m_hasPending = false;

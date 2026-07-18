@@ -49,6 +49,24 @@ bool save(const QString &imagePath, const Adjustments &a) {
         curve.append(QJsonArray{p.x(), p.y()});
     o["curve"] = curve;
 
+    if (!a.levels.isIdentity()) {
+        auto chan = [](const LevelsChannel &c) {
+            QJsonObject j;
+            j["inBlack"] = c.inBlack;
+            j["inWhite"] = c.inWhite;
+            j["gamma"] = c.gamma;
+            j["outBlack"] = c.outBlack;
+            j["outWhite"] = c.outWhite;
+            return j;
+        };
+        QJsonObject lv;
+        lv["rgb"] = chan(a.levels.rgb);
+        lv["r"] = chan(a.levels.r);
+        lv["g"] = chan(a.levels.g);
+        lv["b"] = chan(a.levels.b);
+        o["levels"] = lv;
+    }
+
     QJsonArray heals;
     for (const HealOp &hp : a.heals) {
         QJsonObject h;
@@ -99,6 +117,22 @@ bool load(const QString &imagePath, Adjustments &out) {
     for (const QJsonValue &v : o["curve"].toArray()) {
         QJsonArray p = v.toArray();
         if (p.size() == 2) a.curve.append(QPointF(p[0].toDouble(), p[1].toDouble()));
+    }
+    if (o.contains("levels")) {
+        QJsonObject lv = o["levels"].toObject();
+        auto chan = [](const QJsonObject &j) {
+            LevelsChannel c;
+            c.inBlack = j["inBlack"].toInt(0);
+            c.inWhite = j["inWhite"].toInt(255);
+            c.gamma = j["gamma"].toDouble(1.0);
+            c.outBlack = j["outBlack"].toInt(0);
+            c.outWhite = j["outWhite"].toInt(255);
+            return c;
+        };
+        a.levels.rgb = chan(lv["rgb"].toObject());
+        a.levels.r = chan(lv["r"].toObject());
+        a.levels.g = chan(lv["g"].toObject());
+        a.levels.b = chan(lv["b"].toObject());
     }
     for (const QJsonValue &v : o["heals"].toArray()) {
         QJsonObject h = v.toObject();

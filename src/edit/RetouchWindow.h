@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QList>
 #include <QMainWindow>
 #include <QMap>
 #include <QSet>
@@ -21,6 +22,7 @@ class QStackedWidget;
 class QDockWidget;
 class QListWidget;
 class TetherView;
+class LevelsPanel;
 
 // Separate top-level window for retouching photos. Own filmstrip selector plus
 // one tab per open photo, an adjustments dock, and JPEG/PNG export.
@@ -51,6 +53,8 @@ private slots:
 
 private:
     void buildDock();
+    void loadSession(const QString &dir);      // scan a folder for NEFs into the filmstrip
+    void rebuildRecentSessionsMenu();          // repopulate the recent-session items in the File menu
     void buildToolPanel(); // narrow left icon toolbar: Zoom / Crop / Spot Heal tools
     void deselectAllTools(); // uncheck all left-bar tools and exit their modes
     void buildToolOptionsBar(); // contextual per-tool options row under the main toolbar
@@ -77,14 +81,26 @@ private:
     class QAction *m_saveAllAction = nullptr;
     class QAction *m_exportAction = nullptr;
 
+    // File menu + anchors for the rebuildable recent-sessions section. The
+    // recent items live between these two separators (inserted before
+    // m_recentEndSeparator); both separators are hidden when the list is empty.
+    class QMenu *m_fileMenu = nullptr;
+    class QAction *m_recentBeginSeparator = nullptr; // separator above the recent items
+    class QAction *m_recentEndSeparator = nullptr;   // separator below the recent items
+    QList<class QAction *> m_recentActions;          // current recent-session menu entries
+
     // View menu togglable panels.
     QToolBar *m_toolsBar = nullptr; // left icon bar: Zoom / Crop / Spot Heal
     QDockWidget *m_adjustmentsDock = nullptr;
     QDockWidget *m_historyDock = nullptr;
     QListWidget *m_historyList = nullptr;
+    QDockWidget *m_levelsDock = nullptr;
+    LevelsPanel *m_levelsPanel = nullptr;
     void buildViewMenu();
     void buildHistoryDock();
-    void refreshHistoryPanel(); // rebuild the list from the current tab
+    void buildLevelsDock();
+    void refreshHistoryPanel();  // rebuild the list from the current tab
+    void refreshLevels();        // push the current tab's preview + levels into the panel
 
     // Dock controls.
     QSlider *m_brightness = nullptr;

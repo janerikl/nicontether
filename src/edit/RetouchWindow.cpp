@@ -3,7 +3,9 @@
 #include "edit/ExportDialog.h"
 #include "edit/CurveEditor.h"
 #include "edit/EditSidecar.h"
+#include "edit/RecentSessions.h"
 #include "ui/FilmstripWidget.h"
+#include "ui/LevelsPanel.h"
 #include "ui/TetherView.h"
 #include "ui/ControlsPanel.h"
 #include "capture/NefPreview.h"
@@ -112,13 +114,11 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
             [this] { setMode(Mode::Retouch); });
     connect(m_tetherModeAction, &QAction::triggered, this,
             [this] { setMode(Mode::Tether); });
-    toolbar->addSeparator();
-
-    m_saveAction = toolbar->addAction("Save");
+    // Save / Save All / Export live in the File menu only (not the toolbar).
+    m_saveAction = new QAction("Save", this);
     m_saveAction->setShortcut(QKeySequence::Save); // Ctrl+S
-    m_saveAllAction = toolbar->addAction("Save All");
-    toolbar->addSeparator();
-    m_exportAction = toolbar->addAction("Export…");
+    m_saveAllAction = new QAction("Save All", this);
+    m_exportAction = new QAction("Export…", this);
     // Open Session/Photos moved out of the toolbar (still in the File menu)
     // to make room for the contextual tool-options row below.
     auto *openSessionAction = new QAction("Open Session…", this);
@@ -129,14 +129,19 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     connect(m_saveAllAction, &QAction::triggered, this, &RetouchWindow::onSaveAll);
     connect(m_exportAction, &QAction::triggered, this, &RetouchWindow::onExport);
 
-    auto *fileMenu = menuBar()->addMenu("File");
-    fileMenu->addAction(openSessionAction);
-    fileMenu->addAction(openPhotosAction);
-    fileMenu->addSeparator();
-    fileMenu->addAction(m_saveAction);
-    fileMenu->addAction(m_saveAllAction);
-    fileMenu->addSeparator();
-    fileMenu->addAction(m_exportAction);
+    m_fileMenu = menuBar()->addMenu("File");
+    m_fileMenu->addAction(openSessionAction);
+    m_fileMenu->addAction(openPhotosAction);
+    // Recent sessions live inline here, between these two separators. Recent
+    // item actions are inserted before m_recentEndSeparator by
+    // rebuildRecentSessionsMenu(); both separators hide when the list is empty.
+    m_recentBeginSeparator = m_fileMenu->addSeparator();
+    m_recentEndSeparator = m_fileMenu->addSeparator();
+    m_fileMenu->addAction(m_saveAction);
+    m_fileMenu->addAction(m_saveAllAction);
+    m_fileMenu->addSeparator();
+    m_fileMenu->addAction(m_exportAction);
+    rebuildRecentSessionsMenu();
 
     auto *editMenu = menuBar()->addMenu("Edit");
     m_undoAction = editMenu->addAction("Undo");
@@ -187,6 +192,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     buildToolOptionsBar();
     buildDock();
     buildHistoryDock();
+    buildLevelsDock();
     buildViewMenu();
 
     // Tether chrome: camera controls dock + tether action toolbar. Visibility is
@@ -227,6 +233,7 @@ void RetouchWindow::buildViewMenu() {
     if (m_toolsBar) viewMenu->addAction(m_toolsBar->toggleViewAction());
     if (m_adjustmentsDock) viewMenu->addAction(m_adjustmentsDock->toggleViewAction());
     if (m_historyDock) viewMenu->addAction(m_historyDock->toggleViewAction());
+    if (m_levelsDock) viewMenu->addAction(m_levelsDock->toggleViewAction());
 
     auto *filmstripAction = new QAction("Filmstrip", this);
     filmstripAction->setCheckable(true);
@@ -586,6 +593,42 @@ void RetouchWindow::refreshHistoryPanel() {
         m_historyList->setCurrentRow(cur);
 }
 
+void RetouchWindow::buildLevelsDock() {
+    auto *dock = new QDockWidget("Levels", this);
+    m_levelsDock = dock;
+    dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    m_levelsPanel = new LevelsPanel;
+    dock->setWidget(m_levelsPanel);
+    addDockWidget(Qt::RightDockWidgetArea, dock);
+    // Pin above the Adjustments dock so it reads at the top-right.
+    if (m_adjustmentsDock)
+        splitDockWidget(dock, m_adjustmentsDock, Qt::Vertical);
+
+    connect(m_levelsPanel, &LevelsPanel::levelsChanged, this,
+            [this](const Levels &lv) {
+                if (m_syncing) return;
+                RetouchTab *tab = currentTab();
+                if (!tab || !tab->isReady()) return;
+                Adjustments a = tab->adjustments();
+                a.levels = lv;
+                tab->setAdjustments(a);
+            });
+}
+
+void RetouchWindow::refreshLevels() {
+    if (!m_levelsPanel) return;
+    RetouchTab *tab = currentTab();
+    if (tab && tab->isReady()) {
+        m_syncing = true;
+        m_levelsPanel->setLevels(tab->adjustments().levels);
+        m_syncing = false;
+        if (!tab->previewImage().isNull())
+            m_levelsPanel->setImage(tab->previewImage());
+    } else {
+        m_levelsPanel->clear();
+    }
+}
+
 RetouchTab *RetouchWindow::currentTab() const {
     return qobject_cast<RetouchTab *>(m_tabs->currentWidget());
 }
@@ -619,6 +662,7 @@ void RetouchWindow::openPhoto(const QString &path) {
             setDockEnabled(ok);
             syncDockFromTab();
             refreshHistoryPanel();
+            refreshLevels();
             m_statusLabel->setText(ok ? "Ready: " + QFileInfo(tab->path()).fileName()
                                       : "Failed to decode " + QFileInfo(tab->path()).fileName());
         }
@@ -665,6 +709,9 @@ void RetouchWindow::openPhoto(const QString &path) {
         if (tab != currentTab()) return;
         QSignalBlocker b(m_healBrush);
         m_healBrush->setValue(radius); // reflect ctrl+wheel resize in the dock
+    });
+    connect(tab, &RetouchTab::previewUpdated, this, [this, tab] {
+        if (tab == currentTab()) m_levelsPanel->setImage(tab->previewImage());
     });
     connect(tab, &RetouchTab::editStateChanged, this,
             [this, tab](bool dirty, bool hasEdits) {
@@ -753,6 +800,7 @@ void RetouchWindow::onTabChanged(int) {
     m_redoAction->setEnabled(tab && tab->canRedo());
     syncDockFromTab();
     refreshHistoryPanel();
+    refreshLevels();
     if (ready) {
         QSignalBlocker b(m_zoomSlider);
         int pct = int(std::lround(tab->zoomPercent()));
@@ -824,6 +872,7 @@ void RetouchWindow::setDockEnabled(bool enabled) {
     for (QWidget *w : widgets)
         if (w) w->setEnabled(enabled);
     if (!enabled && m_cropApply) m_cropApply->setEnabled(false);
+    if (!enabled && m_levelsPanel) m_levelsPanel->clear();
 }
 
 void RetouchWindow::onOpenSession() {
@@ -831,6 +880,17 @@ void RetouchWindow::onOpenSession() {
         this, "Open session folder",
         QDir(QDir::homePath()).filePath("Pictures/Tether"));
     if (dir.isEmpty()) return;
+    loadSession(dir);
+}
+
+// Scan a session folder for NEFs into the filmstrip, then record it as a
+// recent session and refresh the File-menu section. Shared by onOpenSession()
+// and the recent-entry click handler.
+void RetouchWindow::loadSession(const QString &dir) {
+    // A session replaces the filmstrip contents, so it shows only this
+    // session's photos rather than appending to whatever was there before.
+    m_filmstrip->clear();
+    m_filmstripPaths.clear();
 
     int count = 0;
     const QFileInfoList files =
@@ -843,6 +903,47 @@ void RetouchWindow::onOpenSession() {
     }
     m_statusLabel->setText(
         QString("Loaded %1 photo(s) from %2").arg(count).arg(dir));
+
+    RecentSessions::add(QDir(dir).absolutePath());
+    rebuildRecentSessionsMenu();
+}
+
+// Repopulate the recent-session entries between m_recentBeginSeparator and
+// m_recentEndSeparator, reflecting the current RecentSessions::load(). Both
+// separators are hidden when the list is empty.
+void RetouchWindow::rebuildRecentSessionsMenu() {
+    if (!m_fileMenu) return;
+    for (QAction *a : m_recentActions) {
+        m_fileMenu->removeAction(a);
+        a->deleteLater();
+    }
+    m_recentActions.clear();
+
+    const QStringList recent = RecentSessions::load();
+    for (const QString &dir : recent) {
+        auto *act = new QAction(QDir(dir).dirName(), this);
+        act->setToolTip(dir);
+        connect(act, &QAction::triggered, this, [this, dir] {
+            if (!QDir(dir).exists()) {
+                QMessageBox::warning(
+                    this, "Open Session",
+                    "This session folder no longer exists:\n" + dir);
+                RecentSessions::remove(dir);
+                rebuildRecentSessionsMenu();
+                return;
+            }
+            loadSession(dir);
+        });
+        // Insert before the closing separator so entries sit in the section.
+        m_fileMenu->insertAction(m_recentEndSeparator, act);
+        m_recentActions.append(act);
+    }
+    // Menu tooltips are not shown by default; enable them for path hints.
+    m_fileMenu->setToolTipsVisible(true);
+
+    const bool hasRecent = !m_recentActions.isEmpty();
+    if (m_recentBeginSeparator) m_recentBeginSeparator->setVisible(hasRecent);
+    if (m_recentEndSeparator) m_recentEndSeparator->setVisible(hasRecent);
 }
 
 void RetouchWindow::onOpenPhotos() {

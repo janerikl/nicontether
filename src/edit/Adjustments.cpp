@@ -48,6 +48,23 @@ void buildCurveLut(const QVector<QPointF> &pts, int lut[256]) {
     }
 }
 
+// Build a 256-entry LUT for one Levels channel: clip to [inBlack,inWhite],
+// apply the midtone gamma, then map into the [outBlack,outWhite] output range.
+void buildLevelsLut(const LevelsChannel &c, int lut[256]) {
+    const double inB = c.inBlack;
+    const double inW = c.inWhite;
+    const double span = std::max(1.0, inW - inB); // guard divide-by-zero
+    const double invGamma = 1.0 / std::clamp(c.gamma, 0.01, 9.99);
+    const double outB = c.outBlack;
+    const double outSpan = c.outWhite - c.outBlack;
+    for (int i = 0; i < 256; ++i) {
+        double v = (i - inB) / span;
+        v = clampd(v, 0.0, 1.0);
+        v = std::pow(v, invGamma);
+        lut[i] = clamp8(int(std::lround(outB + v * outSpan)));
+    }
+}
+
 // Separable moving-average blur — a fast approximation of a Gaussian, used for
 // clarity (large radius) and sharpening (small radius). radius in pixels.
 QImage boxBlur(const QImage &src, int radius) {
@@ -112,7 +129,8 @@ bool hasToneEdits(const Adjustments &adj) {
            adj.saturation || adj.vibrance || adj.temperature || adj.tint ||
            adj.clarity || adj.sharpen || adj.vignette ||
            std::abs(adj.wbR - 1.0) > 1e-4 || std::abs(adj.wbG - 1.0) > 1e-4 ||
-           std::abs(adj.wbB - 1.0) > 1e-4 || adj.hasCurve();
+           std::abs(adj.wbB - 1.0) > 1e-4 || adj.hasCurve() ||
+           !adj.levels.isIdentity();
 }
 
 QImage applyAdjustments(const QImage &base, const Adjustments &adj) {
@@ -138,6 +156,13 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj) {
     int curveLut[256];
     buildCurveLut(adj.curve, curveLut);
 
+    // Levels LUTs: composite (all channels) then per-channel.
+    int lvlRgb[256], lvlR[256], lvlG[256], lvlB[256];
+    buildLevelsLut(adj.levels.rgb, lvlRgb);
+    buildLevelsLut(adj.levels.r, lvlR);
+    buildLevelsLut(adj.levels.g, lvlG);
+    buildLevelsLut(adj.levels.b, lvlB);
+
     const double tempF = adj.temperature / 100.0; // -1..1
     const double tintF = adj.tint / 100.0;
     const double wbR = adj.wbR * (1.0 + 0.4 * tempF);
@@ -158,10 +183,13 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj) {
             // White balance (eyedropper gains + temp/tint).
             r *= wbR; g *= wbG; b *= wbB;
 
-            // Curve then contrast then brightness.
+            // Curve, then Levels (composite then per-channel), then contrast.
             r = curveLut[clamp8(int(r))];
             g = curveLut[clamp8(int(g))];
             b = curveLut[clamp8(int(b))];
+            r = lvlR[lvlRgb[clamp8(int(r))]];
+            g = lvlG[lvlRgb[clamp8(int(g))]];
+            b = lvlB[lvlRgb[clamp8(int(b))]];
             r = contrastFactor * (r - 128) + 128 + adj.brightness;
             g = contrastFactor * (g - 128) + 128 + adj.brightness;
             b = contrastFactor * (b - 128) + 128 + adj.brightness;
@@ -271,6 +299,7 @@ QString historyStepLabel(const Adjustments &prev, const Adjustments &curr) {
     if (curr.sharpen != prev.sharpen)         return QStringLiteral("Sharpen");
     if (curr.vignette != prev.vignette)       return QStringLiteral("Vignette");
     if (curr.curve != prev.curve)             return QStringLiteral("Curve");
+    if (curr.levels != prev.levels)           return QStringLiteral("Levels");
     if (curr.heals != prev.heals)             return QStringLiteral("Spot Heal");
     if (curr.rotationQuadrants != prev.rotationQuadrants)
         return QStringLiteral("Rotate");

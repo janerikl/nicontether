@@ -66,6 +66,9 @@ public:
 
     QImage renderFullRes() const; // for export
 
+    // Latest toned preview render (display-scaled). Empty until first render.
+    QImage previewImage() const { return m_lastEdited; }
+
 signals:
     void decoded(bool ok);
     void cropPending(bool hasSelection);
@@ -78,6 +81,7 @@ signals:
     void historyListChanged(); // history entries or current index changed
     void adjustmentsReplaced(); // undo/redo swapped the whole adjustment set
     void healBrushChanged(int radiusDisplayPx); // ctrl+wheel resized the brush
+    void previewUpdated(); // a new toned preview render is available
 
 private slots:
     void onDecodeFinished();

@@ -6,6 +6,48 @@
 #include <QPointF>
 #include <QString>
 #include <QMetaType>
+#include <cmath>
+
+// One channel of a Photoshop-style Levels adjustment: input black/white points
+// clip and stretch the tonal range, gamma remaps the midtones, and the output
+// range compresses the result. Implemented as a 256-entry LUT (see
+// buildLevelsLut) — a constrained tone curve, applied composite-then-per-channel.
+struct LevelsChannel {
+    int inBlack = 0;     // 0..255 — input shadow clip
+    int inWhite = 255;   // 0..255 — input highlight clip
+    double gamma = 1.0;  // 0.1..9.99 — midtone; >1 brightens, <1 darkens
+    int outBlack = 0;    // 0..255 — output shadow floor
+    int outWhite = 255;  // 0..255 — output highlight ceiling
+
+    bool isIdentity() const {
+        return inBlack == 0 && inWhite == 255 && std::abs(gamma - 1.0) < 1e-4 &&
+               outBlack == 0 && outWhite == 255;
+    }
+    bool operator==(const LevelsChannel &o) const {
+        return inBlack == o.inBlack && inWhite == o.inWhite &&
+               std::abs(gamma - o.gamma) < 1e-9 && outBlack == o.outBlack &&
+               outWhite == o.outWhite;
+    }
+    bool operator!=(const LevelsChannel &o) const { return !(*this == o); }
+};
+
+// Full Levels: a composite (rgb) channel applied to all three channels, plus
+// independent per-channel adjustments for colour correction.
+struct Levels {
+    LevelsChannel rgb; // composite, applied to R, G and B
+    LevelsChannel r;
+    LevelsChannel g;
+    LevelsChannel b;
+
+    bool isIdentity() const {
+        return rgb.isIdentity() && r.isIdentity() && g.isIdentity() &&
+               b.isIdentity();
+    }
+    bool operator==(const Levels &o) const {
+        return rgb == o.rgb && r == o.r && g == o.g && b == o.b;
+    }
+    bool operator!=(const Levels &o) const { return !(*this == o); }
+};
 
 // A single spot-heal: a circular region (in oriented-image coordinates, i.e.
 // after rotation/flip but before crop) that gets replaced with a nearby patch.
@@ -45,6 +87,9 @@ struct Adjustments {
     // means no curve. Applied to all channels via a 256-entry LUT.
     QVector<QPointF> curve;
 
+    // Photoshop-style Levels (composite + per-channel). Applied after the curve.
+    Levels levels;
+
     // Spot-heal ops (oriented-image coords; applied before crop).
     QVector<HealOp> heals;
 
@@ -63,7 +108,8 @@ struct Adjustments {
                temperature == o.temperature && tint == o.tint &&
                wbR == o.wbR && wbG == o.wbG && wbB == o.wbB &&
                clarity == o.clarity && sharpen == o.sharpen &&
-               vignette == o.vignette && curve == o.curve && heals == o.heals &&
+               vignette == o.vignette && curve == o.curve && levels == o.levels &&
+               heals == o.heals &&
                rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
                flipV == o.flipV && cropRect == o.cropRect;
     }

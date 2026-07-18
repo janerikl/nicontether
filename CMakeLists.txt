@@ -27,6 +27,8 @@ add_executable(nikontether
     src/ui/PannableScrollArea.cpp
     src/ui/ControlsPanel.cpp
     src/ui/FilmstripWidget.cpp
+    src/ui/HistogramWidget.cpp
+    src/ui/LevelsPanel.cpp
     src/ui/PreviewWindow.cpp
     src/ui/AppIcon.cpp
     src/edit/Adjustments.cpp
@@ -35,6 +37,7 @@ add_executable(nikontether
     src/edit/RetouchTab.cpp
     src/edit/RetouchWindow.cpp
     src/edit/ExportPreset.cpp
+    src/edit/RecentSessions.cpp
     src/edit/ExportDialog.cpp
     src/edit/CurveEditor.cpp
     src/edit/EditSidecar.cpp
