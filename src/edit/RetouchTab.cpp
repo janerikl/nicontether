@@ -49,6 +49,10 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
         m_healRadiusDisplay = r; // keep in sync so heal ops use the new size
         emit healBrushChanged(r);
     });
+    connect(m_canvas, &ImageCanvas::maskRadialDragged, this, &RetouchTab::onMaskRadial);
+    connect(m_canvas, &ImageCanvas::maskLinearDragged, this, &RetouchTab::onMaskLinear);
+    connect(m_canvas, &ImageCanvas::maskBrushPoint, this, &RetouchTab::onMaskBrushPoint);
+    connect(m_canvas, &ImageCanvas::maskEditFinished, this, &RetouchTab::onMaskEditFinished);
 
     m_canvas->setPlaceholder("Decoding RAW…");
 
@@ -143,8 +147,13 @@ void RetouchTab::commitHistory() {
 void RetouchTab::applyHistoryState() {
     m_adj = m_history[m_histIndex];
     rebuildGeom();
+    // Keep the active-mask index valid after undo/redo changes the mask list.
+    if (m_activeMask >= m_adj.masks.size())
+        m_activeMask = m_adj.masks.isEmpty() ? -1 : m_adj.masks.size() - 1;
+    pushMaskGizmo();
     m_dirty = true;
     emit adjustmentsReplaced();
+    emit masksChanged();
     emit editStateChanged(m_dirty, hasEdits());
     emit historyChanged(canUndo(), canRedo());
     emit historyListChanged();
@@ -347,6 +356,108 @@ void RetouchTab::onHealAt(const QPoint &imgPoint) {
     m_adj.heals.append(op);
     rebuildGeom();
     markEdited();
+}
+
+// ---- Local adjustment masks ------------------------------------------------
+
+void RetouchTab::pushMaskGizmo() {
+    if (m_activeMask >= 0 && m_activeMask < m_adj.masks.size()) {
+        const Mask &m = m_adj.masks[m_activeMask];
+        m_canvas->setMaskMode(m.type, m_maskMode);
+        m_canvas->setActiveMask(true, m);
+    } else {
+        m_canvas->setActiveMask(false, Mask{});
+    }
+}
+
+void RetouchTab::setMaskMode(bool on) {
+    m_maskMode = on;
+    // Enable the canvas for the active mask's type (default Radial if none).
+    MaskType kind = (m_activeMask >= 0 && m_activeMask < m_adj.masks.size())
+                        ? m_adj.masks[m_activeMask].type
+                        : MaskType::Radial;
+    m_canvas->setMaskMode(kind, on);
+    pushMaskGizmo();
+    if (on) m_canvas->setFocus();
+}
+
+int RetouchTab::addMask(MaskType type) {
+    Mask m;
+    m.type = type;
+    m_adj.masks.append(m);
+    m_activeMask = m_adj.masks.size() - 1;
+    m_maskMode = true;
+    m_canvas->setMaskMode(type, true);
+    pushMaskGizmo();
+    emit masksChanged();
+    return m_activeMask;
+}
+
+void RetouchTab::selectMask(int index) {
+    if (index < -1 || index >= m_adj.masks.size()) return;
+    m_activeMask = index;
+    pushMaskGizmo();
+    emit masksChanged();
+}
+
+void RetouchTab::deleteActiveMask() {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    m_adj.masks.remove(m_activeMask);
+    m_activeMask = m_adj.masks.isEmpty() ? -1
+                                         : qMin(m_activeMask, m_adj.masks.size() - 1);
+    pushMaskGizmo();
+    retone();
+    markEdited();
+    emit masksChanged();
+}
+
+void RetouchTab::setActiveMaskAdjust(const MaskAdjust &a) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    if (m_adj.masks[m_activeMask].adj == a) return;
+    m_adj.masks[m_activeMask].adj = a;
+    retone();
+    markEdited();
+}
+
+void RetouchTab::setActiveMaskShape(bool inverted, double feather,
+                                    double hardness, double brushRadius) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    m.inverted = inverted;
+    m.feather = feather;
+    m.hardness = hardness;
+    m.brushRadius = brushRadius;
+    pushMaskGizmo();
+    retone();
+    markEdited();
+}
+
+void RetouchTab::onMaskRadial(const QPointF &centerNorm, double radiusNorm) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    m.center = centerNorm;
+    m.radiusX = m.radiusY = std::max(0.01, radiusNorm);
+    pushMaskGizmo();
+    retone();
+}
+
+void RetouchTab::onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    m.p0 = p0Norm;
+    m.p1 = p1Norm;
+    pushMaskGizmo();
+    retone();
+}
+
+void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    m_adj.masks[m_activeMask].stroke.append(ptNorm);
+    retone();
+}
+
+void RetouchTab::onMaskEditFinished() {
+    markEdited(); // schedule one coalesced undo step for the whole drag
 }
 
 void RetouchTab::zoomFit() { m_canvas->zoomFit(); }

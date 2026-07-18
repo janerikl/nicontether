@@ -29,6 +29,7 @@ add_executable(nikontether
     src/ui/FilmstripWidget.cpp
     src/ui/HistogramWidget.cpp
     src/ui/LevelsPanel.cpp
+    src/ui/MaskPanel.cpp
     src/ui/PreviewWindow.cpp
     src/ui/AppIcon.cpp
     src/edit/Adjustments.cpp

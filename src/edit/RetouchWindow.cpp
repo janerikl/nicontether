@@ -6,6 +6,7 @@
 #include "edit/RecentSessions.h"
 #include "ui/FilmstripWidget.h"
 #include "ui/LevelsPanel.h"
+#include "ui/MaskPanel.h"
 #include "ui/TetherView.h"
 #include "ui/ControlsPanel.h"
 #include "capture/NefPreview.h"
@@ -90,6 +91,20 @@ QIcon makeHealIcon() {
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(70, 70, 70, 140));
     p.drawEllipse(QRectF(10, 10, 8, 8)); // spot being healed
+    return QIcon(pm);
+}
+QIcon makeMaskIcon() {
+    QPixmap pm(kIconPx, kIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    // Half-filled circle: the classic "mask" motif.
+    p.setPen(QPen(QColor(70, 70, 70), 2));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QRectF(4, 4, 20, 20));
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(70, 70, 70, 140));
+    p.drawPie(QRectF(4, 4, 20, 20), 90 * 16, 180 * 16);
     return QIcon(pm);
 }
 } // namespace
@@ -211,6 +226,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     buildDock();
     buildHistoryDock();
     buildLevelsDock();
+    buildMaskDock();
     buildViewMenu();
 
     // Tether chrome: camera controls dock + tether action toolbar. Visibility is
@@ -293,6 +309,13 @@ void RetouchWindow::buildToolPanel() {
     m_healToggle->setToolTip("Spot Heal (H) — click blemishes; Ctrl+wheel resizes brush");
     m_toolsBar->addWidget(m_healToggle);
 
+    m_maskToggle = new QToolButton;
+    m_maskToggle->setIcon(makeMaskIcon());
+    m_maskToggle->setCheckable(true);
+    m_maskToggle->setShortcut(QKeySequence(Qt::Key_K));
+    m_maskToggle->setToolTip("Local Masks (K) — radial / graduated / brush adjustments");
+    m_toolsBar->addWidget(m_maskToggle);
+
     // Each tool turns off the other two (and the WB eyedropper) when selected,
     // and swaps in that tool's options row under the main toolbar.
     connect(m_toolZoom, &QToolButton::toggled, this, [this](bool on) {
@@ -301,7 +324,9 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
             { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
-            if (tab) { tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); }
+            { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+            if (tab) { tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
+            if (m_maskDock) m_maskDock->hide();
             m_toolOptionsStack->setCurrentIndex(0);
             m_toolOptionsBar->setVisible(true);
         } else {
@@ -315,7 +340,9 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
             { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setHealMode(false); tab->setWbPickMode(false); }
+            { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
+            if (m_maskDock) m_maskDock->hide();
             m_toolOptionsStack->setCurrentIndex(1);
             m_toolOptionsBar->setVisible(true);
         } else {
@@ -332,7 +359,9 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
             { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setWbPickMode(false); }
+            { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
+            if (m_maskDock) m_maskDock->hide();
             m_toolOptionsStack->setCurrentIndex(2);
             m_toolOptionsBar->setVisible(true);
         } else {
@@ -342,6 +371,22 @@ void RetouchWindow::buildToolPanel() {
             tab->setHealBrush(m_healBrush->value());
             tab->setHealMode(on);
         }
+    });
+    connect(m_maskToggle, &QToolButton::toggled, this, [this](bool on) {
+        RetouchTab *tab = currentTab();
+        if (on) {
+            { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
+            { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
+            { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
+            { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); }
+            m_toolOptionsBar->setVisible(false); // masks use their own dock
+            if (m_maskDock) { m_maskDock->show(); m_maskDock->raise(); }
+        } else {
+            if (m_maskDock) m_maskDock->hide();
+        }
+        if (tab && tab->isReady()) tab->setMaskMode(on);
+        refreshMaskPanel();
     });
 }
 
@@ -647,6 +692,52 @@ void RetouchWindow::refreshLevels() {
     }
 }
 
+void RetouchWindow::buildMaskDock() {
+    auto *dock = new QDockWidget("Masks", this);
+    m_maskDock = dock;
+    dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    m_maskPanel = new MaskPanel;
+    dock->setWidget(m_maskPanel);
+    addDockWidget(Qt::RightDockWidgetArea, dock);
+    if (m_adjustmentsDock) tabifyDockWidget(m_adjustmentsDock, dock);
+    dock->hide(); // shown only while the Mask tool is active
+
+    connect(m_maskPanel, &MaskPanel::addMaskRequested, this, [this](MaskType t) {
+        RetouchTab *tab = currentTab();
+        if (tab && tab->isReady()) {
+            tab->addMask(t);
+            refreshMaskPanel();
+        }
+    });
+    connect(m_maskPanel, &MaskPanel::selectMaskRequested, this, [this](int i) {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->selectMask(i);
+    });
+    connect(m_maskPanel, &MaskPanel::deleteMaskRequested, this, [this] {
+        RetouchTab *tab = currentTab();
+        if (tab) { tab->deleteActiveMask(); refreshMaskPanel(); }
+    });
+    connect(m_maskPanel, &MaskPanel::maskAdjustChanged, this,
+            [this](const MaskAdjust &a) {
+                RetouchTab *tab = currentTab();
+                if (tab) tab->setActiveMaskAdjust(a);
+            });
+    connect(m_maskPanel, &MaskPanel::maskShapeChanged, this,
+            [this](bool inv, double f, double h, double br) {
+                RetouchTab *tab = currentTab();
+                if (tab) tab->setActiveMaskShape(inv, f, h, br);
+            });
+}
+
+void RetouchWindow::refreshMaskPanel() {
+    if (!m_maskPanel) return;
+    RetouchTab *tab = currentTab();
+    if (tab && tab->isReady())
+        m_maskPanel->setMasks(tab->masks(), tab->activeMaskIndex());
+    else
+        m_maskPanel->clear();
+}
+
 void RetouchWindow::mergePortable(const Adjustments &src, Adjustments &dst) {
     // Portable (image-independent) fields only; geometry & heals stay as dst had.
     dst.brightness = src.brightness;
@@ -818,6 +909,9 @@ void RetouchWindow::openPhoto(const QString &path) {
     connect(tab, &RetouchTab::previewUpdated, this, [this, tab] {
         if (tab == currentTab()) m_levelsPanel->setImage(tab->previewImage());
     });
+    connect(tab, &RetouchTab::masksChanged, this, [this, tab] {
+        if (tab == currentTab()) refreshMaskPanel();
+    });
     connect(tab, &RetouchTab::editStateChanged, this,
             [this, tab](bool dirty, bool hasEdits) {
                 FilmstripWidget::Badge b = dirty ? FilmstripWidget::Unsaved
@@ -893,6 +987,12 @@ void RetouchWindow::deselectAllTools() {
         m_healToggle->setChecked(false);
     }
     if (tab) tab->setHealMode(false);
+    if (m_maskToggle) {
+        QSignalBlocker b(m_maskToggle);
+        m_maskToggle->setChecked(false);
+    }
+    if (tab) tab->setMaskMode(false);
+    if (m_maskDock) m_maskDock->hide();
     if (m_toolOptionsBar) m_toolOptionsBar->setVisible(false);
 }
 
@@ -906,6 +1006,7 @@ void RetouchWindow::onTabChanged(int) {
     syncDockFromTab();
     refreshHistoryPanel();
     refreshLevels();
+    refreshMaskPanel();
     updateEditClipboardActions();
     if (ready) {
         QSignalBlocker b(m_zoomSlider);
@@ -979,6 +1080,7 @@ void RetouchWindow::setDockEnabled(bool enabled) {
         if (w) w->setEnabled(enabled);
     if (!enabled && m_cropApply) m_cropApply->setEnabled(false);
     if (!enabled && m_levelsPanel) m_levelsPanel->clear();
+    if (!enabled && m_maskPanel) m_maskPanel->clear();
 }
 
 void RetouchWindow::onOpenSession() {

@@ -67,6 +67,43 @@ bool save(const QString &imagePath, const Adjustments &a) {
         o["levels"] = lv;
     }
 
+    if (!a.masks.isEmpty()) {
+        QJsonArray masks;
+        for (const Mask &m : a.masks) {
+            QJsonObject j;
+            j["type"] = int(m.type);
+            j["inverted"] = m.inverted;
+            j["feather"] = m.feather;
+            j["cx"] = m.center.x();
+            j["cy"] = m.center.y();
+            j["rx"] = m.radiusX;
+            j["ry"] = m.radiusY;
+            j["angle"] = m.angle;
+            j["p0x"] = m.p0.x();
+            j["p0y"] = m.p0.y();
+            j["p1x"] = m.p1.x();
+            j["p1y"] = m.p1.y();
+            j["brushRadius"] = m.brushRadius;
+            j["hardness"] = m.hardness;
+            QJsonArray stroke;
+            for (const QPointF &pt : m.stroke)
+                stroke.append(QJsonArray{pt.x(), pt.y()});
+            j["stroke"] = stroke;
+            QJsonObject ad;
+            ad["brightness"] = m.adj.brightness;
+            ad["contrast"] = m.adj.contrast;
+            ad["highlights"] = m.adj.highlights;
+            ad["shadows"] = m.adj.shadows;
+            ad["saturation"] = m.adj.saturation;
+            ad["vibrance"] = m.adj.vibrance;
+            ad["temperature"] = m.adj.temperature;
+            ad["tint"] = m.adj.tint;
+            j["adj"] = ad;
+            masks.append(j);
+        }
+        o["masks"] = masks;
+    }
+
     QJsonArray heals;
     for (const HealOp &hp : a.heals) {
         QJsonObject h;
@@ -133,6 +170,36 @@ bool load(const QString &imagePath, Adjustments &out) {
         a.levels.r = chan(lv["r"].toObject());
         a.levels.g = chan(lv["g"].toObject());
         a.levels.b = chan(lv["b"].toObject());
+    }
+    for (const QJsonValue &v : o["masks"].toArray()) {
+        QJsonObject j = v.toObject();
+        Mask m;
+        m.type = static_cast<MaskType>(j["type"].toInt(0));
+        m.inverted = j["inverted"].toBool();
+        m.feather = j["feather"].toDouble(0.5);
+        m.center = QPointF(j["cx"].toDouble(0.5), j["cy"].toDouble(0.5));
+        m.radiusX = j["rx"].toDouble(0.25);
+        m.radiusY = j["ry"].toDouble(0.25);
+        m.angle = j["angle"].toDouble(0.0);
+        m.p0 = QPointF(j["p0x"].toDouble(0.5), j["p0y"].toDouble(0.2));
+        m.p1 = QPointF(j["p1x"].toDouble(0.5), j["p1y"].toDouble(0.6));
+        m.brushRadius = j["brushRadius"].toDouble(0.06);
+        m.hardness = j["hardness"].toDouble(0.5);
+        for (const QJsonValue &sv : j["stroke"].toArray()) {
+            QJsonArray p = sv.toArray();
+            if (p.size() == 2)
+                m.stroke.append(QPointF(p[0].toDouble(), p[1].toDouble()));
+        }
+        QJsonObject ad = j["adj"].toObject();
+        m.adj.brightness = ad["brightness"].toInt();
+        m.adj.contrast = ad["contrast"].toInt();
+        m.adj.highlights = ad["highlights"].toInt();
+        m.adj.shadows = ad["shadows"].toInt();
+        m.adj.saturation = ad["saturation"].toInt();
+        m.adj.vibrance = ad["vibrance"].toInt();
+        m.adj.temperature = ad["temperature"].toInt();
+        m.adj.tint = ad["tint"].toInt();
+        a.masks.append(m);
     }
     for (const QJsonValue &v : o["heals"].toArray()) {
         QJsonObject h = v.toObject();

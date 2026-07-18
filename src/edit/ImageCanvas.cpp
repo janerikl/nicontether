@@ -64,6 +64,31 @@ void ImageCanvas::setZoomMode(bool on) {
     setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
 }
 
+void ImageCanvas::setMaskMode(MaskType kind, bool on) {
+    m_maskMode = on;
+    m_maskKind = kind;
+    if (!on) m_maskDragging = false;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+void ImageCanvas::setActiveMask(bool has, const Mask &m) {
+    m_hasActiveMask = has;
+    m_activeMask = m;
+    if (has) m_maskKind = m.type;
+    update();
+}
+
+QPointF ImageCanvas::normPointAt(const QPoint &pos) const {
+    QRect tr = targetRect();
+    if (m_img.isNull() || tr.width() <= 0 || tr.height() <= 0)
+        return QPointF(0, 0);
+    double W = m_img.width();
+    double ix = (pos.x() - tr.x()) * (m_img.width() / double(tr.width()));
+    double iy = (pos.y() - tr.y()) * (m_img.height() / double(tr.height()));
+    return QPointF(ix / W, iy / W); // both axes normalized to width
+}
+
 void ImageCanvas::setBrushRadius(int displayPx) {
     m_brushRadius = displayPx;
     if (m_healMode) update();
@@ -285,6 +310,51 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         p.setBrush(QColor(255, 255, 255, 30));
         p.drawEllipse(QPointF(m_mousePos), rad, rad);
     }
+
+    // Local-mask gizmo.
+    if (m_maskMode && m_hasActiveMask) {
+        const double W = m_img.width();
+        auto toScreen = [&](const QPointF &n) {
+            return m_topLeft + QPointF(n.x() * W * m_scale, n.y() * W * m_scale);
+        };
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QColor line(120, 200, 255);
+        const Mask &m = m_activeMask;
+        if (m.type == MaskType::Radial) {
+            QPointF c = toScreen(m.center);
+            double rx = m.radiusX * W * m_scale, ry = m.radiusY * W * m_scale;
+            p.save();
+            p.translate(c);
+            p.rotate(m.angle * 180.0 / M_PI);
+            p.setPen(QPen(line, 1.5, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(QPointF(0, 0), rx, ry);
+            p.restore();
+            p.setPen(QPen(line, 1));
+            p.drawLine(c + QPointF(-5, 0), c + QPointF(5, 0));
+            p.drawLine(c + QPointF(0, -5), c + QPointF(0, 5));
+        } else if (m.type == MaskType::Linear) {
+            QPointF a = toScreen(m.p0), b = toScreen(m.p1);
+            QPointF d = b - a;
+            double len = std::hypot(d.x(), d.y());
+            QPointF perp = len > 1e-3 ? QPointF(-d.y() / len, d.x() / len)
+                                      : QPointF(0, 0);
+            p.setPen(QPen(line, 1.5));
+            p.drawLine(a, b);
+            p.setPen(QPen(line, 2)); // solid tick at full-effect end (p0)
+            p.drawLine(a - perp * 30, a + perp * 30);
+            p.setPen(QPen(line, 1, Qt::DashLine)); // dashed at zero end (p1)
+            p.drawLine(b - perp * 30, b + perp * 30);
+            p.setBrush(line);
+            p.drawEllipse(a, 3, 3);
+            p.drawEllipse(b, 3, 3);
+        } else { // Brush: show the brush cursor
+            double rad = m.brushRadius * W * m_scale;
+            p.setPen(QPen(QColor(255, 255, 255, 200), 1));
+            p.setBrush(QColor(120, 200, 255, 30));
+            p.drawEllipse(QPointF(m_mousePos), rad, rad);
+        }
+    }
 }
 
 // ---- Mouse -----------------------------------------------------------------
@@ -313,6 +383,24 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
     if (m_healMode && ev->button() == Qt::LeftButton) {
         QPoint ip = imagePointAt(ev->pos());
         if (ip.x() >= 0) emit healAt(ip);
+        return;
+    }
+
+    // Local-mask editing: a drag defines the active mask's geometry.
+    if (m_maskMode && ev->button() == Qt::LeftButton) {
+        QPointF n = normPointAt(ev->pos());
+        m_maskDragging = true;
+        m_maskCenterNorm = n;
+        m_mousePos = ev->pos();
+        if (m_maskKind == MaskType::Radial)
+            emit maskRadialDragged(n, 0.0);
+        else if (m_maskKind == MaskType::Linear)
+            emit maskLinearDragged(n, n);
+        else {
+            m_lastBrushNorm = n;
+            emit maskBrushPoint(n);
+        }
+        update();
         return;
     }
 
@@ -356,6 +444,28 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
 }
 
 void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
+    if (m_maskMode) {
+        m_mousePos = ev->pos();
+        if (m_maskDragging) {
+            QPointF n = normPointAt(ev->pos());
+            if (m_maskKind == MaskType::Radial) {
+                double dx = n.x() - m_maskCenterNorm.x();
+                double dy = n.y() - m_maskCenterNorm.y();
+                emit maskRadialDragged(m_maskCenterNorm, std::sqrt(dx * dx + dy * dy));
+            } else if (m_maskKind == MaskType::Linear) {
+                emit maskLinearDragged(m_maskCenterNorm, n);
+            } else {
+                double dx = n.x() - m_lastBrushNorm.x();
+                double dy = n.y() - m_lastBrushNorm.y();
+                if (dx * dx + dy * dy > 0.004 * 0.004) { // throttle stroke samples
+                    m_lastBrushNorm = n;
+                    emit maskBrushPoint(n);
+                }
+            }
+        }
+        update();
+        return;
+    }
     if (m_drag == Drag::Creating) {
         m_p1 = m_cropAspect > 0 ? constrainedCorner(ev->pos()) : ev->pos();
         update();
@@ -450,6 +560,12 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
 }
 
 void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
+    if (m_maskDragging && ev->button() == Qt::LeftButton) {
+        m_maskDragging = false;
+        emit maskEditFinished();
+        update();
+        return;
+    }
     if (m_drag != Drag::None && ev->button() == Qt::LeftButton) {
         m_drag = Drag::None;
         m_activeHandle = Handle::None;

@@ -46,6 +46,17 @@ public:
     void setZoomMode(bool on); // zoom tool: marquee-drag + Ctrl+wheel zoom
     void setHealBrush(int radiusDisplayPx);
     void clearHeals();
+
+    // Local adjustment masks.
+    void setMaskMode(bool on);              // enter/leave mask editing on the canvas
+    int addMask(MaskType type);             // append + select; returns its index
+    void selectMask(int index);             // -1 = none
+    void deleteActiveMask();
+    void setActiveMaskAdjust(const MaskAdjust &a);
+    void setActiveMaskShape(bool inverted, double feather, double hardness,
+                            double brushRadius);
+    const QVector<Mask> &masks() const { return m_adj.masks; }
+    int activeMaskIndex() const { return m_activeMask; }
     void showOriginal(bool on); // press-and-hold before/after
     void zoomFit();
     void setZoomPercent(double percent);
@@ -82,6 +93,7 @@ signals:
     void adjustmentsReplaced(); // undo/redo swapped the whole adjustment set
     void healBrushChanged(int radiusDisplayPx); // ctrl+wheel resized the brush
     void previewUpdated(); // a new toned preview render is available
+    void masksChanged();   // mask list or active-mask geometry changed
 
 private slots:
     void onDecodeFinished();
@@ -89,6 +101,10 @@ private slots:
     void onColorPicked(const QColor &c);
     void onHealAt(const QPoint &imgPoint);
     void onRenderDone(const QImage &result);
+    void onMaskRadial(const QPointF &centerNorm, double radiusNorm);
+    void onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm);
+    void onMaskBrushPoint(const QPointF &ptNorm);
+    void onMaskEditFinished();
 
 private:
     void rebuildGeom();  // recompute oriented(+crop) full image + display base
@@ -99,12 +115,15 @@ private:
     void commitHistory();     // snapshot current adjustments (coalesced)
     void applyHistoryState(); // apply m_history[m_histIndex]
     void updateHealSpots();   // push heal-op markers (display coords) to the canvas
+    void pushMaskGizmo();     // sync active mask geometry to the canvas
 
     QString m_path;
     QImage m_base;   // full-res decoded RAW (immutable)
     Adjustments m_adj;
 
     bool m_cropMode = false;
+    bool m_maskMode = false;
+    int m_activeMask = -1; // index into m_adj.masks, or -1
     bool m_dirty = false; // unsaved changes since last save/load
     int m_healRadiusDisplay = 20; // brush radius in display pixels
     QRect m_pendingCrop; // in oriented-image coords, awaiting Apply

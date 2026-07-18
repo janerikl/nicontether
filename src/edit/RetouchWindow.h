@@ -23,6 +23,7 @@ class QDockWidget;
 class QListWidget;
 class TetherView;
 class LevelsPanel;
+class MaskPanel;
 
 // Separate top-level window for retouching photos. Own filmstrip selector plus
 // one tab per open photo, an adjustments dock, and JPEG/PNG export.
@@ -132,6 +133,11 @@ private:
     QToolButton *m_healToggle = nullptr; // left icon bar: spot-heal tool
     QSlider *m_healBrush = nullptr;
     QPushButton *m_healClear = nullptr;
+    QToolButton *m_maskToggle = nullptr; // left icon bar: local-mask tool
+    QDockWidget *m_maskDock = nullptr;
+    MaskPanel *m_maskPanel = nullptr;
+    void buildMaskDock();
+    void refreshMaskPanel();
     QLabel *m_statusLabel = nullptr;
     class QAction *m_undoAction = nullptr;
     class QAction *m_redoAction = nullptr;

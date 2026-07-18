@@ -3,6 +3,7 @@
 #include <QTransform>
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace {
 
@@ -65,6 +66,155 @@ void buildLevelsLut(const LevelsChannel &c, int lut[256]) {
     }
 }
 
+// Precomputed per-mask local tone/colour transform (temp/tint as WB-style
+// gains, then contrast/brightness, highlights/shadows, saturation/vibrance).
+struct LocalParams {
+    double contrastFactor;
+    double brightness;
+    double wbR, wbG, wbB;
+    double hiAmt, shAmt, satScale, vibAmt;
+};
+
+LocalParams makeLocalParams(const MaskAdjust &a) {
+    LocalParams p;
+    const double c = a.contrast;
+    p.contrastFactor = (259.0 * (c + 255.0)) / (255.0 * (259.0 - c));
+    p.brightness = a.brightness;
+    const double tempF = a.temperature / 100.0;
+    const double tintF = a.tint / 100.0;
+    p.wbR = 1.0 + 0.4 * tempF;
+    p.wbG = 1.0 + 0.4 * tintF;
+    p.wbB = 1.0 - 0.4 * tempF;
+    p.hiAmt = a.highlights / 100.0;
+    p.shAmt = a.shadows / 100.0;
+    p.satScale = 1.0 + a.saturation / 100.0;
+    p.vibAmt = a.vibrance / 100.0;
+    return p;
+}
+
+// Apply one mask's local tone/colour to a pixel (mirrors the global per-pixel
+// loop minus WB gains / curve / levels, which are global-only).
+QRgb applyLocal(QRgb px, const LocalParams &p) {
+    double r = qRed(px), g = qGreen(px), b = qBlue(px);
+    r *= p.wbR; g *= p.wbG; b *= p.wbB;
+    r = p.contrastFactor * (r - 128) + 128 + p.brightness;
+    g = p.contrastFactor * (g - 128) + 128 + p.brightness;
+    b = p.contrastFactor * (b - 128) + 128 + p.brightness;
+    double luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    double ln = clampd(luma / 255.0, 0.0, 1.0);
+    if (p.hiAmt != 0.0) {
+        double d = p.hiAmt * 60.0 * ln * ln;
+        r += d; g += d; b += d;
+    }
+    if (p.shAmt != 0.0) {
+        double d = p.shAmt * 60.0 * (1.0 - ln) * (1.0 - ln);
+        r += d; g += d; b += d;
+    }
+    luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    double mx = std::max({r, g, b}), mn = std::min({r, g, b});
+    double sat = mx > 0 ? (mx - mn) / mx : 0.0;
+    double scale = p.satScale + p.vibAmt * (1.0 - sat);
+    r = luma + (r - luma) * scale;
+    g = luma + (g - luma) * scale;
+    b = luma + (b - luma) * scale;
+    return qRgba(clamp8(int(std::lround(r))), clamp8(int(std::lround(g))),
+                 clamp8(int(std::lround(b))), qAlpha(px));
+}
+
+inline double smoothstep01(double t) {
+    t = clampd(t, 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Mask weight [0,1] at a width-normalized point for radial/linear masks.
+double radialWeight(const Mask &m, double nx, double ny) {
+    double dx = nx - m.center.x(), dy = ny - m.center.y();
+    double ca = std::cos(-m.angle), sa = std::sin(-m.angle);
+    double ex = (dx * ca - dy * sa) / std::max(1e-6, m.radiusX);
+    double ey = (dx * sa + dy * ca) / std::max(1e-6, m.radiusY);
+    double d = std::sqrt(ex * ex + ey * ey);
+    double inner = 1.0 - clampd(m.feather, 0.0, 1.0);
+    double w;
+    if (d <= inner) w = 1.0;
+    else if (d >= 1.0) w = 0.0;
+    else w = smoothstep01((1.0 - d) / std::max(1e-6, 1.0 - inner));
+    return m.inverted ? 1.0 - w : w;
+}
+
+double linearWeight(const Mask &m, double nx, double ny) {
+    double ax = m.p1.x() - m.p0.x(), ay = m.p1.y() - m.p0.y();
+    double len2 = ax * ax + ay * ay;
+    double t = len2 > 1e-9
+                   ? ((nx - m.p0.x()) * ax + (ny - m.p0.y()) * ay) / len2
+                   : 0.0;
+    double w = 1.0 - smoothstep01(t); // full at p0, zero at p1
+    return m.inverted ? 1.0 - w : w;
+}
+
+// Rasterize a brush mask into a coverage buffer (0..255) at image resolution.
+void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h) {
+    cov.assign(size_t(w) * h, 0);
+    const double W = w;
+    const double rad = std::max(1.0, m.brushRadius * W);
+    const double inner = clampd(m.hardness, 0.0, 1.0) * rad;
+    const double band = std::max(1e-6, rad - inner);
+    for (const QPointF &pt : m.stroke) {
+        const double px = pt.x() * W, py = pt.y() * W;
+        const int x0 = std::max(0, int(px - rad));
+        const int x1 = std::min(w - 1, int(px + rad));
+        const int y0 = std::max(0, int(py - rad));
+        const int y1 = std::min(h - 1, int(py + rad));
+        for (int y = y0; y <= y1; ++y) {
+            for (int x = x0; x <= x1; ++x) {
+                double dx = x - px, dy = y - py;
+                double dist = std::sqrt(dx * dx + dy * dy);
+                double v = dist <= inner ? 1.0
+                           : dist >= rad ? 0.0
+                                         : smoothstep01((rad - dist) / band);
+                uchar iv = uchar(std::lround(v * 255.0));
+                uchar &dst = cov[size_t(y) * w + x];
+                if (iv > dst) dst = iv;
+            }
+        }
+    }
+}
+
+// Apply all local masks in order, blending each mask's local tone/colour into
+// the (already globally-adjusted) image by its per-pixel weight.
+void applyMasks(QImage &img, const QVector<Mask> &masks) {
+    const int w = img.width(), h = img.height();
+    if (w == 0 || h == 0) return;
+    const double W = w;
+    std::vector<uchar> cov;
+    for (const Mask &m : masks) {
+        if (m.adj.isZero()) continue;
+        if (m.type == MaskType::Brush && m.stroke.isEmpty()) continue;
+        const LocalParams lp = makeLocalParams(m.adj);
+        if (m.type == MaskType::Brush) rasterizeBrush(m, cov, w, h);
+        for (int y = 0; y < h; ++y) {
+            QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+            for (int x = 0; x < w; ++x) {
+                double wgt;
+                if (m.type == MaskType::Radial)
+                    wgt = radialWeight(m, x / W, y / W);
+                else if (m.type == MaskType::Linear)
+                    wgt = linearWeight(m, x / W, y / W);
+                else
+                    wgt = cov[size_t(y) * w + x] / 255.0;
+                if (wgt <= 0.0) continue;
+                QRgb src = line[x];
+                QRgb loc = applyLocal(src, lp);
+                double inv = 1.0 - wgt;
+                line[x] = qRgba(
+                    int(std::lround(qRed(src) * inv + qRed(loc) * wgt)),
+                    int(std::lround(qGreen(src) * inv + qGreen(loc) * wgt)),
+                    int(std::lround(qBlue(src) * inv + qBlue(loc) * wgt)),
+                    qAlpha(src));
+            }
+        }
+    }
+}
+
 // Separable moving-average blur — a fast approximation of a Gaussian, used for
 // clarity (large radius) and sharpening (small radius). radius in pixels.
 QImage boxBlur(const QImage &src, int radius) {
@@ -117,6 +267,16 @@ QImage boxBlur(const QImage &src, int radius) {
 
 } // namespace
 
+// True if any mask carries a non-zero local adjustment.
+static bool hasMaskEdits(const Adjustments &adj) {
+    for (const Mask &m : adj.masks) {
+        if (m.adj.isZero()) continue;
+        if (m.type == MaskType::Brush && m.stroke.isEmpty()) continue;
+        return true;
+    }
+    return false;
+}
+
 bool Adjustments::hasCurve() const {
     if (curve.size() < 2) return false;
     for (const QPointF &p : curve)
@@ -130,7 +290,7 @@ bool hasToneEdits(const Adjustments &adj) {
            adj.clarity || adj.sharpen || adj.vignette ||
            std::abs(adj.wbR - 1.0) > 1e-4 || std::abs(adj.wbG - 1.0) > 1e-4 ||
            std::abs(adj.wbB - 1.0) > 1e-4 || adj.hasCurve() ||
-           !adj.levels.isIdentity();
+           !adj.levels.isIdentity() || hasMaskEdits(adj);
 }
 
 QImage applyAdjustments(const QImage &base, const Adjustments &adj) {
@@ -223,6 +383,9 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj) {
         }
     }
 
+    // --- Local adjustment masks (blend per-mask tone/colour by weight) ---
+    if (!adj.masks.isEmpty()) applyMasks(img, adj.masks);
+
     // --- Clarity (midtone local contrast) ---
     if (adj.clarity != 0) {
         int radius = std::max(2, std::min(w, h) / 60);
@@ -300,6 +463,7 @@ QString historyStepLabel(const Adjustments &prev, const Adjustments &curr) {
     if (curr.vignette != prev.vignette)       return QStringLiteral("Vignette");
     if (curr.curve != prev.curve)             return QStringLiteral("Curve");
     if (curr.levels != prev.levels)           return QStringLiteral("Levels");
+    if (curr.masks != prev.masks)             return QStringLiteral("Mask");
     if (curr.heals != prev.heals)             return QStringLiteral("Spot Heal");
     if (curr.rotationQuadrants != prev.rotationQuadrants)
         return QStringLiteral("Rotate");

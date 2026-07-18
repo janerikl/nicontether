@@ -6,6 +6,8 @@
 #include <QPoint>
 #include <QPointF>
 
+#include "edit/Adjustments.h"
+
 // Displays an image with zoom + pan, and supports crop rubber-band selection and
 // a white-balance eyedropper. Zoom: Ctrl+wheel (anchored to the cursor),
 // left-drag a marquee box to zoom to a region, Space+drag to pan. All crop/pick
@@ -30,6 +32,14 @@ public:
     void setHealMode(bool on); // spot-heal brush
     void setZoomMode(bool on); // zoom tool: enables marquee-drag zoom + Ctrl+wheel
     void setBrushRadius(int displayPx);
+
+    // Local-mask editing. When a mask kind is set, dragging on the canvas
+    // defines/updates the active mask's geometry (radial: centre→radius,
+    // linear: p0→p1, brush: appends stroke points). setActiveMask supplies the
+    // mask to draw as a gizmo (geometry is width-normalized, matching the
+    // pipeline). Coordinates are emitted width-normalized.
+    void setMaskMode(MaskType kind, bool on);
+    void setActiveMask(bool has, const Mask &m);
     // Existing heal spots, shown as a reddish overlay while hovering in heal
     // mode (Lightroom-style "visualize spots"); hidden once the mouse leaves.
     void setHealSpots(const QVector<HealMarker> &spots);
@@ -47,6 +57,12 @@ signals:
     void healAt(const QPoint &imagePoint);
     void zoomChanged(double percent);
     void healBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while healing
+
+    // Mask geometry edits (all points width-normalized).
+    void maskRadialDragged(const QPointF &centerNorm, double radiusNorm);
+    void maskLinearDragged(const QPointF &p0Norm, const QPointF &p1Norm);
+    void maskBrushPoint(const QPointF &ptNorm); // one stroke sample
+    void maskEditFinished();                    // drag released → commit history
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -81,6 +97,16 @@ private:
     bool m_healMode = false;
     bool m_zoomMode = false; // gates marquee-drag zoom + Ctrl+wheel zoom
     int m_brushRadius = 20; // display px, for the brush cursor
+
+    // Local-mask editing state.
+    bool m_maskMode = false;
+    MaskType m_maskKind = MaskType::Radial;
+    bool m_hasActiveMask = false;
+    Mask m_activeMask;        // geometry to draw as a gizmo
+    bool m_maskDragging = false;
+    QPointF m_maskCenterNorm; // radial centre / linear p0 captured at press
+    QPointF m_lastBrushNorm{-1, -1};
+    QPointF normPointAt(const QPoint &pos) const; // widget → width-normalized
     QPoint m_mousePos;
     QVector<HealMarker> m_healSpots;
     Drag m_drag = Drag::None;

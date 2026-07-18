@@ -49,6 +49,73 @@ struct Levels {
     bool operator!=(const Levels &o) const { return !(*this == o); }
 };
 
+// The subset of tone/colour adjustments a local mask can apply. These blend
+// cleanly per-pixel (weighted by the mask), unlike clarity/sharpen/vignette
+// (neighbourhood/position dependent) or curve/levels.
+struct MaskAdjust {
+    int brightness = 0;
+    int contrast = 0;
+    int highlights = 0;
+    int shadows = 0;
+    int saturation = 0;
+    int vibrance = 0;
+    int temperature = 0;
+    int tint = 0;
+
+    bool isZero() const {
+        return !brightness && !contrast && !highlights && !shadows &&
+               !saturation && !vibrance && !temperature && !tint;
+    }
+    bool operator==(const MaskAdjust &o) const {
+        return brightness == o.brightness && contrast == o.contrast &&
+               highlights == o.highlights && shadows == o.shadows &&
+               saturation == o.saturation && vibrance == o.vibrance &&
+               temperature == o.temperature && tint == o.tint;
+    }
+    bool operator!=(const MaskAdjust &o) const { return !(*this == o); }
+};
+
+enum class MaskType { Radial, Linear, Brush };
+
+// A local adjustment mask. All geometry is stored normalized to the image WIDTH
+// (x' = x/W, y' = y/W) so it is resolution-independent and scales uniformly
+// between the display preview and full-res export. Applied after the global
+// tone pass, in cropped-oriented image space.
+struct Mask {
+    MaskType type = MaskType::Radial;
+    bool inverted = false;
+    double feather = 0.5; // 0..1 fraction of the radius/edge that fades
+
+    // Radial: centre + radii (width-normalized) and rotation.
+    QPointF center{0.5, 0.5};
+    double radiusX = 0.25;
+    double radiusY = 0.25;
+    double angle = 0.0; // radians
+
+    // Linear (graduated): full effect at p0, fading to zero at p1.
+    QPointF p0{0.5, 0.2};
+    QPointF p1{0.5, 0.6};
+
+    // Brush: stroke points (width-normalized), radius, and edge hardness.
+    QVector<QPointF> stroke;
+    double brushRadius = 0.06;
+    double hardness = 0.5;
+
+    MaskAdjust adj;
+
+    bool operator==(const Mask &o) const {
+        return type == o.type && inverted == o.inverted &&
+               std::abs(feather - o.feather) < 1e-9 && center == o.center &&
+               std::abs(radiusX - o.radiusX) < 1e-9 &&
+               std::abs(radiusY - o.radiusY) < 1e-9 &&
+               std::abs(angle - o.angle) < 1e-9 && p0 == o.p0 && p1 == o.p1 &&
+               stroke == o.stroke &&
+               std::abs(brushRadius - o.brushRadius) < 1e-9 &&
+               std::abs(hardness - o.hardness) < 1e-9 && adj == o.adj;
+    }
+    bool operator!=(const Mask &o) const { return !(*this == o); }
+};
+
 // A single spot-heal: a circular region (in oriented-image coordinates, i.e.
 // after rotation/flip but before crop) that gets replaced with a nearby patch.
 struct HealOp {
@@ -90,6 +157,9 @@ struct Adjustments {
     // Photoshop-style Levels (composite + per-channel). Applied after the curve.
     Levels levels;
 
+    // Local adjustment masks, applied after the global tone pass in order.
+    QVector<Mask> masks;
+
     // Spot-heal ops (oriented-image coords; applied before crop).
     QVector<HealOp> heals;
 
@@ -109,7 +179,7 @@ struct Adjustments {
                wbR == o.wbR && wbG == o.wbG && wbB == o.wbB &&
                clarity == o.clarity && sharpen == o.sharpen &&
                vignette == o.vignette && curve == o.curve && levels == o.levels &&
-               heals == o.heals &&
+               masks == o.masks && heals == o.heals &&
                rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
                flipV == o.flipV && cropRect == o.cropRect;
     }
