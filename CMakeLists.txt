@@ -50,4 +50,22 @@ target_link_libraries(nikontether PRIVATE
 include(GNUInstallDirs)
 install(TARGETS nikontether RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+# Desktop launcher entry.
+install(FILES packaging/nikontether.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+
+# Generate the launcher PNG from the same drawing code as the window icon.
+# Uses the offscreen Qt platform so it works on headless installs.
+install(CODE "
+    set(ICON_DIR \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps\")
+    file(MAKE_DIRECTORY \"\${ICON_DIR}\")
+    execute_process(
+        COMMAND \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/nikontether\" --export-icon \"\${ICON_DIR}/nikontether.png\"
+        RESULT_VARIABLE _rc
+    )
+    if(NOT _rc EQUAL 0)
+        message(WARNING \"Failed to generate nikontether.png (code \${_rc})\")
+    endif()
+")
+
 # Register CameraSettings metatypes are header-only; nothing extra needed.
