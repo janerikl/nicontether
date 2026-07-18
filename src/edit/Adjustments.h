@@ -4,6 +4,7 @@
 #include <QRect>
 #include <QVector>
 #include <QPointF>
+#include <QString>
 #include <QMetaType>
 
 // A single spot-heal: a circular region (in oriented-image coordinates, i.e.
@@ -78,5 +79,10 @@ bool hasToneEdits(const Adjustments &adj);
 // vignette. Pure and side-effect free: safe to unit-test and to run on a
 // full-res base (export) or a display-scaled copy (interactive).
 QImage applyAdjustments(const QImage &base, const Adjustments &adj);
+
+// Human-readable name of what changed between two committed snapshots. Returns
+// the primary changed field's label (e.g. "Brightness", "Crop", "Spot Heal").
+// "No change" if equal; "Adjust" if something differs but isn't recognized.
+QString historyStepLabel(const Adjustments &prev, const Adjustments &curr);
 
 Q_DECLARE_METATYPE(Adjustments)
