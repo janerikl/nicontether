@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QPixmap>
 
 #include "ui/MainWindow.h"
 #include "edit/RetouchWindow.h"
@@ -13,6 +14,19 @@ int main(int argc, char *argv[]) {
     app.setApplicationName("NikonTether");
     app.setOrganizationName("NikonTether");
     app.setWindowIcon(makeShutterIcon());
+
+    if (argc >= 2 && std::strcmp(argv[1], "--export-icon") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "usage: nikontether --export-icon <path.png>\n");
+            return 2;
+        }
+        QPixmap pm = makeShutterIcon().pixmap(256, 256);
+        if (!pm.save(argv[2], "PNG")) {
+            fprintf(stderr, "error: could not write icon to %s\n", argv[2]);
+            return 1;
+        }
+        return 0;
+    }
 
     if (argc >= 3 && std::strcmp(argv[1], "--undotest") == 0) {
         RetouchWindow w;
