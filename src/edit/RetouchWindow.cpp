@@ -30,6 +30,7 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
+#include <QActionGroup>
 #include <QStatusBar>
 #include <QFileDialog>
 #include <QMessageBox>
@@ -97,6 +98,22 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
 
     auto *toolbar = addToolBar("Main");
     toolbar->setMovable(false);
+
+    // Mode switch: mutually-exclusive Tether / Retouch at the far left.
+    m_retouchModeAction = toolbar->addAction("Retouch");
+    m_tetherModeAction = toolbar->addAction("Tether");
+    m_retouchModeAction->setCheckable(true);
+    m_tetherModeAction->setCheckable(true);
+    auto *modeGroup = new QActionGroup(this);
+    modeGroup->setExclusive(true);
+    modeGroup->addAction(m_retouchModeAction);
+    modeGroup->addAction(m_tetherModeAction);
+    connect(m_retouchModeAction, &QAction::triggered, this,
+            [this] { setMode(Mode::Retouch); });
+    connect(m_tetherModeAction, &QAction::triggered, this,
+            [this] { setMode(Mode::Tether); });
+    toolbar->addSeparator();
+
     m_saveAction = toolbar->addAction("Save");
     m_saveAction->setShortcut(QKeySequence::Save); // Ctrl+S
     m_saveAllAction = toolbar->addAction("Save All");
@@ -159,6 +176,8 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     m_filmstrip = new FilmstripWidget;
     connect(m_filmstrip, &FilmstripWidget::frameSelected, this,
             &RetouchWindow::onFilmstripSelected);
+    connect(m_filmstrip, &FilmstripWidget::retouchRequested, this,
+            &RetouchWindow::onFilmstripSelected);
 
     vbox->addWidget(m_modeStack, 1);
     vbox->addWidget(m_filmstrip, 0);
@@ -197,6 +216,8 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     auto *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     escShortcut->setContext(Qt::WindowShortcut);
     connect(escShortcut, &QShortcut::activated, this, &RetouchWindow::deselectAllTools);
+
+    setMode(Mode::Retouch);
 }
 
 // View menu: toggle visibility of the Tools bar, Adjustments dock, and the
@@ -655,7 +676,47 @@ void RetouchWindow::openPhoto(const QString &path) {
 }
 
 void RetouchWindow::onFilmstripSelected(const QString &path) {
+    setMode(Mode::Retouch);
     openPhoto(path);
+}
+
+void RetouchWindow::setMode(Mode mode) {
+    m_modeStack->setCurrentWidget(mode == Mode::Tether
+                                      ? static_cast<QWidget *>(m_tetherView)
+                                      : static_cast<QWidget *>(m_tabs));
+    applyModeChrome(mode);
+    // Keep the toolbar buttons in sync when called programmatically.
+    QSignalBlocker b1(m_tetherModeAction);
+    QSignalBlocker b2(m_retouchModeAction);
+    m_tetherModeAction->setChecked(mode == Mode::Tether);
+    m_retouchModeAction->setChecked(mode == Mode::Retouch);
+}
+
+void RetouchWindow::applyModeChrome(Mode mode) {
+    const bool tether = (mode == Mode::Tether);
+
+    // Tether chrome.
+    if (m_tetherToolBar) m_tetherToolBar->setVisible(tether);
+    if (m_controlsDock)  m_controlsDock->setVisible(tether);
+    if (m_tetherView)    m_tetherView->setActive(tether);
+
+    // Editing chrome.
+    if (tether) deselectAllTools(); // exit any active tool + hide the options row
+    if (m_toolsBar)        m_toolsBar->setVisible(!tether);
+    if (m_adjustmentsDock) m_adjustmentsDock->setVisible(!tether);
+    if (m_historyDock)     m_historyDock->setVisible(!tether);
+
+    // Editing-only actions are meaningless while tethering.
+    m_saveAction->setEnabled(!tether);
+    m_saveAllAction->setEnabled(!tether);
+    m_exportAction->setEnabled(!tether);
+    if (tether) {
+        m_undoAction->setEnabled(false);
+        m_redoAction->setEnabled(false);
+    } else {
+        // Restore undo/redo + dock state for the current tab.
+        onTabChanged(m_tabs->currentIndex());
+    }
 }
 
 void RetouchWindow::deselectAllTools() {

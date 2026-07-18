@@ -35,6 +35,9 @@ public:
     // Open the photo in a tab (or activate its existing tab).
     void openPhoto(const QString &path);
 
+    enum class Mode { Retouch, Tether };
+    void setMode(Mode mode);
+
 private slots:
     void onOpenSession();
     void onOpenPhotos();
@@ -54,6 +57,9 @@ private:
     RetouchTab *currentTab() const;
     void syncDockFromTab();
     void setDockEnabled(bool enabled);
+    void applyModeChrome(Mode mode);
+    class QAction *m_tetherModeAction = nullptr;
+    class QAction *m_retouchModeAction = nullptr;
 
     QTabWidget *m_tabs = nullptr;
     FilmstripWidget *m_filmstrip = nullptr;
