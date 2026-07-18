@@ -105,6 +105,7 @@ void RetouchTab::onDecodeFinished() {
     m_history = {m_adj};
     m_histIndex = 0;
     emit historyChanged(false, false);
+    emit historyListChanged();
 }
 
 bool RetouchTab::hasEdits() const {
@@ -123,6 +124,7 @@ void RetouchTab::commitHistory() {
         m_history = {m_adj};
         m_histIndex = 0;
         emit historyChanged(canUndo(), canRedo());
+        emit historyListChanged();
         return;
     }
     if (m_adj == m_history[m_histIndex]) return; // nothing new to record
@@ -135,6 +137,7 @@ void RetouchTab::commitHistory() {
         --m_histIndex;
     }
     emit historyChanged(canUndo(), canRedo());
+    emit historyListChanged();
 }
 
 void RetouchTab::applyHistoryState() {
@@ -144,6 +147,7 @@ void RetouchTab::applyHistoryState() {
     emit adjustmentsReplaced();
     emit editStateChanged(m_dirty, hasEdits());
     emit historyChanged(canUndo(), canRedo());
+    emit historyListChanged();
 }
 
 void RetouchTab::undo() {
@@ -159,6 +163,16 @@ void RetouchTab::redo() {
     commitHistory();
     if (!canRedo()) return;
     ++m_histIndex;
+    applyHistoryState();
+}
+
+void RetouchTab::jumpToHistory(int index) {
+    if (m_commitTimer) m_commitTimer->stop();
+    commitHistory(); // capture any in-progress change first
+    if (m_history.isEmpty()) return;
+    index = qBound(0, index, m_history.size() - 1);
+    if (index == m_histIndex) return;
+    m_histIndex = index;
     applyHistoryState();
 }
 
