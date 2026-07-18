@@ -1,5 +1,6 @@
 #include "ui/FilmstripWidget.h"
 
+#include <QApplication>
 #include <QPixmap>
 #include <QFileInfo>
 #include <QMenu>
@@ -43,11 +44,23 @@ FilmstripWidget::FilmstripWidget(QWidget *parent) : QListWidget(parent) {
     setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setSpacing(4);
+    setSelectionMode(QAbstractItemView::ExtendedSelection);
     setItemDelegate(new BadgeDelegate(this));
 
     connect(this, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
-        if (item) emit frameSelected(item->data(Qt::UserRole).toString());
+        // Plain click opens the photo; Ctrl/Shift-click only builds a selection
+        // for sync (don't open a tab per modifier-click).
+        if (item && QApplication::keyboardModifiers() == Qt::NoModifier)
+            emit frameSelected(item->data(Qt::UserRole).toString());
     });
+}
+
+QStringList FilmstripWidget::selectedPaths() const {
+    QStringList paths;
+    const QList<QListWidgetItem *> items = selectedItems();
+    for (QListWidgetItem *it : items)
+        paths << it->data(Qt::UserRole).toString();
+    return paths;
 }
 
 void FilmstripWidget::setBadge(const QString &path, Badge state) {
@@ -86,6 +99,13 @@ void FilmstripWidget::contextMenuEvent(QContextMenuEvent *ev) {
 
     QMenu menu(this);
     QAction *retouch = menu.addAction("Open in Retouch");
-    if (menu.exec(ev->globalPos()) == retouch)
+    const int selCount = selectedItems().size();
+    QAction *sync = menu.addAction(
+        selCount > 1 ? QString("Sync Edits to %1 Selected").arg(selCount)
+                     : QString("Sync Edits to Selected"));
+    QAction *chosen = menu.exec(ev->globalPos());
+    if (chosen == retouch)
         emit retouchRequested(path);
+    else if (chosen == sync)
+        emit syncEditsRequested();
 }

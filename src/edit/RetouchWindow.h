@@ -136,6 +136,23 @@ private:
     class QAction *m_undoAction = nullptr;
     class QAction *m_redoAction = nullptr;
 
+    // Copy/paste/sync of portable edits (tone/colour/detail/curve/levels) across
+    // photos. Geometry and spot-heals are image-specific and never copied.
+    class QAction *m_copyEditsAction = nullptr;
+    class QAction *m_pasteEditsAction = nullptr;
+    class QAction *m_syncEditsAction = nullptr;
+    Adjustments m_editClipboard;
+    bool m_hasEditClipboard = false;
+    void onCopyEdits();
+    void onPasteEdits();
+    void onSyncEdits();
+    void updateEditClipboardActions();
+    // Overwrite dst's portable fields from src, preserving dst geometry & heals.
+    static void mergePortable(const Adjustments &src, Adjustments &dst);
+    // Apply the clipboard to one photo (open tab or closed sidecar). Returns
+    // true if the photo changed. Reports counts to the caller.
+    bool applyClipboardTo(const QString &path);
+
     // Contextual per-tool options row (shown under the main toolbar only while
     // a left-bar tool is selected).
     QToolBar *m_toolOptionsBar = nullptr;

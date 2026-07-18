@@ -159,6 +159,20 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
         if (tab) tab->redo();
     });
 
+    editMenu->addSeparator();
+    m_copyEditsAction = editMenu->addAction("Copy Edits");
+    m_copyEditsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C));
+    m_pasteEditsAction = editMenu->addAction("Paste Edits");
+    m_pasteEditsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V));
+    m_syncEditsAction = editMenu->addAction("Sync Edits to Selected");
+    m_syncEditsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
+    m_copyEditsAction->setEnabled(false);
+    m_pasteEditsAction->setEnabled(false);
+    m_syncEditsAction->setEnabled(false);
+    connect(m_copyEditsAction, &QAction::triggered, this, &RetouchWindow::onCopyEdits);
+    connect(m_pasteEditsAction, &QAction::triggered, this, &RetouchWindow::onPasteEdits);
+    connect(m_syncEditsAction, &QAction::triggered, this, &RetouchWindow::onSyncEdits);
+
     // Center: a stack (editing tabs / tether) with the shared filmstrip below,
     // so the filmstrip is visible in both modes.
     auto *central = new QWidget;
@@ -183,6 +197,10 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
             &RetouchWindow::onFilmstripSelected);
     connect(m_filmstrip, &FilmstripWidget::retouchRequested, this,
             &RetouchWindow::onFilmstripSelected);
+    connect(m_filmstrip, &FilmstripWidget::syncEditsRequested, this,
+            &RetouchWindow::onSyncEdits);
+    connect(m_filmstrip, &FilmstripWidget::itemSelectionChanged, this,
+            &RetouchWindow::updateEditClipboardActions);
 
     vbox->addWidget(m_modeStack, 1);
     vbox->addWidget(m_filmstrip, 0);
@@ -629,6 +647,92 @@ void RetouchWindow::refreshLevels() {
     }
 }
 
+void RetouchWindow::mergePortable(const Adjustments &src, Adjustments &dst) {
+    // Portable (image-independent) fields only; geometry & heals stay as dst had.
+    dst.brightness = src.brightness;
+    dst.contrast = src.contrast;
+    dst.highlights = src.highlights;
+    dst.shadows = src.shadows;
+    dst.saturation = src.saturation;
+    dst.vibrance = src.vibrance;
+    dst.temperature = src.temperature;
+    dst.tint = src.tint;
+    dst.wbR = src.wbR;
+    dst.wbG = src.wbG;
+    dst.wbB = src.wbB;
+    dst.clarity = src.clarity;
+    dst.sharpen = src.sharpen;
+    dst.vignette = src.vignette;
+    dst.curve = src.curve;
+    dst.levels = src.levels;
+}
+
+void RetouchWindow::updateEditClipboardActions() {
+    RetouchTab *tab = currentTab();
+    const bool tabReady = tab && tab->isReady();
+    if (m_copyEditsAction) m_copyEditsAction->setEnabled(tabReady);
+    if (m_pasteEditsAction)
+        m_pasteEditsAction->setEnabled(m_hasEditClipboard && tabReady);
+    if (m_syncEditsAction)
+        m_syncEditsAction->setEnabled(m_hasEditClipboard &&
+                                      !m_filmstrip->selectedPaths().isEmpty());
+}
+
+void RetouchWindow::onCopyEdits() {
+    RetouchTab *tab = currentTab();
+    if (!tab || !tab->isReady()) return;
+    m_editClipboard = tab->adjustments();
+    m_hasEditClipboard = true;
+    updateEditClipboardActions();
+    m_statusLabel->setText("Edits copied");
+}
+
+bool RetouchWindow::applyClipboardTo(const QString &path) {
+    if (RetouchTab *tab = m_openTabs.value(path, nullptr)) {
+        // Route through the open tab so history + dirty state stay consistent.
+        Adjustments a = tab->adjustments();
+        mergePortable(m_editClipboard, a);
+        if (a == tab->adjustments()) return false;
+        tab->setAdjustments(a);
+        return true;
+    }
+    // Closed photo: merge into its sidecar (or defaults) and persist.
+    Adjustments a;
+    EditSidecar::load(path, a); // leaves a at defaults if none exists
+    Adjustments before = a;
+    mergePortable(m_editClipboard, a);
+    if (a == before) return false;
+    if (EditSidecar::save(path, a))
+        m_filmstrip->setBadge(path, FilmstripWidget::Saved);
+    return true;
+}
+
+void RetouchWindow::onPasteEdits() {
+    RetouchTab *tab = currentTab();
+    if (!m_hasEditClipboard || !tab || !tab->isReady()) return;
+    applyClipboardTo(tab->path());
+    m_statusLabel->setText("Edits pasted");
+}
+
+void RetouchWindow::onSyncEdits() {
+    if (!m_hasEditClipboard) {
+        m_statusLabel->setText("Copy edits first (Edit ▸ Copy Edits)");
+        return;
+    }
+    const QStringList targets = m_filmstrip->selectedPaths();
+    if (targets.isEmpty()) {
+        m_statusLabel->setText("Select photos in the filmstrip to sync");
+        return;
+    }
+    int changed = 0;
+    for (const QString &path : targets)
+        if (applyClipboardTo(path)) ++changed;
+    m_statusLabel->setText(
+        QString("Synced edits to %1 of %2 selected")
+            .arg(changed)
+            .arg(targets.size()));
+}
+
 RetouchTab *RetouchWindow::currentTab() const {
     return qobject_cast<RetouchTab *>(m_tabs->currentWidget());
 }
@@ -663,6 +767,7 @@ void RetouchWindow::openPhoto(const QString &path) {
             syncDockFromTab();
             refreshHistoryPanel();
             refreshLevels();
+            updateEditClipboardActions();
             m_statusLabel->setText(ok ? "Ready: " + QFileInfo(tab->path()).fileName()
                                       : "Failed to decode " + QFileInfo(tab->path()).fileName());
         }
@@ -801,6 +906,7 @@ void RetouchWindow::onTabChanged(int) {
     syncDockFromTab();
     refreshHistoryPanel();
     refreshLevels();
+    updateEditClipboardActions();
     if (ready) {
         QSignalBlocker b(m_zoomSlider);
         int pct = int(std::lround(tab->zoomPercent()));

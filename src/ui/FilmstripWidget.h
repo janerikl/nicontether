@@ -16,9 +16,13 @@ public:
     void addCapture(const QString &path, const QImage &preview);
     void setBadge(const QString &path, Badge state);
 
+    // Paths of all multi-selected thumbnails (for sync-edits across a shoot).
+    QStringList selectedPaths() const;
+
 signals:
     void frameSelected(const QString &path);
     void retouchRequested(const QString &path);
+    void syncEditsRequested(); // "Sync Edits to Selected" chosen from the menu
 
 protected:
     void contextMenuEvent(QContextMenuEvent *) override;
