@@ -49,6 +49,16 @@ bool save(const QString &imagePath, const Adjustments &a) {
         curve.append(QJsonArray{p.x(), p.y()});
     o["curve"] = curve;
 
+    QJsonArray heals;
+    for (const HealOp &hp : a.heals) {
+        QJsonObject h;
+        h["x"] = hp.x;
+        h["y"] = hp.y;
+        h["r"] = hp.radius;
+        heals.append(h);
+    }
+    o["heals"] = heals;
+
     QFile f(pathFor(imagePath));
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
     f.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
@@ -89,6 +99,14 @@ bool load(const QString &imagePath, Adjustments &out) {
     for (const QJsonValue &v : o["curve"].toArray()) {
         QJsonArray p = v.toArray();
         if (p.size() == 2) a.curve.append(QPointF(p[0].toDouble(), p[1].toDouble()));
+    }
+    for (const QJsonValue &v : o["heals"].toArray()) {
+        QJsonObject h = v.toObject();
+        HealOp hp;
+        hp.x = h["x"].toInt();
+        hp.y = h["y"].toInt();
+        hp.radius = h["r"].toInt();
+        a.heals.append(hp);
     }
     out = a;
     return true;

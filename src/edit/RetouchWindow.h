@@ -77,6 +77,9 @@ private:
     QPushButton *m_cropApply = nullptr;
     QPushButton *m_cropReset = nullptr;
     class QComboBox *m_cropAspect = nullptr;
+    QPushButton *m_healToggle = nullptr;
+    QSlider *m_healBrush = nullptr;
+    QPushButton *m_healClear = nullptr;
     QLabel *m_statusLabel = nullptr;
 
     ExportPresetStore m_presetStore;

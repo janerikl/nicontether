@@ -6,6 +6,14 @@
 #include <QPointF>
 #include <QMetaType>
 
+// A single spot-heal: a circular region (in oriented-image coordinates, i.e.
+// after rotation/flip but before crop) that gets replaced with a nearby patch.
+struct HealOp {
+    int x = 0;
+    int y = 0;
+    int radius = 0;
+};
+
 // Non-destructive edit parameters applied on top of an immutable base image.
 // Unless noted, sliders are in [-100, 100] with 0 = no change.
 struct Adjustments {
@@ -32,6 +40,9 @@ struct Adjustments {
     // Tone curve: control points in [0,1]×[0,1], monotonic in x. Empty/identity
     // means no curve. Applied to all channels via a 256-entry LUT.
     QVector<QPointF> curve;
+
+    // Spot-heal ops (oriented-image coords; applied before crop).
+    QVector<HealOp> heals;
 
     // Geometry
     int rotationQuadrants = 0; // clockwise 90° turns (0..3)

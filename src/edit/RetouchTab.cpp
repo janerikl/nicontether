@@ -2,6 +2,7 @@
 #include "edit/ImageCanvas.h"
 #include "edit/RawLoader.h"
 #include "edit/EditSidecar.h"
+#include "edit/HealTool.h"
 
 #include <QVBoxLayout>
 #include <QFutureWatcher>
@@ -15,15 +16,6 @@ void RenderWorker::render(const QImage &src, const Adjustments &adj) {
 
 namespace {
 constexpr int kDisplayMaxDim = 1600; // interactive preview resolution cap
-
-Adjustments geometryOnly(const Adjustments &a, bool includeCrop) {
-    Adjustments g;
-    g.rotationQuadrants = a.rotationQuadrants;
-    g.flipH = a.flipH;
-    g.flipV = a.flipV;
-    g.cropRect = includeCrop ? a.cropRect : QRect();
-    return g; // tone fields left at neutral 0
-}
 
 Adjustments toneOnly(const Adjustments &a) {
     Adjustments t = a; // copy all tone/colour/detail fields
@@ -51,6 +43,7 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     connect(m_canvas, &ImageCanvas::cropSelected, this, &RetouchTab::onCanvasCrop);
     connect(m_canvas, &ImageCanvas::commitCropRequested, this, &RetouchTab::applyCrop);
     connect(m_canvas, &ImageCanvas::colorPicked, this, &RetouchTab::onColorPicked);
+    connect(m_canvas, &ImageCanvas::healAt, this, &RetouchTab::onHealAt);
     connect(m_canvas, &ImageCanvas::zoomChanged, this, &RetouchTab::zoomChanged);
 
     m_canvas->setPlaceholder("Decoding RAW…");
@@ -102,7 +95,7 @@ void RetouchTab::onDecodeFinished() {
 
 bool RetouchTab::hasEdits() const {
     return hasToneEdits(m_adj) || m_adj.rotationQuadrants != 0 || m_adj.flipH ||
-           m_adj.flipV || !m_adj.cropRect.isNull();
+           m_adj.flipV || !m_adj.cropRect.isNull() || !m_adj.heals.isEmpty();
 }
 
 void RetouchTab::markEdited() {
@@ -118,7 +111,21 @@ void RetouchTab::saveEdits() {
 
 void RetouchTab::rebuildGeom() {
     if (m_base.isNull()) return;
-    m_geomImg = applyAdjustments(m_base, geometryOnly(m_adj, !m_cropMode));
+    // Orient (no crop) → heal in oriented space → crop. Healing before crop
+    // keeps heal coordinates independent of the crop rectangle.
+    Adjustments orientAdj;
+    orientAdj.rotationQuadrants = m_adj.rotationQuadrants;
+    orientAdj.flipH = m_adj.flipH;
+    orientAdj.flipV = m_adj.flipV;
+    QImage oriented = applyAdjustments(m_base, orientAdj);
+    if (!m_adj.heals.isEmpty()) applyHeal(oriented, m_adj.heals);
+
+    m_geomImg = oriented;
+    if (!m_cropMode && !m_adj.cropRect.isNull()) {
+        QRect r = m_adj.cropRect.intersected(oriented.rect());
+        if (r.isValid() && !r.isEmpty()) m_geomImg = oriented.copy(r);
+    }
+
     if (qMax(m_geomImg.width(), m_geomImg.height()) > kDisplayMaxDim) {
         m_scaled = m_geomImg.scaled(kDisplayMaxDim, kDisplayMaxDim,
                                     Qt::KeepAspectRatio, Qt::SmoothTransformation);
@@ -213,6 +220,39 @@ void RetouchTab::setWbPickMode(bool on) {
     if (on) m_canvas->setFocus();
 }
 
+void RetouchTab::setHealMode(bool on) {
+    m_canvas->setHealMode(on);
+    if (on) m_canvas->setFocus();
+}
+
+void RetouchTab::setHealBrush(int radiusDisplayPx) {
+    m_healRadiusDisplay = radiusDisplayPx;
+    m_canvas->setBrushRadius(radiusDisplayPx);
+}
+
+void RetouchTab::clearHeals() {
+    if (m_adj.heals.isEmpty()) return;
+    m_adj.heals.clear();
+    rebuildGeom();
+    markEdited();
+}
+
+// A heal spot was placed on the canvas (point in display-image coords).
+void RetouchTab::onHealAt(const QPoint &imgPoint) {
+    if (m_scaleFromGeom <= 0 || m_geomImg.isNull()) return;
+    double inv = 1.0 / m_scaleFromGeom; // display(scaled) -> geom(full, cropped)
+    // Convert cropped-geom coords to oriented coords (heals live pre-crop).
+    QPoint offset = (!m_cropMode && !m_adj.cropRect.isNull())
+                        ? m_adj.cropRect.topLeft() : QPoint(0, 0);
+    HealOp op;
+    op.x = int(imgPoint.x() * inv) + offset.x();
+    op.y = int(imgPoint.y() * inv) + offset.y();
+    op.radius = qMax(2, int(m_healRadiusDisplay * inv));
+    m_adj.heals.append(op);
+    rebuildGeom();
+    markEdited();
+}
+
 void RetouchTab::zoomFit() { m_canvas->zoomFit(); }
 void RetouchTab::setZoomPercent(double percent) { m_canvas->setZoomPercent(percent); }
 double RetouchTab::zoomPercent() const { return m_canvas->zoomPercent(); }
@@ -268,6 +308,7 @@ void RetouchTab::resetCrop() {
 }
 
 QImage RetouchTab::renderFullRes() const {
-    if (m_base.isNull()) return QImage();
-    return applyAdjustments(m_base, m_adj);
+    if (m_geomImg.isNull()) return QImage();
+    // m_geomImg is the full-res oriented + healed + cropped base; apply tone.
+    return applyAdjustments(m_geomImg, toneOnly(m_adj));
 }

@@ -42,6 +42,9 @@ public:
     void resetCrop();
 
     void setWbPickMode(bool on);
+    void setHealMode(bool on);
+    void setHealBrush(int radiusDisplayPx);
+    void clearHeals();
     void showOriginal(bool on); // press-and-hold before/after
     void zoomFit();
     void setZoomPercent(double percent);
@@ -66,6 +69,7 @@ private slots:
     void onDecodeFinished();
     void onCanvasCrop(const QRect &r);
     void onColorPicked(const QColor &c);
+    void onHealAt(const QPoint &imgPoint);
     void onRenderDone(const QImage &result);
 
 private:
@@ -81,6 +85,7 @@ private:
 
     bool m_cropMode = false;
     bool m_dirty = false; // unsaved changes since last save/load
+    int m_healRadiusDisplay = 20; // brush radius in display pixels
     QRect m_pendingCrop; // in oriented-image coords, awaiting Apply
 
     QImage m_geomImg;            // oriented (+crop unless cropMode), full res, untoned

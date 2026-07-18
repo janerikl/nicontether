@@ -51,6 +51,17 @@ void ImageCanvas::setPickMode(bool on) {
     setCursor(on ? Qt::CrossCursor : (m_cropMode ? Qt::CrossCursor : Qt::ArrowCursor));
 }
 
+void ImageCanvas::setHealMode(bool on) {
+    m_healMode = on;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+void ImageCanvas::setBrushRadius(int displayPx) {
+    m_brushRadius = displayPx;
+    if (m_healMode) update();
+}
+
 void ImageCanvas::setCropAspect(double widthOverHeight) {
     m_cropAspect = widthOverHeight > 0 ? widthOverHeight : 0.0;
     if (m_cropAspect > 0 && !QRect(m_p0, m_p1).normalized().isEmpty()) {
@@ -191,6 +202,15 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         p.setBrush(QColor(120, 180, 255, 40));
         p.drawRect(box);
     }
+
+    if (m_healMode && underMouse()) {
+        // Brush radius is in image(display) px; scale to on-screen size.
+        double rad = m_brushRadius * m_scale;
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(255, 255, 255, 200), 1));
+        p.setBrush(QColor(255, 255, 255, 30));
+        p.drawEllipse(QPointF(m_mousePos), rad, rad);
+    }
 }
 
 // ---- Mouse -----------------------------------------------------------------
@@ -198,16 +218,27 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
 void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
     if (m_img.isNull()) return;
 
+    // Map a widget point to image-pixel coords (or QPoint(-1,-1) if outside).
+    auto imagePointAt = [this](const QPoint &pos) -> QPoint {
+        QRect tr = targetRect();
+        if (!tr.contains(pos)) return QPoint(-1, -1);
+        double sx = double(m_img.width()) / tr.width();
+        double sy = double(m_img.height()) / tr.height();
+        return QPoint(std::clamp(int((pos.x() - tr.x()) * sx), 0, m_img.width() - 1),
+                      std::clamp(int((pos.y() - tr.y()) * sy), 0, m_img.height() - 1));
+    };
+
     // White-balance eyedropper.
     if (m_pickMode && ev->button() == Qt::LeftButton) {
-        QRect tr = targetRect();
-        if (tr.contains(ev->pos())) {
-            double sx = double(m_img.width()) / tr.width();
-            double sy = double(m_img.height()) / tr.height();
-            int ix = std::clamp(int((ev->pos().x() - tr.x()) * sx), 0, m_img.width() - 1);
-            int iy = std::clamp(int((ev->pos().y() - tr.y()) * sy), 0, m_img.height() - 1);
-            emit colorPicked(m_img.pixelColor(ix, iy));
-        }
+        QPoint ip = imagePointAt(ev->pos());
+        if (ip.x() >= 0) emit colorPicked(m_img.pixelColor(ip.x(), ip.y()));
+        return;
+    }
+
+    // Spot-heal brush: each click places one heal spot.
+    if (m_healMode && ev->button() == Qt::LeftButton) {
+        QPoint ip = imagePointAt(ev->pos());
+        if (ip.x() >= 0) emit healAt(ip);
         return;
     }
 
@@ -269,6 +300,9 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
     } else if (m_cropMode) {
         setCursor(selectionRect().contains(ev->pos()) ? Qt::SizeAllCursor
                                                        : Qt::CrossCursor);
+    } else if (m_healMode) {
+        m_mousePos = ev->pos();
+        update(); // move the brush-size circle
     }
 }
 

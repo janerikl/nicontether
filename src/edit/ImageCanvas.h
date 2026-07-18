@@ -20,6 +20,8 @@ public:
     void setCropMode(bool on);
     void setCropAspect(double widthOverHeight); // 0 = freeform
     void setPickMode(bool on); // white-balance eyedropper
+    void setHealMode(bool on); // spot-heal brush
+    void setBrushRadius(int displayPx);
     void clearSelection();
 
     // Zoom control.
@@ -31,6 +33,7 @@ signals:
     void cropSelected(const QRect &imageRect);
     void commitCropRequested();
     void colorPicked(const QColor &color);
+    void healAt(const QPoint &imagePoint);
     void zoomChanged(double percent);
 
 protected:
@@ -59,6 +62,9 @@ private:
     QString m_placeholder = "Decoding…";
     bool m_cropMode = false;
     bool m_pickMode = false;
+    bool m_healMode = false;
+    int m_brushRadius = 20; // display px, for the brush cursor
+    QPoint m_mousePos;
     Drag m_drag = Drag::None;
     double m_cropAspect = 0.0; // width/height; 0 = freeform
     QPoint m_p0, m_p1; // crop selection corners (widget coords)

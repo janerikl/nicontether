@@ -161,6 +161,11 @@ void RetouchWindow::buildDock() {
     outer->addWidget(m_wbPick);
     connect(m_wbPick, &QPushButton::toggled, this, [this](bool on) {
         RetouchTab *tab = currentTab();
+        if (on && m_healToggle) {
+            QSignalBlocker b(m_healToggle);
+            m_healToggle->setChecked(false);
+            if (tab) tab->setHealMode(false);
+        }
         if (tab) tab->setWbPickMode(on);
     });
 
@@ -257,6 +262,11 @@ void RetouchWindow::buildDock() {
 
     connect(m_cropToggle, &QPushButton::toggled, this, [this](bool on) {
         RetouchTab *tab = currentTab();
+        if (on && m_healToggle) {
+            QSignalBlocker b(m_healToggle);
+            m_healToggle->setChecked(false);
+            if (tab) tab->setHealMode(false);
+        }
         if (tab && tab->isReady()) {
             tab->setCropMode(on);
             if (on) tab->setCropAspect(m_cropAspect->currentData().toDouble());
@@ -270,6 +280,42 @@ void RetouchWindow::buildDock() {
     connect(m_cropReset, &QPushButton::clicked, this, [this] {
         RetouchTab *tab = currentTab();
         if (tab) tab->resetCrop();
+    });
+
+    outer->addSpacing(8);
+    outer->addWidget(new QLabel("<b>Spot Heal</b>"));
+    m_healToggle = new QPushButton("Spot Heal (click blemishes)");
+    m_healToggle->setCheckable(true);
+    outer->addWidget(m_healToggle);
+    auto *healForm = new QFormLayout;
+    m_healBrush = new QSlider(Qt::Horizontal);
+    m_healBrush->setRange(4, 80);
+    m_healBrush->setValue(20);
+    healForm->addRow("Brush size:", m_healBrush);
+    outer->addLayout(healForm);
+    m_healClear = new QPushButton("Clear Spots");
+    outer->addWidget(m_healClear);
+
+    connect(m_healToggle, &QPushButton::toggled, this, [this](bool on) {
+        RetouchTab *tab = currentTab();
+        if (on) {
+            // Heal is mutually exclusive with crop / eyedropper.
+            m_cropToggle->setChecked(false);
+            { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
+            if (tab) tab->setWbPickMode(false);
+        }
+        if (tab && tab->isReady()) {
+            tab->setHealBrush(m_healBrush->value());
+            tab->setHealMode(on);
+        }
+    });
+    connect(m_healBrush, &QSlider::valueChanged, this, [this](int v) {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->setHealBrush(v);
+    });
+    connect(m_healClear, &QPushButton::clicked, this, [this] {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->clearHeals();
     });
 
     outer->addStretch(1);
@@ -368,6 +414,11 @@ void RetouchWindow::onTabChanged(int) {
         m_wbPick->setChecked(false);
     }
     if (tab) tab->setWbPickMode(false);
+    if (m_healToggle) {
+        QSignalBlocker b(m_healToggle);
+        m_healToggle->setChecked(false);
+    }
+    if (tab) tab->setHealMode(false);
     syncDockFromTab();
     if (ready) {
         QSignalBlocker b(m_zoomSlider);
@@ -435,7 +486,8 @@ void RetouchWindow::setDockEnabled(bool enabled) {
         m_curve, m_wbPick, m_beforeAfter,
         m_zoomSlider, m_zoomFit,
         m_rotLeft, m_rotRight, m_flipH, m_flipV,
-        m_cropToggle, m_cropReset, m_cropAspect};
+        m_cropToggle, m_cropReset, m_cropAspect,
+        m_healToggle, m_healBrush, m_healClear};
     for (QWidget *w : widgets)
         if (w) w->setEnabled(enabled);
     if (!enabled && m_cropApply) m_cropApply->setEnabled(false);
