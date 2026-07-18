@@ -28,6 +28,7 @@ add_executable(nikontether
     src/ui/ControlsPanel.cpp
     src/ui/FilmstripWidget.cpp
     src/ui/PreviewWindow.cpp
+    src/ui/AppIcon.cpp
     src/edit/Adjustments.cpp
     src/edit/RawLoader.cpp
     src/edit/ImageCanvas.cpp
