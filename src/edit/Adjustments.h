@@ -12,6 +12,9 @@ struct HealOp {
     int x = 0;
     int y = 0;
     int radius = 0;
+    bool operator==(const HealOp &o) const {
+        return x == o.x && y == o.y && radius == o.radius;
+    }
 };
 
 // Non-destructive edit parameters applied on top of an immutable base image.
@@ -51,6 +54,19 @@ struct Adjustments {
     QRect cropRect;            // oriented-image coords; null = no crop
 
     bool hasCurve() const;     // true if curve is set and not the identity
+
+    bool operator==(const Adjustments &o) const {
+        return brightness == o.brightness && contrast == o.contrast &&
+               highlights == o.highlights && shadows == o.shadows &&
+               saturation == o.saturation && vibrance == o.vibrance &&
+               temperature == o.temperature && tint == o.tint &&
+               wbR == o.wbR && wbG == o.wbG && wbB == o.wbB &&
+               clarity == o.clarity && sharpen == o.sharpen &&
+               vignette == o.vignette && curve == o.curve && heals == o.heals &&
+               rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
+               flipV == o.flipV && cropRect == o.cropRect;
+    }
+    bool operator!=(const Adjustments &o) const { return !(*this == o); }
 };
 
 // True if any tone/colour/detail/effect adjustment is non-neutral (ignores

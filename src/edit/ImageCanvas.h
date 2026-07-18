@@ -15,13 +15,24 @@ class ImageCanvas : public QWidget {
 public:
     explicit ImageCanvas(QWidget *parent = nullptr);
 
+    // An existing spot-heal op, in the same pixel space as the QImage passed
+    // to setImage() (i.e. display-scaled, already oriented/cropped).
+    struct HealMarker {
+        QPointF pos;
+        double radius = 0.0;
+    };
+
     void setImage(const QImage &img); // already-adjusted image to show
     void setPlaceholder(const QString &text);
     void setCropMode(bool on);
     void setCropAspect(double widthOverHeight); // 0 = freeform
     void setPickMode(bool on); // white-balance eyedropper
     void setHealMode(bool on); // spot-heal brush
+    void setZoomMode(bool on); // zoom tool: enables marquee-drag zoom + Ctrl+wheel
     void setBrushRadius(int displayPx);
+    // Existing heal spots, shown as a reddish overlay while hovering in heal
+    // mode (Lightroom-style "visualize spots"); hidden once the mouse leaves.
+    void setHealSpots(const QVector<HealMarker> &spots);
     void clearSelection();
 
     // Zoom control.
@@ -35,6 +46,7 @@ signals:
     void colorPicked(const QColor &color);
     void healAt(const QPoint &imagePoint);
     void zoomChanged(double percent);
+    void healBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while healing
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -45,6 +57,7 @@ protected:
     void keyPressEvent(QKeyEvent *) override;
     void keyReleaseEvent(QKeyEvent *) override;
     void resizeEvent(QResizeEvent *) override;
+    void leaveEvent(QEvent *) override;
 
 private:
     QRect targetRect() const;          // where the image is painted (zoom+pan)
@@ -63,8 +76,10 @@ private:
     bool m_cropMode = false;
     bool m_pickMode = false;
     bool m_healMode = false;
+    bool m_zoomMode = false; // gates marquee-drag zoom + Ctrl+wheel zoom
     int m_brushRadius = 20; // display px, for the brush cursor
     QPoint m_mousePos;
+    QVector<HealMarker> m_healSpots;
     Drag m_drag = Drag::None;
     double m_cropAspect = 0.0; // width/height; 0 = freeform
     QPoint m_p0, m_p1; // crop selection corners (widget coords)

@@ -43,6 +43,7 @@ public:
 
     void setWbPickMode(bool on);
     void setHealMode(bool on);
+    void setZoomMode(bool on); // zoom tool: marquee-drag + Ctrl+wheel zoom
     void setHealBrush(int radiusDisplayPx);
     void clearHeals();
     void showOriginal(bool on); // press-and-hold before/after
@@ -54,6 +55,11 @@ public:
     bool hasEdits() const;
     void saveEdits(); // write the sidecar and mark clean
 
+    void undo();
+    void redo();
+    bool canUndo() const { return m_histIndex > 0; }
+    bool canRedo() const { return m_histIndex >= 0 && m_histIndex < m_history.size() - 1; }
+
     QImage renderFullRes() const; // for export
 
 signals:
@@ -64,6 +70,9 @@ signals:
     // Emitted when the save/edit state changes (for the thumbnail badge).
     void editStateChanged(bool dirty, bool hasEdits);
     void zoomChanged(double percent);
+    void historyChanged(bool canUndo, bool canRedo);
+    void adjustmentsReplaced(); // undo/redo swapped the whole adjustment set
+    void healBrushChanged(int radiusDisplayPx); // ctrl+wheel resized the brush
 
 private slots:
     void onDecodeFinished();
@@ -78,6 +87,9 @@ private:
     void retoneFull();   // full preview incl. clarity/sharpen (after idle)
     void requestRender(const QImage &src, const Adjustments &adj); // coalesced, async
     void markEdited(); // set dirty + emit editStateChanged
+    void commitHistory();     // snapshot current adjustments (coalesced)
+    void applyHistoryState(); // apply m_history[m_histIndex]
+    void updateHealSpots();   // push heal-op markers (display coords) to the canvas
 
     QString m_path;
     QImage m_base;   // full-res decoded RAW (immutable)
@@ -95,6 +107,9 @@ private:
     ImageCanvas *m_canvas = nullptr;
     QFutureWatcher<QImage> *m_watcher = nullptr;
     QTimer *m_fullRenderTimer = nullptr; // fires the full render after dragging stops
+    QTimer *m_commitTimer = nullptr;     // coalesces edits into one undo step
+    QVector<Adjustments> m_history;      // committed adjustment snapshots
+    int m_histIndex = -1;
 
     QThread *m_renderThread = nullptr;
     RenderWorker *m_renderWorker = nullptr;

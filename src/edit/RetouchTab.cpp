@@ -45,6 +45,10 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     connect(m_canvas, &ImageCanvas::colorPicked, this, &RetouchTab::onColorPicked);
     connect(m_canvas, &ImageCanvas::healAt, this, &RetouchTab::onHealAt);
     connect(m_canvas, &ImageCanvas::zoomChanged, this, &RetouchTab::zoomChanged);
+    connect(m_canvas, &ImageCanvas::healBrushRadiusChanged, this, [this](int r) {
+        m_healRadiusDisplay = r; // keep in sync so heal ops use the new size
+        emit healBrushChanged(r);
+    });
 
     m_canvas->setPlaceholder("Decoding RAW…");
 
@@ -53,6 +57,12 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     m_fullRenderTimer->setSingleShot(true);
     m_fullRenderTimer->setInterval(140);
     connect(m_fullRenderTimer, &QTimer::timeout, this, &RetouchTab::retoneFull);
+
+    // Coalesce rapid edits (a slider drag) into one undo step.
+    m_commitTimer = new QTimer(this);
+    m_commitTimer->setSingleShot(true);
+    m_commitTimer->setInterval(350);
+    connect(m_commitTimer, &QTimer::timeout, this, &RetouchTab::commitHistory);
 
     // Render worker on its own thread so applyAdjustments never blocks the GUI.
     qRegisterMetaType<Adjustments>("Adjustments");
@@ -91,6 +101,10 @@ void RetouchTab::onDecodeFinished() {
     emit decoded(true);
     // Reflect any restored edits in the badge (clean, but possibly has edits).
     emit editStateChanged(m_dirty, hasEdits());
+    // Seed the undo history with the initial (loaded) state.
+    m_history = {m_adj};
+    m_histIndex = 0;
+    emit historyChanged(false, false);
 }
 
 bool RetouchTab::hasEdits() const {
@@ -101,6 +115,51 @@ bool RetouchTab::hasEdits() const {
 void RetouchTab::markEdited() {
     m_dirty = true;
     emit editStateChanged(true, hasEdits());
+    if (m_commitTimer) m_commitTimer->start(); // schedule an undo snapshot
+}
+
+void RetouchTab::commitHistory() {
+    if (m_histIndex < 0) { // not seeded yet
+        m_history = {m_adj};
+        m_histIndex = 0;
+        emit historyChanged(canUndo(), canRedo());
+        return;
+    }
+    if (m_adj == m_history[m_histIndex]) return; // nothing new to record
+    m_history.resize(m_histIndex + 1);           // drop any redo branch
+    m_history.append(m_adj);
+    m_histIndex = m_history.size() - 1;
+    const int kMaxHistory = 60;
+    if (m_history.size() > kMaxHistory) {
+        m_history.removeFirst();
+        --m_histIndex;
+    }
+    emit historyChanged(canUndo(), canRedo());
+}
+
+void RetouchTab::applyHistoryState() {
+    m_adj = m_history[m_histIndex];
+    rebuildGeom();
+    m_dirty = true;
+    emit adjustmentsReplaced();
+    emit editStateChanged(m_dirty, hasEdits());
+    emit historyChanged(canUndo(), canRedo());
+}
+
+void RetouchTab::undo() {
+    if (m_commitTimer) m_commitTimer->stop();
+    commitHistory(); // capture any in-progress change first
+    if (!canUndo()) return;
+    --m_histIndex;
+    applyHistoryState();
+}
+
+void RetouchTab::redo() {
+    if (m_commitTimer) m_commitTimer->stop();
+    commitHistory();
+    if (!canRedo()) return;
+    ++m_histIndex;
+    applyHistoryState();
 }
 
 void RetouchTab::saveEdits() {
@@ -135,7 +194,24 @@ void RetouchTab::rebuildGeom() {
     m_scaleFromGeom = m_geomImg.width() > 0
                           ? double(m_scaled.width()) / m_geomImg.width()
                           : 1.0;
+    updateHealSpots();
     retone();
+}
+
+// Convert stored heal ops (oriented-image, pre-crop coords) into the display
+// (m_scaled) pixel space so the canvas can draw hover-highlight markers.
+void RetouchTab::updateHealSpots() {
+    QVector<ImageCanvas::HealMarker> spots;
+    QPoint offset = (!m_cropMode && !m_adj.cropRect.isNull())
+                        ? m_adj.cropRect.topLeft() : QPoint(0, 0);
+    for (const HealOp &op : m_adj.heals) {
+        ImageCanvas::HealMarker m;
+        m.pos = QPointF((op.x - offset.x()) * m_scaleFromGeom,
+                         (op.y - offset.y()) * m_scaleFromGeom);
+        m.radius = op.radius * m_scaleFromGeom;
+        spots.append(m);
+    }
+    m_canvas->setHealSpots(spots);
 }
 
 void RetouchTab::retone() {
@@ -222,6 +298,11 @@ void RetouchTab::setWbPickMode(bool on) {
 
 void RetouchTab::setHealMode(bool on) {
     m_canvas->setHealMode(on);
+    if (on) m_canvas->setFocus();
+}
+
+void RetouchTab::setZoomMode(bool on) {
+    m_canvas->setZoomMode(on);
     if (on) m_canvas->setFocus();
 }
 

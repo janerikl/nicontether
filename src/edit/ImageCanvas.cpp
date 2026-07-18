@@ -10,6 +10,8 @@
 namespace {
 constexpr double kMinScale = 0.05;
 constexpr double kMaxScale = 8.0;
+constexpr int kHealBrushMin = 4;
+constexpr int kHealBrushMax = 80;
 }
 
 ImageCanvas::ImageCanvas(QWidget *parent) : QWidget(parent) {
@@ -57,8 +59,18 @@ void ImageCanvas::setHealMode(bool on) {
     update();
 }
 
+void ImageCanvas::setZoomMode(bool on) {
+    m_zoomMode = on;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+}
+
 void ImageCanvas::setBrushRadius(int displayPx) {
     m_brushRadius = displayPx;
+    if (m_healMode) update();
+}
+
+void ImageCanvas::setHealSpots(const QVector<HealMarker> &spots) {
+    m_healSpots = spots;
     if (m_healMode) update();
 }
 
@@ -204,6 +216,18 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
     }
 
     if (m_healMode && underMouse()) {
+        // Existing spots: reddish highlight, visible only while hovering.
+        if (!m_healSpots.isEmpty()) {
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(QPen(QColor(255, 60, 60, 210), 2));
+            p.setBrush(QColor(255, 60, 60, 60));
+            for (const HealMarker &m : m_healSpots) {
+                QPointF c = m_topLeft + QPointF(m.pos.x() * m_scale, m.pos.y() * m_scale);
+                double r = m.radius * m_scale;
+                p.drawEllipse(c, r, r);
+            }
+        }
+
         // Brush radius is in image(display) px; scale to on-screen size.
         double rad = m_brushRadius * m_scale;
         p.setRenderHint(QPainter::Antialiasing, true);
@@ -257,13 +281,14 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         return;
     }
 
-    // Normal mode: Space+drag pans, plain drag draws a zoom marquee.
+    // Normal mode: Space+drag always pans; plain drag draws a zoom marquee
+    // only while the Zoom tool is selected.
     if (ev->button() == Qt::LeftButton) {
         if (m_spaceDown) {
             m_panning = true;
             m_panLast = ev->pos();
             setCursor(Qt::ClosedHandCursor);
-        } else {
+        } else if (m_zoomMode) {
             m_marquee = true;
             m_mp0 = m_mp1 = ev->pos();
         }
@@ -342,10 +367,22 @@ void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
 
 void ImageCanvas::wheelEvent(QWheelEvent *ev) {
     if ((ev->modifiers() & Qt::ControlModifier) && !m_img.isNull()) {
-        double f = ev->angleDelta().y() > 0 ? 1.25 : 0.8;
-        zoomTo(m_scale * f, ev->position());
-        ev->accept();
-        return;
+        // In heal mode, ctrl+wheel resizes the brush instead of zooming.
+        if (m_healMode) {
+            int step = ev->angleDelta().y() > 0 ? 2 : -2;
+            m_brushRadius = std::clamp(m_brushRadius + step, kHealBrushMin, kHealBrushMax);
+            emit healBrushRadiusChanged(m_brushRadius);
+            update();
+            ev->accept();
+            return;
+        }
+        // Ctrl+wheel only zooms while the Zoom tool is selected.
+        if (m_zoomMode) {
+            double f = ev->angleDelta().y() > 0 ? 1.25 : 0.8;
+            zoomTo(m_scale * f, ev->position());
+            ev->accept();
+            return;
+        }
     }
     QWidget::wheelEvent(ev);
 }
@@ -374,4 +411,9 @@ void ImageCanvas::keyReleaseEvent(QKeyEvent *ev) {
         return;
     }
     QWidget::keyReleaseEvent(ev);
+}
+
+void ImageCanvas::leaveEvent(QEvent *) {
+    // Hide the brush cursor and spot-heal overlay once the mouse leaves.
+    if (m_healMode) update();
 }

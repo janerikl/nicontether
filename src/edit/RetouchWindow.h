@@ -14,7 +14,11 @@ class CurveEditor;
 class QTabWidget;
 class QSlider;
 class QPushButton;
+class QToolButton;
 class QLabel;
+class QToolBar;
+class QStackedWidget;
+class QDockWidget;
 
 // Separate top-level window for retouching photos. Own filmstrip selector plus
 // one tab per open photo, an adjustments dock, and JPEG/PNG export.
@@ -42,6 +46,8 @@ private slots:
 
 private:
     void buildDock();
+    void buildToolPanel(); // narrow left icon toolbar: Zoom / Crop / Spot Heal tools
+    void buildToolOptionsBar(); // contextual per-tool options row under the main toolbar
     RetouchTab *currentTab() const;
     void syncDockFromTab();
     void setDockEnabled(bool enabled);
@@ -50,6 +56,11 @@ private:
     FilmstripWidget *m_filmstrip = nullptr;
     QSet<QString> m_filmstripPaths;
     QMap<QString, RetouchTab *> m_openTabs;
+
+    // View menu togglable panels.
+    QToolBar *m_toolsBar = nullptr; // left icon bar: Zoom / Crop / Spot Heal
+    QDockWidget *m_adjustmentsDock = nullptr;
+    void buildViewMenu();
 
     // Dock controls.
     QSlider *m_brightness = nullptr;
@@ -73,14 +84,22 @@ private:
     QPushButton *m_rotRight = nullptr;
     QPushButton *m_flipH = nullptr;
     QPushButton *m_flipV = nullptr;
-    QPushButton *m_cropToggle = nullptr;
+    QToolButton *m_toolZoom = nullptr;  // left icon bar: zoom tool (marquee/Ctrl+wheel)
+    QToolButton *m_cropToggle = nullptr; // left icon bar: crop tool
     QPushButton *m_cropApply = nullptr;
     QPushButton *m_cropReset = nullptr;
     class QComboBox *m_cropAspect = nullptr;
-    QPushButton *m_healToggle = nullptr;
+    QToolButton *m_healToggle = nullptr; // left icon bar: spot-heal tool
     QSlider *m_healBrush = nullptr;
     QPushButton *m_healClear = nullptr;
     QLabel *m_statusLabel = nullptr;
+    class QAction *m_undoAction = nullptr;
+    class QAction *m_redoAction = nullptr;
+
+    // Contextual per-tool options row (shown under the main toolbar only while
+    // a left-bar tool is selected).
+    QToolBar *m_toolOptionsBar = nullptr;
+    QStackedWidget *m_toolOptionsStack = nullptr;
 
     ExportPresetStore m_presetStore;
     bool m_syncing = false; // guard against feedback while loading dock from tab
