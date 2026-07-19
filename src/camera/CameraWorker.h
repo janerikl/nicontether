@@ -49,6 +49,9 @@ private:
     ConfigOptionMap readConfigTree();
     bool findWidget(const char *name, void **widgetOut, void **rootOut);
     void reportError(const QString &context, int gpCode);
+    // Unmounts any gvfs-mounted cameras that would otherwise hold the USB
+    // claim. Returns true if an unmount was performed. Best-effort.
+    bool releaseGvfsCameraMounts();
 
     GPContext *m_ctx = nullptr;
     Camera *m_cam = nullptr;

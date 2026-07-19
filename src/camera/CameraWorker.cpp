@@ -4,6 +4,9 @@
 #include <QFile>
 #include <QDir>
 #include <QFileInfo>
+#include <QProcess>
+#include <QStandardPaths>
+#include <QThread>
 
 #include <gphoto2/gphoto2-camera.h>
 #include <gphoto2/gphoto2-context.h>
@@ -43,10 +46,18 @@ void CameraWorker::connectCamera() {
         return;
     }
     int ret = gp_camera_init(m_cam, m_ctx);
+    // The desktop's gvfs auto-mounts the camera on plug-in, which holds the USB
+    // claim and makes gp_camera_init fail with GP_ERROR_IO_USB_CLAIM. Unmount it
+    // and retry once so the user never has to run `gio mount -u` by hand.
+    if (ret == GP_ERROR_IO_USB_CLAIM && releaseGvfsCameraMounts()) {
+        ret = gp_camera_init(m_cam, m_ctx);
+    }
     if (ret != GP_OK) {
         QString hint;
         if (ret == GP_ERROR_IO_USB_CLAIM)
-            hint = " The device may be auto-mounted; try: gio mount -u ...";
+            hint = " The device is auto-mounted by the desktop and could not be"
+                   " released automatically. Try unplugging and replugging it,"
+                   " or run: gio mount -s gphoto2";
         gp_camera_free(m_cam);
         m_cam = nullptr;
         emit cameraError(QString("Could not connect to camera (%1).%2")
@@ -63,6 +74,28 @@ void CameraWorker::connectCamera() {
     ConfigOptionMap options = readConfigTree();
     emit connected(name, options);
     emit log("Connected: " + name);
+}
+
+bool CameraWorker::releaseGvfsCameraMounts() {
+    const QString gio = QStandardPaths::findExecutable("gio");
+    if (gio.isEmpty()) {
+        emit log("Camera is auto-mounted but 'gio' was not found to release it.");
+        return false;
+    }
+    // Unmount every gvfs mount using the gphoto2 scheme, ignoring any pending
+    // file operations. This drops the volume monitor's USB claim.
+    emit log("Camera is auto-mounted; releasing it via gio...");
+    QProcess proc;
+    proc.start(gio, {"mount", "-s", "gphoto2", "-f"});
+    if (!proc.waitForFinished(5000)) {
+        proc.kill();
+        proc.waitForFinished(1000);
+        emit log("Timed out while releasing the auto-mounted camera.");
+        return false;
+    }
+    // gvfs needs a moment to fully drop the USB claim after unmounting.
+    QThread::msleep(300);
+    return true;
 }
 
 void CameraWorker::disconnectCamera() {
