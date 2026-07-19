@@ -46,11 +46,18 @@ void CameraWorker::connectCamera() {
         return;
     }
     int ret = gp_camera_init(m_cam, m_ctx);
-    // The desktop's gvfs auto-mounts the camera on plug-in, which holds the USB
-    // claim and makes gp_camera_init fail with GP_ERROR_IO_USB_CLAIM. Unmount it
-    // and retry once so the user never has to run `gio mount -u` by hand.
-    if (ret == GP_ERROR_IO_USB_CLAIM && releaseGvfsCameraMounts()) {
-        ret = gp_camera_init(m_cam, m_ctx);
+    // The desktop's gvfs holds the USB claim two ways: an auto-mount of the
+    // camera, and the gvfs-gphoto2 volume monitor briefly probing the device.
+    // Both make gp_camera_init fail with GP_ERROR_IO_USB_CLAIM. First drop any
+    // active mount, then retry a few times with backoff to win the race against
+    // the volume monitor's transient probes — so the user never has to run
+    // `gio mount -s gphoto2` by hand.
+    if (ret == GP_ERROR_IO_USB_CLAIM) {
+        releaseGvfsCameraMounts(); // best-effort; harmless if nothing is mounted
+        for (int attempt = 0; attempt < 5 && ret == GP_ERROR_IO_USB_CLAIM; ++attempt) {
+            QThread::msleep(400);
+            ret = gp_camera_init(m_cam, m_ctx);
+        }
     }
     if (ret != GP_OK) {
         QString hint;
