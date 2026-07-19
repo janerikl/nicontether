@@ -195,6 +195,9 @@ void RetouchTab::jumpToHistory(int index) {
 
 void RetouchTab::saveEdits() {
     EditSidecar::save(m_path, m_adj);
+    // Cache the edited look so the filmstrip reflects it across sessions.
+    if (!m_lastEdited.isNull())
+        EditSidecar::saveThumbnail(m_path, m_lastEdited);
     m_dirty = false;
     emit editStateChanged(false, hasEdits());
 }

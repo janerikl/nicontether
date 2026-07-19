@@ -1095,7 +1095,11 @@ RetouchTab *RetouchWindow::currentTab() const {
 
 void RetouchWindow::addToFilmstrip(const QString &path) {
     if (m_filmstripPaths.contains(path)) return;
-    QImage thumb = NefPreview::extract(path);
+    // Prefer the cached edited thumbnail so the strip shows the latest edits;
+    // fall back to the NEF's embedded preview for un-edited photos.
+    QImage thumb = EditSidecar::loadThumbnail(path);
+    if (thumb.isNull())
+        thumb = NefPreview::extract(path);
     m_filmstrip->addCapture(path, thumb);
     m_filmstripPaths.insert(path);
     // Show a "saved edits exist" badge if a sidecar is already on disk.
@@ -1177,6 +1181,9 @@ void RetouchWindow::openPhoto(const QString &path) {
     });
     connect(tab, &RetouchTab::previewUpdated, this, [this, tab] {
         if (tab == currentTab()) m_levelsPanel->setImage(tab->previewImage());
+        // Reflect the edit live in the filmstrip thumbnail (in-memory; the
+        // on-disk cache is written on save via EditSidecar::saveThumbnail).
+        m_filmstrip->updateThumbnail(tab->path(), tab->previewImage());
     });
     connect(tab, &RetouchTab::masksChanged, this, [this, tab] {
         if (tab == currentTab()) refreshMaskPanel();
@@ -1312,9 +1319,10 @@ void RetouchWindow::onDeleteRequested(const QStringList &paths) {
             ++failed;
             continue;
         }
-        // Best-effort trash of the edit sidecar (may not exist).
+        // Best-effort trash of the edit sidecar and cached thumbnail (may not exist).
         if (EditSidecar::exists(path))
             QFile::moveToTrash(EditSidecar::pathFor(path));
+        QFile::moveToTrash(EditSidecar::thumbnailPathFor(path));
 
         // Close an open editor tab for this photo, if any.
         if (RetouchTab *tab = m_openTabs.value(path, nullptr)) {

@@ -74,16 +74,30 @@ void FilmstripWidget::setBadge(const QString &path, Badge state) {
     }
 }
 
-void FilmstripWidget::addCapture(const QString &path, const QImage &preview) {
-    QPixmap pix;
-    if (!preview.isNull()) {
-        pix = QPixmap::fromImage(preview).scaled(
+QPixmap FilmstripWidget::iconFor(const QImage &image) const {
+    if (!image.isNull()) {
+        return QPixmap::fromImage(image).scaled(
             iconSize(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    } else {
-        // Placeholder so a capture without an extractable preview still appears.
-        pix = QPixmap(iconSize());
-        pix.fill(Qt::darkGray);
     }
+    // Placeholder so a capture without an extractable preview still appears.
+    QPixmap pix(iconSize());
+    pix.fill(Qt::darkGray);
+    return pix;
+}
+
+void FilmstripWidget::updateThumbnail(const QString &path, const QImage &image) {
+    if (image.isNull()) return;
+    for (int i = 0; i < count(); ++i) {
+        QListWidgetItem *it = item(i);
+        if (it->data(Qt::UserRole).toString() == path) {
+            it->setIcon(QIcon(iconFor(image)));
+            return;
+        }
+    }
+}
+
+void FilmstripWidget::addCapture(const QString &path, const QImage &preview) {
+    QPixmap pix = iconFor(preview);
 
     auto *item = new QListWidgetItem(QIcon(pix), QFileInfo(path).fileName());
     item->setData(Qt::UserRole, path);

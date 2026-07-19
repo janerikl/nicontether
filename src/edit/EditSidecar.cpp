@@ -217,4 +217,24 @@ bool load(const QString &imagePath, Adjustments &out) {
     return true;
 }
 
+QString thumbnailPathFor(const QString &imagePath) {
+    return imagePath + ".nte.thumb.jpg";
+}
+
+bool saveThumbnail(const QString &imagePath, const QImage &image) {
+    if (image.isNull()) return false;
+    // Cap the cached thumbnail's size — the filmstrip icon is tiny, so a modest
+    // JPEG keeps the sidecar footprint small.
+    QImage scaled = image.width() > 320
+                        ? image.scaledToWidth(320, Qt::SmoothTransformation)
+                        : image;
+    return scaled.save(thumbnailPathFor(imagePath), "JPEG", 85);
+}
+
+QImage loadThumbnail(const QString &imagePath) {
+    QImage img;
+    img.load(thumbnailPathFor(imagePath), "JPEG");
+    return img;
+}
+
 } // namespace EditSidecar
