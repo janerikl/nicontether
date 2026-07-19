@@ -40,6 +40,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QStatusBar>
+#include <QFile>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QFileInfo>
@@ -326,6 +327,8 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
             &RetouchWindow::onFilmstripSelected);
     connect(m_filmstrip, &FilmstripWidget::syncEditsRequested, this,
             &RetouchWindow::onSyncEdits);
+    connect(m_filmstrip, &FilmstripWidget::deleteRequested, this,
+            &RetouchWindow::onDeleteRequested);
     connect(m_filmstrip, &FilmstripWidget::itemSelectionChanged, this,
             &RetouchWindow::updateEditClipboardActions);
 
@@ -1298,6 +1301,47 @@ void RetouchWindow::onTabCloseRequested(int index) {
     m_openTabs.remove(tab->path());
     m_tabs->removeTab(index);
     tab->deleteLater();
+}
+
+void RetouchWindow::onDeleteRequested(const QStringList &paths) {
+    int deleted = 0, failed = 0;
+    for (const QString &path : paths) {
+        // Trash the RAW; skip UI/state removal if the file can't be trashed so
+        // we never drop a thumbnail while its file remains on disk.
+        if (!QFile::moveToTrash(path)) {
+            ++failed;
+            continue;
+        }
+        // Best-effort trash of the edit sidecar (may not exist).
+        if (EditSidecar::exists(path))
+            QFile::moveToTrash(EditSidecar::pathFor(path));
+
+        // Close an open editor tab for this photo, if any.
+        if (RetouchTab *tab = m_openTabs.value(path, nullptr)) {
+            int idx = m_tabs->indexOf(tab);
+            if (idx >= 0) m_tabs->removeTab(idx);
+            m_openTabs.remove(path);
+            tab->deleteLater();
+        }
+
+        // Remove the filmstrip thumbnail (match by UserRole path).
+        for (int i = 0; i < m_filmstrip->count(); ++i) {
+            QListWidgetItem *it = m_filmstrip->item(i);
+            if (it->data(Qt::UserRole).toString() == path) {
+                delete m_filmstrip->takeItem(i);
+                break;
+            }
+        }
+        m_filmstripPaths.remove(path);
+        ++deleted;
+    }
+
+    if (failed > 0)
+        m_statusLabel->setText(
+            QString("Deleted %1 photo(s); %2 could not be moved to Trash")
+                .arg(deleted).arg(failed));
+    else
+        m_statusLabel->setText(QString("Deleted %1 photo(s)").arg(deleted));
 }
 
 void RetouchWindow::syncDockFromTab() {

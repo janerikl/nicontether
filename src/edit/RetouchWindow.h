@@ -54,6 +54,7 @@ private slots:
     void onFilmstripSelected(const QString &path);
     void onTabChanged(int index);
     void onTabCloseRequested(int index);
+    void onDeleteRequested(const QStringList &paths);
     void onToneChanged();
     void onExport();
 
