@@ -57,6 +57,32 @@ void LiveViewWidget::setCalibrationCrosshair(bool on, QPointF norm) {
     update();
 }
 
+void LiveViewWidget::setGridMode(GridMode m) {
+    if (m_gridMode == m) return;
+    m_gridMode = m;
+    update();
+}
+
+void LiveViewWidget::drawGrid(QPainter &painter, const QRect &r) const {
+    auto segs = grid::segments(m_gridMode);
+    if (segs.empty()) return;
+    painter.save();
+    painter.setClipRect(r);
+    painter.setBrush(Qt::NoBrush);
+    // Two-pass stroke: dark under-stroke for contrast, then bright line.
+    const QColor dark(0, 0, 0, 90);
+    const QColor light(255, 255, 255, 180);
+    auto toLine = [&](const grid::Seg &s) {
+        return QLineF(r.x() + s.x1 * r.width(), r.y() + s.y1 * r.height(),
+                      r.x() + s.x2 * r.width(), r.y() + s.y2 * r.height());
+    };
+    painter.setPen(QPen(dark, 3));
+    for (const auto &s : segs) painter.drawLine(toLine(s));
+    painter.setPen(QPen(light, 1));
+    for (const auto &s : segs) painter.drawLine(toLine(s));
+    painter.restore();
+}
+
 QRect LiveViewWidget::drawnRect() const {
     if (m_frame.isNull()) return QRect();
     QSize scaled = m_frame.size().scaled(size(), Qt::KeepAspectRatio);
@@ -76,6 +102,8 @@ void LiveViewWidget::paintEvent(QPaintEvent *) {
     }
     QRect r = drawnRect();
     painter.drawImage(r, m_frame);
+
+    drawGrid(painter, r);
 
     if (m_hasReticle) {
         int side = int(m_afBoxFrac * qMin(r.width(), r.height()));

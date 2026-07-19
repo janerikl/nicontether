@@ -4,6 +4,10 @@
 #include <QImage>
 #include <QPointF>
 
+#include "ui/GridOverlay.h"
+
+class QPainter;
+
 // Displays the live view stream. Emits focusRequested with sensor-space pixel
 // coordinates when the user clicks, for click-to-focus.
 class LiveViewWidget : public QWidget {
@@ -22,6 +26,9 @@ public:
     // and a crosshair is drawn at the target position.
     void setCalibrationMode(bool on);
     void setCalibrationCrosshair(bool on, QPointF norm = {});
+
+    void setGridMode(GridMode m);
+    GridMode gridMode() const { return m_gridMode; }
 
 public slots:
     // Update the reticle color after an AF-area command: green on success,
@@ -54,4 +61,7 @@ private:
     bool m_calibrating = false;
     bool m_hasCrosshair = false;
     QPointF m_crosshairNorm;
+
+    GridMode m_gridMode = GridMode::Off;
+    void drawGrid(QPainter &painter, const QRect &r) const;
 };
