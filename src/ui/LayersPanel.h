@@ -39,7 +39,7 @@ signals:
     void maskAdjustChanged(const MaskAdjust &a);
     void maskOpacityChanged(double opacity); // 0..1
     void maskBlendChanged(BlendMode mode);
-    void maskVisibleChanged(bool visible);
+    void maskVisibleChanged(int index, bool visible);
     void maskNameChanged(const QString &name);
     void maskReorderRequested(int from, int to);
 

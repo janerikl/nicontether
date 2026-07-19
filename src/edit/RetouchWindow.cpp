@@ -987,9 +987,9 @@ void RetouchWindow::buildLayersDock() {
                 if (tab) tab->setActiveMaskBlend(mode);
             });
     connect(m_layersPanel, &LayersPanel::maskVisibleChanged, this,
-            [this](bool visible) {
+            [this](int index, bool visible) {
                 RetouchTab *tab = currentTab();
-                if (tab) { tab->setActiveMaskVisible(visible); refreshMaskPanel(); }
+                if (tab) { tab->setMaskVisible(index, visible); refreshMaskPanel(); }
             });
     connect(m_layersPanel, &LayersPanel::maskNameChanged, this,
             [this](const QString &name) {

@@ -268,16 +268,22 @@ QImage coverFit(const QImage &src, int w, int h) {
     return scaled.copy(x, y, w, h);
 }
 
-// Apply all layers in stack order, blending each layer's full tone/colour/
-// detail content into the composite-so-far by its per-pixel mask weight,
-// opacity, and blend mode. Image layers substitute a cover-fit of their own
-// source photo for "the composite so far" as the input to that tone pass.
+// Apply all layers, blending each layer's full tone/colour/detail content
+// into the composite-so-far by its per-pixel mask weight, opacity, and blend
+// mode. Image layers substitute a cover-fit of their own source photo for
+// "the composite so far" as the input to that tone pass.
+//
+// Iterated back-to-front: `masks` is stored/displayed top-of-stack-first (the
+// LayersPanel list shows index 0 at the top row), but compositing must apply
+// the bottom-most layer first so a higher layer paints over a lower one —
+// hence the reverse loop.
 void applyMasks(QImage &img, const QVector<Mask> &masks) {
     const int w = img.width(), h = img.height();
     if (w == 0 || h == 0) return;
     const double W = w;
     std::vector<uchar> cov;
-    for (const Mask &m : masks) {
+    for (int mi = masks.size() - 1; mi >= 0; --mi) {
+        const Mask &m = masks[mi];
         if (!m.visible || m.opacity <= 0.0) continue;
         const bool imageLayer = m.isImageLayer();
         if (imageLayer && (m.sourceMissing || m.sourceImageCache.isNull())) continue;

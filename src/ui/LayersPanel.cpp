@@ -155,8 +155,7 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
             [this](QListWidgetItem *item) {
                 if (m_syncing) return;
                 int i = m_maskList->row(item);
-                if (i == m_active)
-                    emit maskVisibleChanged(item->checkState() == Qt::Checked);
+                emit maskVisibleChanged(i, item->checkState() == Qt::Checked);
             });
     connect(m_maskList->model(), &QAbstractItemModel::rowsMoved, this,
             [this](const QModelIndex &, int start, int, const QModelIndex &,

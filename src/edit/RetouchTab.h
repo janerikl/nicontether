@@ -61,6 +61,7 @@ public:
     void setActiveMaskOpacity(double opacity);       // 0..1
     void setActiveMaskBlend(BlendMode mode);
     void setActiveMaskVisible(bool visible);
+    void setMaskVisible(int index, bool visible); // toggle any layer, not just the active one
     void setActiveMaskName(const QString &name);
     void moveMask(int from, int to);                 // reorder within the stack
     const QVector<Mask> &masks() const { return m_adj.masks; }

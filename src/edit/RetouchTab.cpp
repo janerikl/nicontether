@@ -526,8 +526,12 @@ void RetouchTab::setActiveMaskBlend(BlendMode mode) {
 }
 
 void RetouchTab::setActiveMaskVisible(bool visible) {
-    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
-    Mask &m = m_adj.masks[m_activeMask];
+    setMaskVisible(m_activeMask, visible);
+}
+
+void RetouchTab::setMaskVisible(int index, bool visible) {
+    if (index < 0 || index >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[index];
     if (m.visible == visible) return;
     m.visible = visible;
     retone();
