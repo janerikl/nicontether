@@ -97,15 +97,28 @@ void FilmstripWidget::contextMenuEvent(QContextMenuEvent *ev) {
     if (!item) return;
     QString path = item->data(Qt::UserRole).toString();
 
+    // If the clicked thumbnail is part of the current multi-selection, the
+    // action targets the whole selection; otherwise just the clicked one.
+    QStringList delTargets;
+    if (item->isSelected() && selectedItems().size() > 1)
+        delTargets = selectedPaths();
+    else
+        delTargets = QStringList{path};
+
     QMenu menu(this);
     QAction *retouch = menu.addAction("Open in Retouch");
     const int selCount = selectedItems().size();
     QAction *sync = menu.addAction(
         selCount > 1 ? QString("Sync Edits to %1 Selected").arg(selCount)
                      : QString("Sync Edits to Selected"));
+    QAction *del = menu.addAction(
+        delTargets.size() > 1 ? QString("Delete %1 Photos").arg(delTargets.size())
+                              : QString("Delete Photo"));
     QAction *chosen = menu.exec(ev->globalPos());
     if (chosen == retouch)
         emit retouchRequested(path);
     else if (chosen == sync)
         emit syncEditsRequested();
+    else if (chosen == del)
+        emit deleteRequested(delTargets);
 }

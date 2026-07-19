@@ -23,6 +23,7 @@ signals:
     void frameSelected(const QString &path);
     void retouchRequested(const QString &path);
     void syncEditsRequested(); // "Sync Edits to Selected" chosen from the menu
+    void deleteRequested(const QStringList &paths); // "Delete" chosen from the menu
 
 protected:
     void contextMenuEvent(QContextMenuEvent *) override;
