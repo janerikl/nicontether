@@ -5,6 +5,7 @@
 
 #include "capture/SessionManager.h"
 #include "camera/CameraSettings.h"
+#include "camera/AfCalibrator.h"
 
 class CameraController;
 class LiveViewWidget;
@@ -13,6 +14,9 @@ class PreviewWindow;
 class QAction;
 class QTabWidget;
 class QShortcut;
+class QFrame;
+class QLabel;
+class QPushButton;
 
 // Self-contained tethering view: owns the camera pipeline (controller, session),
 // the live-view / preview tabs, the camera ControlsPanel, and the tether actions
@@ -37,10 +41,14 @@ public:
     // Set the AF coordinate frame size used by click-to-focus.
     void setAfFrameSize(int w, int h);
 
+    // Begin guided AF-frame calibration (no-op unless live view is running).
+    void startCalibration();
+
 signals:
     void captureComplete(const QString &path);
     void statusMessage(const QString &message);
     void cameraConnected(const QString &cameraName);
+    void calibrationFinished(int w, int h);
 
 private slots:
     void onConnect();
@@ -57,6 +65,12 @@ private:
     void setConnectedState(bool connected);
     void updateCaptureShortcut();
 
+    void buildCalibrationPanel();
+    void positionCalibrationPanel();
+    void fireCalibrationAf();
+    void updateCalibrationPrompt();
+    void endCalibration(bool finished);
+
     CameraController *m_controller = nullptr;
     SessionManager m_session;
 
@@ -72,4 +86,17 @@ private:
     QAction *m_sessionAction = nullptr;
     QShortcut *m_captureShortcut = nullptr;
     bool m_active = false;
+
+    AfCalibrator m_calibrator;
+    bool m_calibrating = false;
+    int m_afFrameW = 640;
+    int m_afFrameH = 426;
+
+    QFrame *m_calibPanel = nullptr;
+    QLabel *m_calibLabel = nullptr;
+    QPushButton *m_calibInward = nullptr;
+    QPushButton *m_calibOn = nullptr;
+    QPushButton *m_calibOutward = nullptr;
+    QPushButton *m_calibRefire = nullptr;
+    QPushButton *m_calibCancel = nullptr;
 };
