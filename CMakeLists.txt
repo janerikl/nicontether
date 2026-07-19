@@ -75,3 +75,8 @@ install(CODE "
 ")
 
 # Register CameraSettings metatypes are header-only; nothing extra needed.
+
+enable_testing()
+add_executable(af_mapping_test tests/AfMappingTest.cpp)
+target_include_directories(af_mapping_test PRIVATE src)
+add_test(NAME af_mapping_test COMMAND af_mapping_test)
