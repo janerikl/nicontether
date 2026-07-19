@@ -6,6 +6,8 @@
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QSignalBlocker>
+#include <QSpinBox>
+#include <QSettings>
 
 ControlsPanel::ControlsPanel(QWidget *parent) : QWidget(parent) {
     auto *outer = new QVBoxLayout(this);
@@ -17,6 +19,32 @@ ControlsPanel::ControlsPanel(QWidget *parent) : QWidget(parent) {
     outer->addLayout(m_form);
 
     outer->addStretch(1);
+
+    // Click-to-focus calibration: AF coordinate frame size. Nikon's changeafarea
+    // wants coordinates in the live-view header's ImageWidth/Height frame, which
+    // libgphoto2 discards — so it is user-adjustable. Center is always correct;
+    // tune these until edge clicks focus where the reticle is drawn.
+    auto *afForm = new QFormLayout;
+    m_afFrameW = new QSpinBox;
+    m_afFrameH = new QSpinBox;
+    m_afFrameW->setRange(1, 20000);
+    m_afFrameH->setRange(1, 20000);
+    afForm->addRow("AF frame width:", m_afFrameW);
+    afForm->addRow("AF frame height:", m_afFrameH);
+    outer->addLayout(afForm);
+
+    loadAfFrameSettings();
+
+    auto persist = [this]() {
+        QSettings s;
+        s.setValue("af/frameWidth", m_afFrameW->value());
+        s.setValue("af/frameHeight", m_afFrameH->value());
+        emit afFrameSizeChanged(m_afFrameW->value(), m_afFrameH->value());
+    };
+    connect(m_afFrameW, qOverload<int>(&QSpinBox::valueChanged), this,
+            [persist](int) { persist(); });
+    connect(m_afFrameH, qOverload<int>(&QSpinBox::valueChanged), this,
+            [persist](int) { persist(); });
 
     m_afButton = new QPushButton("Autofocus");
     m_captureButton = new QPushButton("Capture");
@@ -32,6 +60,20 @@ ControlsPanel::ControlsPanel(QWidget *parent) : QWidget(parent) {
     connect(m_captureButton, &QPushButton::clicked, this, &ControlsPanel::captureRequested);
 
     setEnabledControls(false);
+
+    emit afFrameSizeChanged(m_afFrameW->value(), m_afFrameH->value());
+}
+
+void ControlsPanel::loadAfFrameSettings() {
+    QSettings s;
+    // Default 640x426: a starting point for the D750 / D7x00 / D5x00 family.
+    // The user calibrates from here.
+    int w = s.value("af/frameWidth", 640).toInt();
+    int h = s.value("af/frameHeight", 426).toInt();
+    QSignalBlocker bw(m_afFrameW);
+    QSignalBlocker bh(m_afFrameH);
+    m_afFrameW->setValue(w);
+    m_afFrameH->setValue(h);
 }
 
 QComboBox *ControlsPanel::addRow(const QString &label) {
