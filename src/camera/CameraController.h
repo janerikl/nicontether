@@ -36,6 +36,7 @@ signals:
     void configChanged(const QString &widgetName, const QString &value);
     void cameraError(const QString &message);
     void log(const QString &message);
+    void afAreaResult(bool ok);
 
 private:
     QThread m_thread;

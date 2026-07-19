@@ -19,6 +19,7 @@ CameraController::CameraController(QObject *parent) : QObject(parent) {
     connect(m_worker, &CameraWorker::configChanged, this, &CameraController::configChanged);
     connect(m_worker, &CameraWorker::cameraError, this, &CameraController::cameraError);
     connect(m_worker, &CameraWorker::log, this, &CameraController::log);
+    connect(m_worker, &CameraWorker::afAreaResult, this, &CameraController::afAreaResult);
 
     m_thread.start();
 }

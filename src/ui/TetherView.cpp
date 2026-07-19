@@ -44,6 +44,8 @@ TetherView::TetherView(QWidget *parent) : QWidget(parent) {
             m_controller, &CameraController::capture);
     connect(m_liveView, &LiveViewWidget::focusRequested,
             m_controller, &CameraController::setAfArea);
+    connect(m_controller, &CameraController::afAreaResult,
+            m_liveView, &LiveViewWidget::setAfResult);
 
     // Start with a default session so captures always have a home.
     m_controller->setSaveDirectory(m_session.startSession("studio"));

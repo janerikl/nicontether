@@ -214,6 +214,7 @@ void CameraWorker::setAfArea(int x, int y) {
     void *w = nullptr, *r = nullptr;
     if (!findWidget("changeafarea", &w, &r)) {
         emit log("Focus-point selection not available on this camera.");
+        emit afAreaResult(false);
         return;
     }
     CameraWidget *child = static_cast<CameraWidget *>(w);
@@ -222,8 +223,13 @@ void CameraWorker::setAfArea(int x, int y) {
     gp_widget_set_value(child, coord.toUtf8().constData());
     int ret = gp_camera_set_config(m_cam, root, m_ctx);
     gp_widget_free(root);
-    if (ret != GP_OK) reportError("set AF area", ret);
-    else triggerAutofocus();
+    if (ret != GP_OK) {
+        reportError("set AF area", ret);
+        emit afAreaResult(false);
+        return;
+    }
+    triggerAutofocus();
+    emit afAreaResult(true);
 }
 
 void CameraWorker::startLiveView() {
