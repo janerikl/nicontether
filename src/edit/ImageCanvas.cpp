@@ -684,7 +684,7 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
             return;
         }
         // In brush-mask mode, ctrl+wheel resizes the mask brush the same way.
-        if (m_maskMode && m_maskKind == MaskType::Brush) {
+        if (m_maskMode && (m_maskKind == MaskType::Brush || m_maskKind == MaskType::Paint)) {
             double step = ev->angleDelta().y() > 0 ? kMaskBrushStep : -kMaskBrushStep;
             double r = std::clamp(m_activeMask.brushRadius + step, kMaskBrushMin, kMaskBrushMax);
             emit maskBrushRadiusChanged(r);
