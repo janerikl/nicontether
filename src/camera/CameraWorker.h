@@ -42,6 +42,11 @@ signals:
     void cameraError(const QString &message);
     void log(const QString &message);
     void afAreaResult(bool ok);
+    // Re-read config once live view actually starts producing frames: some
+    // Nikon properties (e.g. liveviewafmode) only appear in the widget tree
+    // once live view has engaged, so the initial connect-time snapshot won't
+    // have them.
+    void configRefreshed(const ConfigOptionMap &options);
 
 private slots:
     void grabPreviewFrame();
@@ -50,6 +55,10 @@ private:
     ConfigOptionMap readConfigTree();
     bool findWidget(const char *name, void **widgetOut, void **rootOut);
     void reportError(const QString &context, int gpCode);
+    // Raw AF-drive command, no live-view pausing. Callers that already hold
+    // the pause (e.g. setAfArea) call this directly; triggerAutofocus() wraps
+    // it with pause/resume for standalone use.
+    void driveAutofocus();
     // Unmounts any gvfs-mounted cameras that would otherwise hold the USB
     // claim. Returns true if an unmount was performed. Best-effort.
     bool releaseGvfsCameraMounts();
@@ -58,6 +67,7 @@ private:
     Camera *m_cam = nullptr;
     QTimer *m_liveTimer = nullptr;
     bool m_liveViewActive = false;
+    bool m_liveConfigRefreshed = false; // one-shot config re-read after live view starts
     QString m_saveDir; // set by SessionManager via setConfig-like path; see below
 
 public:

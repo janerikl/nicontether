@@ -48,7 +48,7 @@ void ControlsPanel::populate(const ConfigOptionMap &options) {
 
     // Preferred display order.
     const QStringList order = {"shutterspeed", "aperture", "iso",
-                               "whitebalance", "imagequality"};
+                               "whitebalance", "imagequality", "afareamode"};
     for (const QString &key : order) {
         if (!options.contains(key)) continue;
         const ConfigOption &opt = options.value(key);

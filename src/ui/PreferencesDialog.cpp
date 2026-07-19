@@ -46,9 +46,10 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
             [this] { emit calibrationRequested(); });
 
     auto *hint = new QLabel(
-        "Click-to-focus calibration. Center is always correct; tune the AF "
-        "frame until edge clicks focus where the reticle is drawn. Values are "
-        "remembered per model.");
+        "Click-to-focus calibration. Click Calibrate…, then click the point "
+        "you want in focus, then click where it actually snapped sharp -- "
+        "the AF frame size is solved automatically from those two clicks. "
+        "Values are remembered per model.");
     hint->setWordWrap(true);
     outer->addWidget(hint);
 

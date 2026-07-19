@@ -94,9 +94,6 @@ private:
 
     QFrame *m_calibPanel = nullptr;
     QLabel *m_calibLabel = nullptr;
-    QPushButton *m_calibInward = nullptr;
-    QPushButton *m_calibOn = nullptr;
-    QPushButton *m_calibOutward = nullptr;
     QPushButton *m_calibRefire = nullptr;
     QPushButton *m_calibCancel = nullptr;
 };

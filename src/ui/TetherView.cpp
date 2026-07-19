@@ -38,6 +38,8 @@ TetherView::TetherView(QWidget *parent) : QWidget(parent) {
     connect(m_controller, &CameraController::cameraError, this, &TetherView::handleError);
     connect(m_controller, &CameraController::log, this,
             [this](const QString &m) { emit statusMessage(m); });
+    connect(m_controller, &CameraController::configRefreshed,
+            m_controls, &ControlsPanel::populate);
 
     // Controls -> controller
     connect(m_controls, &ControlsPanel::configEditRequested,
@@ -54,8 +56,34 @@ TetherView::TetherView(QWidget *parent) : QWidget(parent) {
     connect(m_liveView, &LiveViewWidget::calibrationPointPicked, this,
             [this](double nx, double ny) {
                 if (!m_calibrating) return;
-                m_calibrator.setTarget(nx, ny);
-                fireCalibrationAf();
+                if (m_calibrator.stage() == AfCalibrator::Stage::AwaitTarget) {
+                    m_calibrator.setTarget(nx, ny);
+                    fireCalibrationAf();
+                    return;
+                }
+                if (m_calibrator.stage() == AfCalibrator::Stage::AwaitObserved) {
+                    if (m_calibrator.setObserved(nx, ny)) {
+                        int w = m_calibrator.resultW(), h = m_calibrator.resultH();
+                        endCalibration(true);
+                        emit calibrationFinished(w, h);
+                    } else {
+                        QMessageBox::warning(this, "Calibration",
+                            "Couldn't derive a sensible AF frame size from those "
+                            "clicks.\n\n"
+                            "If the sharp area was only a little off from your "
+                            "target, pick a target closer to a corner and try "
+                            "again.\n\n"
+                            "If the sharp area was in a completely different "
+                            "part of the frame, this isn't a calibration problem "
+                            "-- it means the camera itself isn't focusing where "
+                            "requested. Check the camera body's AF-area mode: "
+                            "set it to Single-point AF (not Auto-area/Wide-area/"
+                            "3D-tracking) and AF-S (not AF-C), then retry.");
+                        m_calibrator.begin(m_afFrameW, m_afFrameH);
+                        m_liveView->setCalibrationCrosshair(false);
+                        updateCalibrationPrompt();
+                    }
+                }
             });
 
     // Start with a default session so captures always have a home.
@@ -175,15 +203,6 @@ void TetherView::buildCalibrationPanel() {
     m_calibLabel->setMinimumWidth(360);
     v->addWidget(m_calibLabel);
 
-    auto *row = new QHBoxLayout;
-    m_calibInward = new QPushButton("Focused inward\n(toward center)");
-    m_calibOn = new QPushButton("On the target");
-    m_calibOutward = new QPushButton("Focused outward\n(toward edge)");
-    row->addWidget(m_calibInward);
-    row->addWidget(m_calibOn);
-    row->addWidget(m_calibOutward);
-    v->addLayout(row);
-
     auto *row2 = new QHBoxLayout;
     m_calibRefire = new QPushButton("Re-fire");
     m_calibCancel = new QPushButton("Cancel");
@@ -192,29 +211,10 @@ void TetherView::buildCalibrationPanel() {
     row2->addWidget(m_calibCancel);
     v->addLayout(row2);
 
-    auto feedback = [this](AfCalibrator::Feedback f) {
-        if (!m_calibrating) return;
-        bool converged = m_calibrator.applyFeedback(f);
-        if (!converged) { fireCalibrationAf(); updateCalibrationPrompt(); return; }
-        m_calibrator.nextAxis();
-        if (m_calibrator.done()) {
-            int w = m_calibrator.resultW(), h = m_calibrator.resultH();
-            endCalibration(true);
-            emit calibrationFinished(w, h);
-        } else {
-            // Height axis: wait for a fresh click near the top/bottom edge.
-            m_liveView->setCalibrationCrosshair(false);
-            updateCalibrationPrompt();
-        }
-    };
-    connect(m_calibInward, &QPushButton::clicked, this,
-            [feedback] { feedback(AfCalibrator::Feedback::Inward); });
-    connect(m_calibOn, &QPushButton::clicked, this,
-            [feedback] { feedback(AfCalibrator::Feedback::OnTarget); });
-    connect(m_calibOutward, &QPushButton::clicked, this,
-            [feedback] { feedback(AfCalibrator::Feedback::Outward); });
-    connect(m_calibRefire, &QPushButton::clicked, this,
-            [this] { if (m_calibrating) fireCalibrationAf(); });
+    connect(m_calibRefire, &QPushButton::clicked, this, [this] {
+        if (m_calibrating && m_calibrator.stage() == AfCalibrator::Stage::AwaitObserved)
+            fireCalibrationAf();
+    });
     connect(m_calibCancel, &QPushButton::clicked, this,
             [this] { endCalibration(false); });
 }
@@ -235,7 +235,7 @@ void TetherView::startCalibration() {
     buildCalibrationPanel();
     m_viewTabs->setCurrentWidget(m_liveView);
     m_calibrating = true;
-    m_calibrator.begin(200, 3000, 150, 2200);
+    m_calibrator.begin(m_afFrameW, m_afFrameH);
     m_liveView->setCalibrationMode(true);
     m_liveView->setCalibrationCrosshair(false);
     updateCalibrationPrompt();
@@ -245,24 +245,27 @@ void TetherView::startCalibration() {
 
 void TetherView::fireCalibrationAf() {
     int afx = 0, afy = 0;
-    m_calibrator.afCommand(m_afFrameW, m_afFrameH, afx, afy);
+    m_calibrator.afCommand(afx, afy);
     m_controller->setAfArea(afx, afy);
     updateCalibrationPrompt();
 }
 
 void TetherView::updateCalibrationPrompt() {
     if (!m_calibLabel) return;
-    const bool widthAxis = m_calibrator.axis() == AfCalibrator::Axis::Width;
-    const QString axis = widthAxis ? "WIDTH" : "HEIGHT";
-    const QString edge = widthAxis ? "left or right" : "top or bottom";
-    m_calibLabel->setText(QString(
-        "<b>Calibrating %1</b><br>"
-        "Aim at a scene with depth across the frame (e.g. a tape measure "
-        "receding from the camera). Click your target near the %2 edge, then "
-        "watch which part of the live view snaps sharp and choose below. "
-        "Guess: %3.")
-        .arg(axis, edge)
-        .arg(m_calibrator.currentGuess()));
+    if (m_calibrator.stage() == AfCalibrator::Stage::AwaitTarget) {
+        m_calibLabel->setText(
+            "<b>AF calibration</b><br>"
+            "Aim at a scene with depth across the frame (e.g. a tape measure "
+            "receding from the camera). For the best result, click a target "
+            "off-center in both directions (e.g. near a corner) &mdash; "
+            "that's the point you want in focus.");
+    } else {
+        m_calibLabel->setText(
+            "<b>AF calibration</b><br>"
+            "AF fired at your target. Watch which part of the live view "
+            "actually snapped sharp, then click that spot. Use Re-fire if "
+            "you need to repeat the AF attempt first.");
+    }
     positionCalibrationPanel();
 }
 

@@ -25,6 +25,11 @@ const struct {
     {"iso",          "ISO", {"iso", "isospeed", "iso-speed"}},
     {"whitebalance", "White Balance", {"whitebalance", "whitebalance2"}},
     {"imagequality", "Quality", {"imagequality", "imagequality2", "imgquality"}},
+    // Controls the size/behavior of the live-view AF box: Normal-area AF gives
+    // a small, precise box (matches where you tap); Wide-area/Face-priority/
+    // Subject-tracking let the camera pick a subject anywhere in a larger
+    // region, which can jump to the background instead of a tapped point.
+    {"afareamode", "AF-Area Mode", {"liveviewafmode", "autofocusmode2"}},
 };
 
 } // namespace
@@ -203,6 +208,18 @@ void CameraWorker::setConfig(const QString &widgetName, const QString &value) {
 }
 
 void CameraWorker::triggerAutofocus() {
+    // The live-view preview timer polls the camera every 40ms via
+    // gp_camera_capture_preview(); left running, it can interrupt an
+    // in-progress AF search almost immediately, producing a brief AF
+    // acknowledgement click with no actual focus movement. Pause it for the
+    // duration of the AF command, same as capture() already does.
+    bool wasLive = m_liveViewActive;
+    if (wasLive) { m_liveViewActive = false; if (m_liveTimer) m_liveTimer->stop(); }
+    driveAutofocus();
+    if (wasLive) startLiveView();
+}
+
+void CameraWorker::driveAutofocus() {
     void *w = nullptr, *r = nullptr;
     if (!findWidget("autofocusdrive", &w, &r)) {
         emit log("Autofocus control not available on this camera.");
@@ -218,10 +235,16 @@ void CameraWorker::triggerAutofocus() {
 }
 
 void CameraWorker::setAfArea(int x, int y) {
+    // Pause live-view polling for the whole area-set + AF-drive sequence (see
+    // triggerAutofocus() for why), not just the AF-drive half.
+    bool wasLive = m_liveViewActive;
+    if (wasLive) { m_liveViewActive = false; if (m_liveTimer) m_liveTimer->stop(); }
+
     void *w = nullptr, *r = nullptr;
     if (!findWidget("changeafarea", &w, &r)) {
         emit log("Focus-point selection not available on this camera.");
         emit afAreaResult(false);
+        if (wasLive) startLiveView();
         return;
     }
     CameraWidget *child = static_cast<CameraWidget *>(w);
@@ -233,10 +256,12 @@ void CameraWorker::setAfArea(int x, int y) {
     if (ret != GP_OK) {
         reportError("set AF area", ret);
         emit afAreaResult(false);
+        if (wasLive) startLiveView();
         return;
     }
-    triggerAutofocus();
+    driveAutofocus();
     emit afAreaResult(true);
+    if (wasLive) startLiveView();
 }
 
 void CameraWorker::startLiveView() {
@@ -247,6 +272,7 @@ void CameraWorker::startLiveView() {
         connect(m_liveTimer, &QTimer::timeout, this, &CameraWorker::grabPreviewFrame);
     }
     m_liveViewActive = true;
+    m_liveConfigRefreshed = false;
     m_liveTimer->start();
 }
 
@@ -269,6 +295,12 @@ void CameraWorker::grabPreviewFrame() {
             if (img.loadFromData(reinterpret_cast<const uchar *>(data),
                                  static_cast<int>(size)))
                 emit liveFrame(img);
+        }
+        if (!m_liveConfigRefreshed) {
+            // Live view is now actually engaged on the camera; re-read config
+            // so live-view-only widgets (e.g. liveviewafmode) show up.
+            m_liveConfigRefreshed = true;
+            emit configRefreshed(readConfigTree());
         }
     }
     gp_file_free(file);

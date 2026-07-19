@@ -18,7 +18,7 @@ struct Model {
 
 inline const std::vector<Model>& models() {
     static const std::vector<Model> kModels = {
-        {"d7500", "Nikon D7500", 640, 426},
+        {"d7500", "Nikon D7500", 5568, 3712},
         {"d750",  "Nikon D750",  640, 426},
         {"d780",  "Nikon D780",  640, 426},
         {"d850",  "Nikon D850",  640, 426},
