@@ -410,6 +410,15 @@ void RetouchWindow::buildViewMenu() {
         if (m_filmstrip) m_filmstrip->setVisible(on);
     });
     viewMenu->addAction(filmstripAction);
+
+    viewMenu->addSeparator();
+    auto *resetPanelsAction = new QAction("Reset Panels", this);
+    connect(resetPanelsAction, &QAction::triggered, this, [this] {
+        QSettings settings;
+        settings.remove("window/state"); // panels only; leave window/geometry
+        applyDefaultDockLayout();
+    });
+    viewMenu->addAction(resetPanelsAction);
 }
 
 // Re-apply the default dock arrangement to the (already-created) docks: all
