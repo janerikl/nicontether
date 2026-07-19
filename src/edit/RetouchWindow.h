@@ -16,6 +16,7 @@ class QTabWidget;
 class QSlider;
 class QPushButton;
 class QToolButton;
+class FlyoutToolButton;
 class QLabel;
 class QToolBar;
 class QStackedWidget;
@@ -98,6 +99,7 @@ private:
     QDockWidget *m_levelsDock = nullptr;
     LevelsPanel *m_levelsPanel = nullptr;
     void buildViewMenu();
+    void applyDefaultDockLayout(); // re-apply the default dock arrangement (used on first launch + Reset Panels)
     void buildHistoryDock();
     void buildLevelsDock();
     void refreshHistoryPanel();  // rebuild the list from the current tab
@@ -133,11 +135,17 @@ private:
     QToolButton *m_healToggle = nullptr; // left icon bar: spot-heal tool
     QSlider *m_healBrush = nullptr;
     QPushButton *m_healClear = nullptr;
-    QToolButton *m_maskToggle = nullptr; // left icon bar: local-mask tool
+    FlyoutToolButton *m_maskToggle = nullptr; // left icon bar: local-mask tool
     QDockWidget *m_maskDock = nullptr;
     MaskPanel *m_maskPanel = nullptr;
     void buildMaskDock();
     void refreshMaskPanel();
+    // Local-mask subtool selected via the tool's Photoshop-style flyout; a plain
+    // click on the mask tool creates a mask of this type.
+    MaskType m_activeMaskSubtool = MaskType::Radial;
+    void openMaskFlyout();       // pop the subtool strip next to the mask button
+    void setMaskSubtool(MaskType t); // set active subtool + refresh tool glyph
+    void addActiveMask();        // create a mask of the active subtool
     QLabel *m_statusLabel = nullptr;
     class QAction *m_undoAction = nullptr;
     class QAction *m_redoAction = nullptr;

@@ -396,6 +396,39 @@ void RetouchWindow::buildViewMenu() {
     viewMenu->addAction(filmstripAction);
 }
 
+// Re-apply the default dock arrangement to the (already-created) docks: all
+// editing docks on the right, Levels split above the Adjustments/History/Masks
+// tab group, Tools toolbar on the left. Mask stays hidden; applyModeChrome then
+// asserts mode-driven visibility (Masks/Controls). Used on first launch (no
+// saved state) and by Reset Panels.
+void RetouchWindow::applyDefaultDockLayout() {
+    for (QDockWidget *d : {m_levelsDock, m_adjustmentsDock, m_historyDock,
+                           m_maskDock, m_controlsDock}) {
+        if (d) {
+            d->setFloating(false);
+            addDockWidget(Qt::RightDockWidgetArea, d);
+        }
+    }
+    if (m_adjustmentsDock && m_historyDock)
+        tabifyDockWidget(m_adjustmentsDock, m_historyDock);
+    if (m_adjustmentsDock && m_maskDock)
+        tabifyDockWidget(m_adjustmentsDock, m_maskDock);
+    if (m_levelsDock && m_adjustmentsDock)
+        splitDockWidget(m_levelsDock, m_adjustmentsDock, Qt::Vertical);
+    if (m_toolsBar)
+        addToolBar(Qt::LeftToolBarArea, m_toolsBar);
+
+    // Default visibility for the persistent editing docks; Masks hidden.
+    if (m_adjustmentsDock) m_adjustmentsDock->show();
+    if (m_historyDock)     m_historyDock->show();
+    if (m_levelsDock)      m_levelsDock->show();
+    if (m_maskDock)        m_maskDock->hide();
+
+    // Let mode/tool chrome have the final say on Masks/Controls/Tools visibility.
+    const bool tether = m_tetherModeAction && m_tetherModeAction->isChecked();
+    applyModeChrome(tether ? Mode::Tether : Mode::Retouch);
+}
+
 // Narrow left icon toolbar: mutually-exclusive Zoom / Crop / Spot Heal tools.
 // Only one can be active; selecting one restricts the mouse gestures the
 // canvas responds to (e.g. marquee-drag zoom and Ctrl+wheel only work while
