@@ -7,6 +7,7 @@
 #include "ui/FilmstripWidget.h"
 #include "ui/LevelsPanel.h"
 #include "ui/MaskPanel.h"
+#include "ui/ToolFlyout.h"
 #include "ui/TetherView.h"
 #include "ui/ControlsPanel.h"
 #include "capture/NefPreview.h"
@@ -46,29 +47,32 @@
 
 namespace {
 // Small programmatically-drawn icons for the left tool bar (no image assets
-// in this project). Neutral dark-grey strokes on a transparent background.
+// in this project). Each icon is drawn twice: a neutral dark-grey Off state
+// and a light On state so the active (checked) tool stands out clearly.
 constexpr int kIconPx = 28;
+const QColor kIconOff(70, 70, 70);    // idle: dark grey
+const QColor kIconOn(235, 235, 235);  // active: light
 
-QIcon makeZoomIcon() {
+QPixmap drawZoom(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    QPen pen(QColor(70, 70, 70), 2);
+    QPen pen(c, 2);
     pen.setCapStyle(Qt::RoundCap);
     p.setPen(pen);
     p.setBrush(Qt::NoBrush);
     p.drawEllipse(QRectF(4, 4, 14, 14));
     p.drawLine(QPointF(15, 15), QPointF(23, 23));
-    return QIcon(pm);
+    return pm;
 }
 
-QIcon makeCropIcon() {
+QPixmap drawCrop(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    QPen pen(QColor(70, 70, 70), 2);
+    QPen pen(c, 2);
     pen.setCapStyle(Qt::SquareCap);
     p.setPen(pen);
     // Two overlapping corner brackets, the classic crop-tool mark.
@@ -76,36 +80,139 @@ QIcon makeCropIcon() {
     p.drawLine(8, 20, 24, 20);
     p.drawLine(4, 8, 20, 8);
     p.drawLine(20, 8, 20, 24);
-    return QIcon(pm);
+    return pm;
 }
 
-QIcon makeHealIcon() {
+QPixmap drawHeal(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    QPen pen(QColor(70, 70, 70), 2);
+    QPen pen(c, 2);
     p.setPen(pen);
     p.setBrush(Qt::NoBrush);
     p.drawEllipse(QRectF(4, 4, 20, 20)); // brush outline
     p.setPen(Qt::NoPen);
-    p.setBrush(QColor(70, 70, 70, 140));
+    QColor fill = c;
+    fill.setAlpha(140);
+    p.setBrush(fill);
     p.drawEllipse(QRectF(10, 10, 8, 8)); // spot being healed
-    return QIcon(pm);
+    return pm;
 }
-QIcon makeMaskIcon() {
+
+QPixmap drawMask(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
     // Half-filled circle: the classic "mask" motif.
-    p.setPen(QPen(QColor(70, 70, 70), 2));
+    p.setPen(QPen(c, 2));
     p.setBrush(Qt::NoBrush);
     p.drawEllipse(QRectF(4, 4, 20, 20));
     p.setPen(Qt::NoPen);
-    p.setBrush(QColor(70, 70, 70, 140));
+    QColor fill = c;
+    fill.setAlpha(140);
+    p.setBrush(fill);
     p.drawPie(QRectF(4, 4, 20, 20), 90 * 16, 180 * 16);
-    return QIcon(pm);
+    return pm;
+}
+
+// Mask subtool glyphs, used both on the flyout strip and (as the active
+// subtool) on the mask tool button itself.
+QPixmap drawMaskRadial(const QColor &c) {
+    QPixmap pm(kIconPx, kIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(c, 2));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QRectF(3, 6, 22, 16)); // outer ellipse
+    QColor fill = c;
+    fill.setAlpha(120);
+    p.setPen(Qt::NoPen);
+    p.setBrush(fill);
+    p.drawEllipse(QRectF(9, 10, 10, 8)); // inner falloff
+    return pm;
+}
+
+QPixmap drawMaskLinear(const QColor &c) {
+    QPixmap pm(kIconPx, kIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    // Graduated: a band shaded on one side, split by the gradient line.
+    QColor fill = c;
+    fill.setAlpha(120);
+    p.setPen(Qt::NoPen);
+    p.setBrush(fill);
+    p.drawRect(QRectF(4, 4, 20, 8));
+    p.setPen(QPen(c, 2));
+    p.drawLine(QPointF(4, 14), QPointF(24, 14));
+    return pm;
+}
+
+QPixmap drawMaskBrush(const QColor &c) {
+    QPixmap pm(kIconPx, kIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    // A soft brush dab.
+    QColor fill = c;
+    fill.setAlpha(120);
+    p.setPen(QPen(c, 2));
+    p.setBrush(fill);
+    p.drawEllipse(QRectF(6, 6, 16, 16));
+    return pm;
+}
+
+// Overlay a small corner triangle marking a tool that owns a subtool flyout.
+void addFlyoutMarker(QPixmap &pm, const QColor &c) {
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+    const qreal s = kIconPx;
+    QPolygonF tri;
+    tri << QPointF(s - 6, s) << QPointF(s, s - 6) << QPointF(s, s);
+    p.drawPolygon(tri);
+}
+
+// Build a two-state icon: dark grey when idle, light when checked/active.
+QIcon makeToolIcon(QPixmap (*draw)(const QColor &)) {
+    QIcon icon;
+    icon.addPixmap(draw(kIconOff), QIcon::Normal, QIcon::Off);
+    icon.addPixmap(draw(kIconOn), QIcon::Normal, QIcon::On);
+    icon.addPixmap(draw(kIconOn), QIcon::Active, QIcon::On);
+    return icon;
+}
+
+QIcon makeZoomIcon() { return makeToolIcon(drawZoom); }
+QIcon makeCropIcon() { return makeToolIcon(drawCrop); }
+QIcon makeHealIcon() { return makeToolIcon(drawHeal); }
+QIcon makeMaskIcon() { return makeToolIcon(drawMask); }
+
+// Two-state icon like makeToolIcon, but with the flyout corner marker baked in.
+// Used for the mask tool button, whose glyph reflects its active subtool.
+QIcon makeFlyoutToolIcon(QPixmap (*draw)(const QColor &)) {
+    QIcon icon;
+    QPixmap off = draw(kIconOff);
+    addFlyoutMarker(off, kIconOff);
+    QPixmap on = draw(kIconOn);
+    addFlyoutMarker(on, kIconOn);
+    icon.addPixmap(off, QIcon::Normal, QIcon::Off);
+    icon.addPixmap(on, QIcon::Normal, QIcon::On);
+    icon.addPixmap(on, QIcon::Active, QIcon::On);
+    return icon;
+}
+
+// Glyph for a given mask subtype (shared by the flyout and the tool button).
+QPixmap (*maskGlyph(MaskType t))(const QColor &) {
+    switch (t) {
+    case MaskType::Radial: return drawMaskRadial;
+    case MaskType::Linear: return drawMaskLinear;
+    case MaskType::Brush:  return drawMaskBrush;
+    }
+    return drawMaskRadial;
 }
 } // namespace
 
@@ -114,6 +221,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     resize(1200, 820);
 
     auto *toolbar = addToolBar("Main");
+    toolbar->setObjectName("mainToolBar");
     toolbar->setMovable(false);
 
     // Mode switch: mutually-exclusive Tether / Retouch at the far left.
@@ -232,12 +340,14 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     // Tether chrome: camera controls dock + tether action toolbar. Visibility is
     // driven by mode in Task 3; created hidden here.
     m_controlsDock = new QDockWidget("Controls", this);
+    m_controlsDock->setObjectName("controlsDock");
     m_controlsDock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
     m_controlsDock->setWidget(m_tetherView->controlsPanel());
     addDockWidget(Qt::RightDockWidgetArea, m_controlsDock);
     m_controlsDock->hide();
 
     m_tetherToolBar = addToolBar("Tether");
+    m_tetherToolBar->setObjectName("tetherToolBar");
     m_tetherToolBar->setMovable(false);
     m_tetherToolBar->addActions(m_tetherView->tetherActions());
     m_tetherToolBar->hide();
@@ -256,6 +366,14 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     auto *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     escShortcut->setContext(Qt::WindowShortcut);
     connect(escShortcut, &QShortcut::activated, this, &RetouchWindow::deselectAllTools);
+
+    // Ctrl+0 fits the image to the window, same as the Fit button.
+    auto *fitShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_0), this);
+    fitShortcut->setContext(Qt::WindowShortcut);
+    connect(fitShortcut, &QShortcut::activated, this, [this] {
+        RetouchTab *tab = currentTab();
+        if (tab && tab->isReady()) tab->zoomFit();
+    });
 
     setMode(Mode::Retouch);
 }
@@ -284,8 +402,14 @@ void RetouchWindow::buildViewMenu() {
 // the Zoom tool is selected).
 void RetouchWindow::buildToolPanel() {
     m_toolsBar = new QToolBar("Tools", this);
+    m_toolsBar->setObjectName("toolsBar");
     m_toolsBar->setOrientation(Qt::Vertical);
     m_toolsBar->setIconSize(QSize(22, 22));
+    // A dark, sunken background on the active tool so its light icon stands out.
+    m_toolsBar->setStyleSheet(
+        "QToolButton { border: none; padding: 4px; border-radius: 4px; }"
+        "QToolButton:hover { background: rgba(0,0,0,0.08); }"
+        "QToolButton:checked { background: #3a3f47; }");
     addToolBar(Qt::LeftToolBarArea, m_toolsBar);
 
     m_toolZoom = new QToolButton;
@@ -309,12 +433,14 @@ void RetouchWindow::buildToolPanel() {
     m_healToggle->setToolTip("Spot Heal (H) — click blemishes; Ctrl+wheel resizes brush");
     m_toolsBar->addWidget(m_healToggle);
 
-    m_maskToggle = new QToolButton;
-    m_maskToggle->setIcon(makeMaskIcon());
+    m_maskToggle = new FlyoutToolButton;
+    m_maskToggle->setIcon(makeFlyoutToolIcon(maskGlyph(m_activeMaskSubtool)));
     m_maskToggle->setCheckable(true);
     m_maskToggle->setShortcut(QKeySequence(Qt::Key_K));
-    m_maskToggle->setToolTip("Local Masks (K) — radial / graduated / brush adjustments");
+    m_maskToggle->setToolTip("Local Masks (K) — click to add; hold for radial / graduated / brush");
     m_toolsBar->addWidget(m_maskToggle);
+    connect(m_maskToggle, &FlyoutToolButton::flyoutRequested, this,
+            [this] { openMaskFlyout(); });
 
     // Each tool turns off the other two (and the WB eyedropper) when selected,
     // and swaps in that tool's options row under the main toolbar.
@@ -386,6 +512,8 @@ void RetouchWindow::buildToolPanel() {
             if (m_maskDock) m_maskDock->hide();
         }
         if (tab && tab->isReady()) tab->setMaskMode(on);
+        // A plain click on the tool creates a mask of the active subtool.
+        if (on) addActiveMask();
         refreshMaskPanel();
     });
 }
@@ -407,7 +535,7 @@ void RetouchWindow::buildToolOptionsBar() {
     zoomRow->setContentsMargins(4, 2, 4, 2);
     m_zoomFit = new QPushButton("Fit");
     m_zoomSlider = new QSlider(Qt::Horizontal);
-    m_zoomSlider->setRange(10, 400);
+    m_zoomSlider->setRange(10, 800);
     m_zoomSlider->setValue(100);
     m_zoomSlider->setMinimumWidth(160);
     m_zoomLabel = new QLabel("100%");
@@ -497,6 +625,7 @@ void RetouchWindow::buildToolOptionsBar() {
 void RetouchWindow::buildDock() {
     auto *dock = new QDockWidget("Adjustments", this);
     m_adjustmentsDock = dock;
+    dock->setObjectName("adjustmentsDock");
     dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
     auto *panel = new QWidget;
     auto *outer = new QVBoxLayout(panel);
@@ -625,6 +754,7 @@ void RetouchWindow::buildDock() {
 void RetouchWindow::buildHistoryDock() {
     auto *dock = new QDockWidget("History", this);
     m_historyDock = dock;
+    dock->setObjectName("historyDock");
     dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
     m_historyList = new QListWidget;
     m_historyList->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -659,6 +789,7 @@ void RetouchWindow::refreshHistoryPanel() {
 void RetouchWindow::buildLevelsDock() {
     auto *dock = new QDockWidget("Levels", this);
     m_levelsDock = dock;
+    dock->setObjectName("levelsDock");
     dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
     m_levelsPanel = new LevelsPanel;
     dock->setWidget(m_levelsPanel);
@@ -695,6 +826,7 @@ void RetouchWindow::refreshLevels() {
 void RetouchWindow::buildMaskDock() {
     auto *dock = new QDockWidget("Masks", this);
     m_maskDock = dock;
+    dock->setObjectName("maskDock");
     dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
     m_maskPanel = new MaskPanel;
     dock->setWidget(m_maskPanel);
@@ -702,13 +834,6 @@ void RetouchWindow::buildMaskDock() {
     if (m_adjustmentsDock) tabifyDockWidget(m_adjustmentsDock, dock);
     dock->hide(); // shown only while the Mask tool is active
 
-    connect(m_maskPanel, &MaskPanel::addMaskRequested, this, [this](MaskType t) {
-        RetouchTab *tab = currentTab();
-        if (tab && tab->isReady()) {
-            tab->addMask(t);
-            refreshMaskPanel();
-        }
-    });
     connect(m_maskPanel, &MaskPanel::selectMaskRequested, this, [this](int i) {
         RetouchTab *tab = currentTab();
         if (tab) tab->selectMask(i);
@@ -736,6 +861,41 @@ void RetouchWindow::refreshMaskPanel() {
         m_maskPanel->setMasks(tab->masks(), tab->activeMaskIndex());
     else
         m_maskPanel->clear();
+}
+
+void RetouchWindow::openMaskFlyout() {
+    const QVector<SubTool> tools{
+        {int(MaskType::Radial), drawMaskRadial, "Radial", "Radial mask"},
+        {int(MaskType::Linear), drawMaskLinear, "Graduated", "Graduated mask"},
+        {int(MaskType::Brush), drawMaskBrush, "Brush", "Brush mask"},
+    };
+    auto *flyout = new ToolFlyout(tools, int(m_activeMaskSubtool), this);
+    connect(flyout, &ToolFlyout::chosen, this, [this](int id) {
+        setMaskSubtool(MaskType(id));
+        // Picking a subtool activates the mask tool (creating a mask via the
+        // toggle handler) or, if already active, creates one directly.
+        if (m_maskToggle->isChecked())
+            addActiveMask();
+        else
+            m_maskToggle->setChecked(true);
+    });
+    // Just to the right of the mask button, vertically aligned with it.
+    const QPoint tl = m_maskToggle->mapToGlobal(QPoint(m_maskToggle->width() + 4, 0));
+    flyout->showAt(tl);
+}
+
+void RetouchWindow::setMaskSubtool(MaskType t) {
+    m_activeMaskSubtool = t;
+    if (m_maskToggle)
+        m_maskToggle->setIcon(makeFlyoutToolIcon(maskGlyph(t)));
+}
+
+void RetouchWindow::addActiveMask() {
+    RetouchTab *tab = currentTab();
+    if (tab && tab->isReady()) {
+        tab->addMask(m_activeMaskSubtool);
+        refreshMaskPanel();
+    }
 }
 
 void RetouchWindow::mergePortable(const Adjustments &src, Adjustments &dst) {
