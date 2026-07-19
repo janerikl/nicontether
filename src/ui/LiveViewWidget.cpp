@@ -140,6 +140,10 @@ void LiveViewWidget::paintEvent(QPaintEvent *) {
 }
 
 void LiveViewWidget::mousePressEvent(QMouseEvent *ev) {
+    // Only the left button drives autofocus/calibration; right-click is
+    // reserved for the context menu (grid overlay).
+    if (ev->button() != Qt::LeftButton) return;
+
     QRect r = drawnRect();
     if (m_frame.isNull() || !r.contains(ev->pos())) return;
 

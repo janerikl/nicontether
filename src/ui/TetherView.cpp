@@ -3,11 +3,8 @@
 #include "camera/CameraController.h"
 #include "ui/LiveViewWidget.h"
 #include "ui/ControlsPanel.h"
-#include "ui/PreviewWindow.h"
-#include "capture/NefPreview.h"
 
 #include <QAction>
-#include <QTabWidget>
 #include <QVBoxLayout>
 #include <QInputDialog>
 #include <QMessageBox>
@@ -106,28 +103,18 @@ void TetherView::buildUi() {
     connect(m_captureAction, &QAction::triggered, m_controller, &CameraController::capture);
     connect(m_sessionAction, &QAction::triggered, this, &TetherView::onNewSession);
 
-    // Spacebar triggers a capture while tethering — except on the Preview tab,
-    // where Space is reserved for pan, and only while this view is active.
+    // Spacebar triggers a capture while tethering, only while this view is active.
     m_captureShortcut = new QShortcut(QKeySequence(Qt::Key_Space), this);
     m_captureShortcut->setContext(Qt::ApplicationShortcut);
     connect(m_captureShortcut, &QShortcut::activated,
             m_controller, &CameraController::capture);
 
-    // Center: tabbed Live View / Preview fills the widget.
+    // Center: the live view fills the widget.
     auto *vbox = new QVBoxLayout(this);
     vbox->setContentsMargins(0, 0, 0, 0);
 
-    m_viewTabs = new QTabWidget;
     m_liveView = new LiveViewWidget;
-    m_preview = new PreviewWindow;
-    m_viewTabs->addTab(m_liveView, "Live View");
-    m_viewTabs->addTab(m_preview, "Preview");
-    vbox->addWidget(m_viewTabs, 1);
-
-    connect(m_viewTabs, &QTabWidget::currentChanged, this, [this](int) {
-        updateCaptureShortcut();
-        if (m_viewTabs->currentWidget() == m_preview) m_preview->focusView();
-    });
+    vbox->addWidget(m_liveView, 1);
 
     m_controls = new ControlsPanel; // parented into the host's dock later
     updateCaptureShortcut();
@@ -144,9 +131,8 @@ void TetherView::setActive(bool active) {
 }
 
 void TetherView::updateCaptureShortcut() {
-    // Capture on Space only while tethering and not on the Preview tab.
-    bool onPreview = m_viewTabs && m_viewTabs->currentWidget() == m_preview;
-    if (m_captureShortcut) m_captureShortcut->setEnabled(m_active && !onPreview);
+    // Capture on Space only while tethering.
+    if (m_captureShortcut) m_captureShortcut->setEnabled(m_active);
 }
 
 void TetherView::onConnect() {
@@ -233,7 +219,6 @@ void TetherView::startCalibration() {
         return;
     }
     buildCalibrationPanel();
-    m_viewTabs->setCurrentWidget(m_liveView);
     m_calibrating = true;
     m_calibrator.begin(m_afFrameW, m_afFrameH);
     m_liveView->setCalibrationMode(true);
@@ -283,17 +268,10 @@ void TetherView::handleDisconnected() {
 }
 
 void TetherView::handleCaptureComplete(const QString &path) {
-    QImage preview = NefPreview::extract(path);
-    // Notify the host so it can add the capture to the shared filmstrip, even if
-    // no preview could be extracted (host draws a placeholder then).
+    // Notify the host so it can add the capture to the shared filmstrip; the
+    // captured image is reviewed by clicking its thumbnail to open Retouch.
     emit captureComplete(path);
-    if (!preview.isNull()) {
-        m_preview->showImage(path, preview);
-        m_viewTabs->setCurrentWidget(m_preview);
-        emit statusMessage("Captured: " + path);
-    } else {
-        emit statusMessage("Captured (no embedded preview): " + path);
-    }
+    emit statusMessage("Captured: " + path);
 }
 
 void TetherView::handleError(const QString &message) {

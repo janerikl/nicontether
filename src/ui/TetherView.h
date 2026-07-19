@@ -10,16 +10,14 @@
 class CameraController;
 class LiveViewWidget;
 class ControlsPanel;
-class PreviewWindow;
 class QAction;
-class QTabWidget;
 class QShortcut;
 class QFrame;
 class QLabel;
 class QPushButton;
 
 // Self-contained tethering view: owns the camera pipeline (controller, session),
-// the live-view / preview tabs, the camera ControlsPanel, and the tether actions
+// the live-view widget, the camera ControlsPanel, and the tether actions
 // (Connect / Disconnect / Live View / Capture / New Session). Embed it as a page
 // in a host window; the host places controlsPanel() in a dock and tetherActions()
 // on a toolbar, and listens for captureComplete()/statusMessage().
@@ -74,10 +72,8 @@ private:
     CameraController *m_controller = nullptr;
     SessionManager m_session;
 
-    QTabWidget *m_viewTabs = nullptr;
     LiveViewWidget *m_liveView = nullptr;
     ControlsPanel *m_controls = nullptr;
-    PreviewWindow *m_preview = nullptr;
 
     QAction *m_connectAction = nullptr;
     QAction *m_disconnectAction = nullptr;

@@ -32,7 +32,6 @@ add_executable(nikontether
     src/ui/LevelsPanel.cpp
     src/ui/MaskPanel.cpp
     src/ui/ToolFlyout.cpp
-    src/ui/PreviewWindow.cpp
     src/ui/AppIcon.cpp
     src/edit/Adjustments.cpp
     src/edit/RawLoader.cpp
