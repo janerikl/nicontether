@@ -23,6 +23,7 @@ class QStackedWidget;
 class QDockWidget;
 class QListWidget;
 class TetherView;
+class PreferencesDialog;
 class LevelsPanel;
 class MaskPanel;
 
@@ -78,6 +79,7 @@ private:
     // Unified window: central stack swaps editing tabs (page 0) / tether (page 1).
     QStackedWidget *m_modeStack = nullptr;
     TetherView *m_tetherView = nullptr;
+    PreferencesDialog *m_prefsDialog = nullptr;
     QDockWidget *m_controlsDock = nullptr; // camera controls, shown in Tether mode
     QToolBar *m_tetherToolBar = nullptr;   // Connect/Disconnect/LiveView/Capture/…
 

@@ -9,6 +9,8 @@
 #include "ui/MaskPanel.h"
 #include "ui/ToolFlyout.h"
 #include "ui/TetherView.h"
+#include "ui/PreferencesDialog.h"
+#include "camera/CameraModels.h"
 #include "ui/ControlsPanel.h"
 #include "capture/NefPreview.h"
 
@@ -359,6 +361,36 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
             [this](const QString &path) { addToFilmstrip(path); });
     connect(m_tetherView, &TetherView::statusMessage, this,
             [this](const QString &msg) { m_statusLabel->setText(msg); });
+
+    // Preferences dialog: per-model AF frame calibration for click-to-focus.
+    m_prefsDialog = new PreferencesDialog(this);
+    connect(m_prefsDialog, &PreferencesDialog::afFrameSizeChanged,
+            m_tetherView, &TetherView::setAfFrameSize);
+    connect(m_tetherView, &TetherView::cameraConnected, this,
+            [this](const QString &name) {
+                m_prefsDialog->selectModelById(
+                    QString::fromStdString(cammodel::matchModel(name.toStdString())));
+            });
+
+    // Apply the current model's AF frame to the live view at startup.
+    {
+        QSettings s;
+        const QString model = s.value("af/currentModel", "custom").toString();
+        int w = 0, h = 0;
+        afFrameForModel(model, w, h);
+        m_tetherView->setAfFrameSize(w, h);
+    }
+
+    // File → Preferences…
+    m_fileMenu->addSeparator();
+    QAction *prefsAction = new QAction("Preferences…", this);
+    prefsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma));
+    connect(prefsAction, &QAction::triggered, this, [this] {
+        m_prefsDialog->show();
+        m_prefsDialog->raise();
+        m_prefsDialog->activateWindow();
+    });
+    m_fileMenu->addAction(prefsAction);
 
     m_statusLabel = new QLabel("Open a photo to begin");
     statusBar()->addWidget(m_statusLabel);
