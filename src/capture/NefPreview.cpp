@@ -61,19 +61,19 @@ QImage extract(const QString &nefPath) {
     const qsizetype n = data.size();
     const uchar *p = reinterpret_cast<const uchar *>(data.constData());
 
-    // Collect every top-level JPEG stream in the file.
+    // Collect a candidate JPEG stream at every SOI position. We must NOT skip
+    // past a stream's computed end: false-positive 0xFFD8 markers inside the
+    // compressed RAW data can walk to a far EOI whose range spans the real
+    // embedded preview, so jumping past them would swallow the preview's SOI and
+    // leave nothing decodable (the gray-placeholder bug). Every SOI is a
+    // candidate; the decode-largest-first pass below discards the bogus ones.
     std::vector<std::pair<qsizetype, qsizetype>> streams; // (start, length)
-    qsizetype i = 0;
-    while (i + 1 < n) {
+    for (qsizetype i = 0; i + 1 < n; ++i) {
         if (p[i] == 0xFF && p[i + 1] == 0xD8) {
             qsizetype end = jpegEnd(p, n, i);
-            if (end > i) {
+            if (end > i)
                 streams.emplace_back(i, end - i);
-                i = end;
-                continue;
-            }
         }
-        ++i;
     }
 
     // Nikon stores a full-size preview plus a small thumbnail; the preview is the
