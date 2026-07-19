@@ -217,6 +217,7 @@ QPixmap (*maskGlyph(MaskType t))(const QColor &) {
     case MaskType::Radial: return drawMaskRadial;
     case MaskType::Linear: return drawMaskLinear;
     case MaskType::Brush:  return drawMaskBrush;
+    case MaskType::Paint:  return drawMaskBrush;
     case MaskType::None:   return drawMask;
     }
     return drawMaskRadial;

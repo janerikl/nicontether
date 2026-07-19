@@ -25,6 +25,7 @@ QString maskTypeLabel(MaskType t) {
     case MaskType::Radial: return "Radial";
     case MaskType::Linear: return "Graduated";
     case MaskType::Brush:  return "Brush";
+    case MaskType::Paint:  return "Paint";
     case MaskType::None:   return "Layer";
     }
     return "Layer";
