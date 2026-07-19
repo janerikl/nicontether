@@ -3,3 +3,4 @@
 *.user
 CMakeCache.txt
 CMakeFiles/
+.worktrees/
