@@ -26,6 +26,7 @@ add_executable(nikontether
     src/ui/LiveViewWidget.cpp
     src/ui/PannableScrollArea.cpp
     src/ui/ControlsPanel.cpp
+    src/ui/PreferencesDialog.cpp
     src/ui/FilmstripWidget.cpp
     src/ui/HistogramWidget.cpp
     src/ui/LevelsPanel.cpp
