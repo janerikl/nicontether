@@ -5,6 +5,7 @@
 #include <QVector>
 #include <QPointF>
 #include <QString>
+#include <QColor>
 #include <QMetaType>
 #include <cmath>
 
@@ -100,7 +101,7 @@ struct MaskAdjust {
     bool operator!=(const MaskAdjust &o) const { return !(*this == o); }
 };
 
-enum class MaskType { Radial, Linear, Brush, None };
+enum class MaskType { Radial, Linear, Brush, Paint, None };
 
 // How a layer's local adjustment composites over what's below it. Applied
 // per-channel in sRGB space, then mixed with the layer below by mask weight
@@ -152,6 +153,13 @@ struct Mask {
     // the point under the cursor, so the stroke stops at edges (Lightroom-style).
     bool autoMask = false;
 
+    // Paint: flat fill color for a MaskType::Paint layer. Composited using
+    // the same `stroke`/`brushRadius`/`hardness` coverage as MaskType::Brush,
+    // but the layer's content is a solid fill of this color instead of a
+    // tone-adjusted copy of the image below (see applyMasks in
+    // Adjustments.cpp). Unused by all other mask types.
+    QColor paintColor = Qt::black;
+
     MaskAdjust adj;
 
     // Image layer: when set, this layer's content is a cover-fit scale/crop of
@@ -176,7 +184,8 @@ struct Mask {
                stroke == o.stroke &&
                std::abs(brushRadius - o.brushRadius) < 1e-9 &&
                std::abs(hardness - o.hardness) < 1e-9 && autoMask == o.autoMask &&
-               adj == o.adj && sourceImagePath == o.sourceImagePath;
+               adj == o.adj && paintColor == o.paintColor &&
+               sourceImagePath == o.sourceImagePath;
     }
     bool operator!=(const Mask &o) const { return !(*this == o); }
 };
