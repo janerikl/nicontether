@@ -4,6 +4,8 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QKeyEvent>
+#include <QCursor>
+#include <QPixmap>
 #include <cmath>
 #include <algorithm>
 
@@ -15,6 +17,27 @@ constexpr int kHealBrushMax = 80;
 constexpr double kMaskBrushMin = 0.01;
 constexpr double kMaskBrushMax = 0.40;
 constexpr double kMaskBrushStep = 0.01;
+
+// A magnifying-glass cursor, drawn once and cached. Hotspot sits at the centre
+// of the lens so it lines up with the point being zoomed.
+const QCursor &zoomCursor() {
+    static const QCursor c = [] {
+        constexpr int px = 28;
+        QPixmap pm(px, px);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QPen pen(Qt::white, 2);
+        pen.setCapStyle(Qt::RoundCap);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QRectF(4, 4, 14, 14));   // lens, centred at (11, 11)
+        p.drawLine(QPointF(15, 15), QPointF(23, 23)); // handle
+        p.end();
+        return QCursor(pm, 11, 11);
+    }();
+    return c;
+}
 }
 
 ImageCanvas::ImageCanvas(QWidget *parent) : QWidget(parent) {
@@ -64,7 +87,8 @@ void ImageCanvas::setHealMode(bool on) {
 
 void ImageCanvas::setZoomMode(bool on) {
     m_zoomMode = on;
-    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    if (on) setCursor(zoomCursor());
+    else setCursor(Qt::ArrowCursor);
 }
 
 void ImageCanvas::setMaskMode(MaskType kind, bool on) {
@@ -599,7 +623,9 @@ void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
     }
     if (m_panning && (ev->button() == Qt::LeftButton || ev->button() == Qt::MiddleButton)) {
         m_panning = false;
-        setCursor(m_spaceDown ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        if (m_spaceDown) setCursor(Qt::OpenHandCursor);
+        else if (m_zoomMode) setCursor(zoomCursor());
+        else setCursor(Qt::ArrowCursor);
         return;
     }
     if (m_marquee && ev->button() == Qt::LeftButton) {
@@ -645,7 +671,7 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
         }
         // Ctrl+wheel only zooms while the Zoom tool is selected.
         if (m_zoomMode) {
-            double f = ev->angleDelta().y() > 0 ? 1.25 : 0.8;
+            double f = ev->angleDelta().y() > 0 ? 1.10 : (1.0 / 1.10);
             zoomTo(m_scale * f, ev->position());
             ev->accept();
             return;
@@ -673,7 +699,9 @@ void ImageCanvas::keyPressEvent(QKeyEvent *ev) {
 void ImageCanvas::keyReleaseEvent(QKeyEvent *ev) {
     if (ev->key() == Qt::Key_Space && !ev->isAutoRepeat()) {
         m_spaceDown = false;
-        if (!m_panning) setCursor(m_cropMode ? Qt::CrossCursor : Qt::ArrowCursor);
+        if (!m_panning)
+            setCursor(m_cropMode ? Qt::CrossCursor
+                                 : (m_zoomMode ? zoomCursor() : QCursor(Qt::ArrowCursor)));
         ev->accept();
         return;
     }

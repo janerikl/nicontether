@@ -15,15 +15,8 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     root->setContentsMargins(6, 6, 6, 6);
     root->setSpacing(6);
 
-    // Add buttons.
-    auto *addRow = new QHBoxLayout;
-    m_addRadial = new QPushButton("+ Radial");
-    m_addLinear = new QPushButton("+ Graduated");
-    m_addBrush = new QPushButton("+ Brush");
-    addRow->addWidget(m_addRadial);
-    addRow->addWidget(m_addLinear);
-    addRow->addWidget(m_addBrush);
-    root->addLayout(addRow);
+    // Masks are added from the tool's flyout in the sidebar (Photoshop-style),
+    // so this panel is edit-only: pick the active mask, set its shape, adjust.
 
     // Mask selector + delete.
     auto *selRow = new QHBoxLayout;
@@ -78,12 +71,6 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     root->addLayout(form);
     root->addStretch(1);
 
-    connect(m_addRadial, &QPushButton::clicked, this,
-            [this] { emit addMaskRequested(MaskType::Radial); });
-    connect(m_addLinear, &QPushButton::clicked, this,
-            [this] { emit addMaskRequested(MaskType::Linear); });
-    connect(m_addBrush, &QPushButton::clicked, this,
-            [this] { emit addMaskRequested(MaskType::Brush); });
     connect(m_delete, &QPushButton::clicked, this,
             [this] { emit deleteMaskRequested(); });
     connect(m_maskList, QOverload<int>::of(&QComboBox::currentIndexChanged), this,

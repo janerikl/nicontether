@@ -11,10 +11,11 @@ class QSlider;
 class QPushButton;
 class QLabel;
 
-// Dedicated local-mask mini-panel: add radial/graduated/brush masks, pick the
-// active one, set its shape (invert / feather / brush hardness & size), and
-// dial its tone/colour with eight sliders. Purely a view — it emits intent
-// signals and is refreshed via setMasks(); RetouchWindow routes to the tab.
+// Dedicated local-mask mini-panel: pick the active mask, set its shape (invert /
+// feather / brush hardness & size), and dial its tone/colour with eight sliders.
+// Masks are added from the sidebar tool's flyout, not here. Purely a view — it
+// emits intent signals and is refreshed via setMasks(); RetouchWindow routes to
+// the tab.
 class MaskPanel : public QWidget {
     Q_OBJECT
 public:
@@ -27,7 +28,6 @@ public:
     void setBrushRadius(double radiusNorm);
 
 signals:
-    void addMaskRequested(MaskType type);
     void selectMaskRequested(int index);
     void deleteMaskRequested();
     void maskAdjustChanged(const MaskAdjust &a);
@@ -44,9 +44,6 @@ private:
     bool m_syncing = false;
 
     QComboBox *m_maskList = nullptr;
-    QPushButton *m_addRadial = nullptr;
-    QPushButton *m_addLinear = nullptr;
-    QPushButton *m_addBrush = nullptr;
     QPushButton *m_delete = nullptr;
     QLabel *m_hint = nullptr;
 
