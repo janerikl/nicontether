@@ -442,6 +442,19 @@ void RetouchTab::deleteActiveMask() {
     emit masksChanged();
 }
 
+void RetouchTab::setActiveMaskType(MaskType type) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    if (m.type == type) return;
+    m.type = type;
+    m_maskMode = (type != MaskType::None);
+    m_canvas->setMaskMode(type, m_maskMode);
+    pushMaskGizmo();
+    retone();
+    markEdited();
+    emit masksChanged();
+}
+
 void RetouchTab::setActiveMaskAdjust(const MaskAdjust &a) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
     if (m_adj.masks[m_activeMask].adj == a) return;

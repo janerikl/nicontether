@@ -53,6 +53,7 @@ public:
     int duplicateActiveMask();              // copy + insert above; returns its index
     void selectMask(int index);             // -1 = none
     void deleteActiveMask();
+    void setActiveMaskType(MaskType type);  // add/remove/change the layer's mask
     void setActiveMaskAdjust(const MaskAdjust &a);
     void setActiveMaskShape(bool inverted, double feather, double hardness,
                             double brushRadius, bool autoMask);

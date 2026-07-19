@@ -7,6 +7,7 @@
 #include "ui/FilmstripWidget.h"
 #include "ui/LevelsPanel.h"
 #include "ui/MaskPanel.h"
+#include "ui/LayersPanel.h"
 #include "ui/ToolFlyout.h"
 #include "ui/TetherView.h"
 #include "ui/PreferencesDialog.h"
@@ -342,6 +343,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     buildDock();
     buildHistoryDock();
     buildLevelsDock();
+    buildLayersDock();
     buildMaskDock();
     buildViewMenu();
 
@@ -454,6 +456,7 @@ void RetouchWindow::buildViewMenu() {
     if (m_adjustmentsDock) viewMenu->addAction(m_adjustmentsDock->toggleViewAction());
     if (m_historyDock) viewMenu->addAction(m_historyDock->toggleViewAction());
     if (m_levelsDock) viewMenu->addAction(m_levelsDock->toggleViewAction());
+    if (m_layersDock) viewMenu->addAction(m_layersDock->toggleViewAction());
     if (m_maskDock) viewMenu->addAction(m_maskDock->toggleViewAction());
 
     auto *filmstripAction = new QAction("Filmstrip", this);
@@ -481,7 +484,7 @@ void RetouchWindow::buildViewMenu() {
 // there instead). Used on first launch (no saved state) and by Reset Panels.
 void RetouchWindow::applyDefaultDockLayout() {
     for (QDockWidget *d : {m_levelsDock, m_adjustmentsDock, m_historyDock,
-                           m_maskDock, m_controlsDock}) {
+                           m_layersDock, m_maskDock, m_controlsDock}) {
         if (d) {
             d->setFloating(false);
             addDockWidget(Qt::RightDockWidgetArea, d);
@@ -489,8 +492,10 @@ void RetouchWindow::applyDefaultDockLayout() {
     }
     if (m_adjustmentsDock && m_historyDock)
         tabifyDockWidget(m_adjustmentsDock, m_historyDock);
-    if (m_adjustmentsDock && m_maskDock)
-        tabifyDockWidget(m_adjustmentsDock, m_maskDock);
+    if (m_adjustmentsDock && m_layersDock)
+        tabifyDockWidget(m_adjustmentsDock, m_layersDock);
+    if (m_layersDock && m_maskDock)
+        tabifyDockWidget(m_layersDock, m_maskDock);
     if (m_levelsDock && m_adjustmentsDock)
         splitDockWidget(m_levelsDock, m_adjustmentsDock, Qt::Vertical);
     if (m_toolsBar)
@@ -500,6 +505,7 @@ void RetouchWindow::applyDefaultDockLayout() {
     if (m_adjustmentsDock) m_adjustmentsDock->show();
     if (m_historyDock)     m_historyDock->show();
     if (m_levelsDock)      m_levelsDock->show();
+    if (m_layersDock)      m_layersDock->show();
     if (m_maskDock)        m_maskDock->show();
 
     // Let mode/tool chrome have the final say on editing-dock/Controls/Tools
@@ -564,7 +570,6 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             if (tab) { tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
-            if (m_maskDock) m_maskDock->hide();
             m_toolOptionsStack->setCurrentIndex(0);
             m_toolOptionsBar->setVisible(true);
         } else {
@@ -580,7 +585,6 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             if (tab) { tab->setZoomMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
-            if (m_maskDock) m_maskDock->hide();
             m_toolOptionsStack->setCurrentIndex(1);
             m_toolOptionsBar->setVisible(true);
         } else {
@@ -599,7 +603,6 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
-            if (m_maskDock) m_maskDock->hide();
             m_toolOptionsStack->setCurrentIndex(2);
             m_toolOptionsBar->setVisible(true);
         } else {
@@ -618,11 +621,12 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); }
-            m_toolOptionsBar->setVisible(false); // layers use their own dock
+            m_toolOptionsBar->setVisible(false); // layers/masks use their own docks
+            if (m_layersDock) { m_layersDock->show(); m_layersDock->raise(); }
             if (m_maskDock) { m_maskDock->show(); m_maskDock->raise(); }
         }
-        // Layers panel stays visible when the K tool is toggled off — it's a
-        // persistent stack, not a transient tool-options popup.
+        // Layers/Masks panels stay visible when the K tool is toggled off —
+        // they're persistent docks, not transient tool-options popups.
         if (tab && tab->isReady()) tab->setMaskMode(on);
         // A plain click on the tool creates a mask of the active subtool.
         if (on) addActiveMask();
@@ -935,73 +939,96 @@ void RetouchWindow::refreshLevels() {
     }
 }
 
-void RetouchWindow::buildMaskDock() {
+void RetouchWindow::buildLayersDock() {
     auto *dock = new QDockWidget("Layers", this);
-    m_maskDock = dock;
-    dock->setObjectName("maskDock");
+    m_layersDock = dock;
+    dock->setObjectName("layersDock");
     dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
-    m_maskPanel = new MaskPanel;
-    dock->setWidget(m_maskPanel);
+    m_layersPanel = new LayersPanel;
+    dock->setWidget(m_layersPanel);
     addDockWidget(Qt::RightDockWidgetArea, dock);
     if (m_adjustmentsDock) tabifyDockWidget(m_adjustmentsDock, dock);
     dock->hide(); // shown only while the Mask tool is active
 
-    connect(m_maskPanel, &MaskPanel::selectMaskRequested, this, [this](int i) {
+    connect(m_layersPanel, &LayersPanel::selectMaskRequested, this, [this](int i) {
         RetouchTab *tab = currentTab();
         if (tab) tab->selectMask(i);
     });
-    connect(m_maskPanel, &MaskPanel::deleteMaskRequested, this, [this] {
+    connect(m_layersPanel, &LayersPanel::deleteMaskRequested, this, [this] {
         RetouchTab *tab = currentTab();
         if (tab) { tab->deleteActiveMask(); refreshMaskPanel(); }
     });
-    connect(m_maskPanel, &MaskPanel::duplicateMaskRequested, this, [this] {
+    connect(m_layersPanel, &LayersPanel::duplicateMaskRequested, this, [this] {
         RetouchTab *tab = currentTab();
         if (tab) { tab->duplicateActiveMask(); refreshMaskPanel(); }
     });
-    connect(m_maskPanel, &MaskPanel::maskAdjustChanged, this,
+    connect(m_layersPanel, &LayersPanel::maskAdjustChanged, this,
             [this](const MaskAdjust &a) {
                 RetouchTab *tab = currentTab();
                 if (tab) tab->setActiveMaskAdjust(a);
             });
-    connect(m_maskPanel, &MaskPanel::maskShapeChanged, this,
-            [this](bool inv, double f, double h, double br, bool am) {
-                RetouchTab *tab = currentTab();
-                if (tab) tab->setActiveMaskShape(inv, f, h, br, am);
-            });
-    connect(m_maskPanel, &MaskPanel::maskOpacityChanged, this,
+    connect(m_layersPanel, &LayersPanel::maskOpacityChanged, this,
             [this](double opacity) {
                 RetouchTab *tab = currentTab();
                 if (tab) tab->setActiveMaskOpacity(opacity);
             });
-    connect(m_maskPanel, &MaskPanel::maskBlendChanged, this,
+    connect(m_layersPanel, &LayersPanel::maskBlendChanged, this,
             [this](BlendMode mode) {
                 RetouchTab *tab = currentTab();
                 if (tab) tab->setActiveMaskBlend(mode);
             });
-    connect(m_maskPanel, &MaskPanel::maskVisibleChanged, this,
+    connect(m_layersPanel, &LayersPanel::maskVisibleChanged, this,
             [this](bool visible) {
                 RetouchTab *tab = currentTab();
                 if (tab) { tab->setActiveMaskVisible(visible); refreshMaskPanel(); }
             });
-    connect(m_maskPanel, &MaskPanel::maskNameChanged, this,
+    connect(m_layersPanel, &LayersPanel::maskNameChanged, this,
             [this](const QString &name) {
                 RetouchTab *tab = currentTab();
                 if (tab) tab->setActiveMaskName(name);
             });
-    connect(m_maskPanel, &MaskPanel::maskReorderRequested, this,
+    connect(m_layersPanel, &LayersPanel::maskReorderRequested, this,
             [this](int from, int to) {
                 RetouchTab *tab = currentTab();
                 if (tab) { tab->moveMask(from, to); refreshMaskPanel(); }
             });
 }
 
+void RetouchWindow::buildMaskDock() {
+    auto *dock = new QDockWidget("Masks", this);
+    m_maskDock = dock;
+    dock->setObjectName("maskDock");
+    dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    m_maskPanel = new MaskPanel;
+    dock->setWidget(m_maskPanel);
+    addDockWidget(Qt::RightDockWidgetArea, dock);
+    if (m_layersDock) tabifyDockWidget(m_layersDock, dock);
+    dock->hide(); // shown only while the Mask tool is active
+
+    connect(m_maskPanel, &MaskPanel::maskTypeChanged, this, [this](MaskType t) {
+        RetouchTab *tab = currentTab();
+        if (tab) { tab->setActiveMaskType(t); refreshMaskPanel(); }
+    });
+    connect(m_maskPanel, &MaskPanel::maskShapeChanged, this,
+            [this](bool inv, double f, double h, double br, bool am) {
+                RetouchTab *tab = currentTab();
+                if (tab) tab->setActiveMaskShape(inv, f, h, br, am);
+            });
+}
+
 void RetouchWindow::refreshMaskPanel() {
-    if (!m_maskPanel) return;
     RetouchTab *tab = currentTab();
-    if (tab && tab->isReady())
-        m_maskPanel->setMasks(tab->masks(), tab->activeMaskIndex());
-    else
-        m_maskPanel->clear();
+    const bool ready = tab && tab->isReady();
+    if (m_layersPanel) {
+        if (ready) m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex());
+        else m_layersPanel->clear();
+    }
+    if (m_maskPanel) {
+        const int idx = ready ? tab->activeMaskIndex() : -1;
+        const bool hasSelection = ready && idx >= 0 && idx < tab->masks().size();
+        if (hasSelection) m_maskPanel->setMask(tab->masks()[idx], true);
+        else m_maskPanel->clear();
+    }
 }
 
 void RetouchWindow::openMaskFlyout() {
@@ -1271,6 +1298,7 @@ void RetouchWindow::applyModeChrome(Mode mode) {
     if (m_toolsBar)        m_toolsBar->setVisible(!tether);
     if (m_adjustmentsDock) m_adjustmentsDock->setVisible(!tether);
     if (m_historyDock)     m_historyDock->setVisible(!tether);
+    if (m_layersDock)      m_layersDock->setVisible(!tether);
     if (m_maskDock)        m_maskDock->setVisible(!tether);
 
     // Editing-only actions are meaningless while tethering.
@@ -1442,6 +1470,7 @@ void RetouchWindow::setDockEnabled(bool enabled) {
         if (w) w->setEnabled(enabled);
     if (!enabled && m_cropApply) m_cropApply->setEnabled(false);
     if (!enabled && m_levelsPanel) m_levelsPanel->clear();
+    if (!enabled && m_layersPanel) m_layersPanel->clear();
     if (!enabled && m_maskPanel) m_maskPanel->clear();
 }
 

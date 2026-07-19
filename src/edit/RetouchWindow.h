@@ -26,6 +26,7 @@ class TetherView;
 class PreferencesDialog;
 class LevelsPanel;
 class MaskPanel;
+class LayersPanel;
 
 // Separate top-level window for retouching photos. Own filmstrip selector plus
 // one tab per open photo, an adjustments dock, and JPEG/PNG export.
@@ -142,10 +143,13 @@ private:
     QSlider *m_healBrush = nullptr;
     QPushButton *m_healClear = nullptr;
     FlyoutToolButton *m_maskToggle = nullptr; // left icon bar: local-mask tool
+    QDockWidget *m_layersDock = nullptr;
+    LayersPanel *m_layersPanel = nullptr;
     QDockWidget *m_maskDock = nullptr;
     MaskPanel *m_maskPanel = nullptr;
+    void buildLayersDock();
     void buildMaskDock();
-    void refreshMaskPanel();
+    void refreshMaskPanel(); // refreshes both Layers and Masks panels
     // Local-mask subtool selected via the tool's Photoshop-style flyout; a plain
     // click on the mask tool creates a mask of this type.
     MaskType m_activeMaskSubtool = MaskType::Radial;

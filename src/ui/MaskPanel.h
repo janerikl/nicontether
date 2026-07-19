@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QVector>
 #include <QWidget>
 
 #include "edit/Adjustments.h"
@@ -8,64 +7,41 @@
 class QComboBox;
 class QCheckBox;
 class QSlider;
-class QPushButton;
 class QLabel;
-class QLineEdit;
-class QListWidget;
-class CurveEditor;
-class LevelsPanel;
 
-// Layers panel: a real Lightroom/Photoshop-style layer stack. A full-height
-// list at top (drag to reorder, eye icon to toggle visibility, Duplicate/
-// Delete), and below it the *complete* editing surface for whichever layer is
-// selected — name, opacity, blend mode, its mask shape (invert / feather /
-// brush hardness & size), and the full tone/colour/curve/levels/detail
-// adjustment set (the same power as the main Adjustments dock, scoped to this
-// layer). Layers are added from the sidebar tool's flyout, not here. Purely a
-// view — it emits intent signals and is refreshed via setMasks(); RetouchWindow
+// Mask editor for whichever layer is selected in the Layers panel: a type
+// combo (None / Radial / Graduated / Brush) to add, remove, or change the
+// layer's mask, plus its shape controls (invert / feather / brush hardness &
+// size / auto mask). Separate from LayersPanel — this dock is purely about
+// *where* a layer's adjustment applies, not the adjustment itself. Purely a
+// view — it emits intent signals and is refreshed via setMask(); RetouchWindow
 // routes to the tab.
 class MaskPanel : public QWidget {
     Q_OBJECT
 public:
     explicit MaskPanel(QWidget *parent = nullptr);
 
-    void setMasks(const QVector<Mask> &masks, int activeIndex);
+    void setMask(const Mask &mask, bool hasSelection);
     void clear();
     // Reflect a brush radius change (e.g. ctrl+wheel on the canvas) without
-    // rebuilding the whole layer list.
+    // a full resync.
     void setBrushRadius(double radiusNorm);
 
 signals:
-    void selectMaskRequested(int index);
-    void deleteMaskRequested();
-    void duplicateMaskRequested();
-    void maskAdjustChanged(const MaskAdjust &a);
+    void maskTypeChanged(MaskType type);
     void maskShapeChanged(bool inverted, double feather, double hardness,
                           double brushRadius, bool autoMask);
-    void maskOpacityChanged(double opacity); // 0..1
-    void maskBlendChanged(BlendMode mode);
-    void maskVisibleChanged(bool visible);
-    void maskNameChanged(const QString &name);
-    void maskReorderRequested(int from, int to);
 
 private:
-    void emitAdjust();
     void emitShape();
-    void loadActive();
-    void rebuildList();
+    void loadMask();
 
-    QVector<Mask> m_masks;
-    int m_active = -1;
+    Mask m_mask;
+    bool m_hasSelection = false;
     bool m_syncing = false;
 
-    QListWidget *m_maskList = nullptr;
-    QPushButton *m_duplicate = nullptr;
-    QPushButton *m_delete = nullptr;
     QLabel *m_hint = nullptr;
-
-    QLineEdit *m_name = nullptr;
-    QSlider *m_opacity = nullptr;
-    QComboBox *m_blend = nullptr;
+    QComboBox *m_type = nullptr;
 
     QCheckBox *m_invert = nullptr;
     QSlider *m_feather = nullptr;
@@ -74,20 +50,4 @@ private:
     QLabel *m_brushSizeLabel = nullptr;
     QSlider *m_brushSize = nullptr;
     QCheckBox *m_autoMask = nullptr;
-
-    QSlider *m_brightness = nullptr;
-    QSlider *m_contrast = nullptr;
-    QSlider *m_highlights = nullptr;
-    QSlider *m_shadows = nullptr;
-    QSlider *m_saturation = nullptr;
-    QSlider *m_vibrance = nullptr;
-    QSlider *m_temperature = nullptr;
-    QSlider *m_tint = nullptr;
-
-    CurveEditor *m_curve = nullptr;
-    LevelsPanel *m_levels = nullptr;
-    Levels m_curLevels;   // last value LevelsPanel reported (it has no getter)
-    QSlider *m_clarity = nullptr;
-    QSlider *m_sharpen = nullptr;
-    QSlider *m_vignette = nullptr;
 };
