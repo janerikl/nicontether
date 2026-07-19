@@ -576,6 +576,12 @@ void RetouchWindow::buildToolPanel() {
     auto *resetShortcut = new QShortcut(QKeySequence(Qt::Key_D), this);
     connect(resetShortcut, &QShortcut::activated, m_colorSwatch, &ColorSwatchWidget::resetColors);
 
+    connect(m_colorSwatch, &ColorSwatchWidget::foregroundColorChanged, this,
+            [this](const QColor &c) {
+                RetouchTab *tab = currentTab();
+                if (tab && tab->isReady()) tab->setPaintColor(c);
+            });
+
     // Each tool turns off the other two (and the WB eyedropper) when selected,
     // and swaps in that tool's options row under the main toolbar.
     connect(m_toolZoom, &QToolButton::toggled, this, [this](bool on) {
