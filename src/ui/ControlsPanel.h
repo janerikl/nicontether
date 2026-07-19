@@ -8,7 +8,6 @@
 class QComboBox;
 class QPushButton;
 class QLabel;
-class QSpinBox;
 
 // Right-hand dock: exposure/WB/quality combos plus AF and capture buttons.
 // Combos are populated from the camera's reported config choices.
@@ -27,8 +26,6 @@ signals:
     void configEditRequested(const QString &widgetName, const QString &value);
     void autofocusRequested();
     void captureRequested();
-    // AF coordinate frame size for click-to-focus calibration.
-    void afFrameSizeChanged(int w, int h);
 
 private:
     struct ControlRow {
@@ -41,7 +38,4 @@ private:
     QPushButton *m_afButton = nullptr;
     QPushButton *m_captureButton = nullptr;
     class QFormLayout *m_form = nullptr;
-    QSpinBox *m_afFrameW = nullptr;
-    QSpinBox *m_afFrameH = nullptr;
-    void loadAfFrameSettings();
 };

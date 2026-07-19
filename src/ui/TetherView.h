@@ -34,9 +34,13 @@ public:
     // only captures while tethering.
     void setActive(bool active);
 
+    // Set the AF coordinate frame size used by click-to-focus.
+    void setAfFrameSize(int w, int h);
+
 signals:
     void captureComplete(const QString &path);
     void statusMessage(const QString &message);
+    void cameraConnected(const QString &cameraName);
 
 private slots:
     void onConnect();

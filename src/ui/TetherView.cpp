@@ -13,7 +13,6 @@
 #include <QMessageBox>
 #include <QShortcut>
 #include <QKeySequence>
-#include <QSettings>
 
 TetherView::TetherView(QWidget *parent) : QWidget(parent) {
     m_controller = new CameraController(this);
@@ -43,15 +42,7 @@ TetherView::TetherView(QWidget *parent) : QWidget(parent) {
             m_controller, &CameraController::triggerAutofocus);
     connect(m_controls, &ControlsPanel::captureRequested,
             m_controller, &CameraController::capture);
-    connect(m_controls, &ControlsPanel::afFrameSizeChanged,
-            m_liveView, &LiveViewWidget::setAfFrameSize);
 
-    // Seed the live view with the persisted AF frame size.
-    {
-        QSettings s;
-        m_liveView->setAfFrameSize(s.value("af/frameWidth", 640).toInt(),
-                                   s.value("af/frameHeight", 426).toInt());
-    }
     connect(m_liveView, &LiveViewWidget::focusRequested,
             m_controller, &CameraController::setAfArea);
     connect(m_controller, &CameraController::afAreaResult,
@@ -150,6 +141,11 @@ void TetherView::handleConnected(const QString &name, const ConfigOptionMap &opt
     m_controls->populate(options);
     setConnectedState(true);
     emit statusMessage("Connected: " + name);
+    emit cameraConnected(name);
+}
+
+void TetherView::setAfFrameSize(int w, int h) {
+    m_liveView->setAfFrameSize(w, h);
 }
 
 void TetherView::handleDisconnected() {
