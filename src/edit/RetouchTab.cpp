@@ -573,6 +573,15 @@ void RetouchTab::setActiveMaskShape(bool inverted, double feather,
     markEdited();
 }
 
+void RetouchTab::setPaintColor(const QColor &color) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    if (m.type != MaskType::Paint) return;
+    m.paintColor = color;
+    retone();
+    markEdited();
+}
+
 void RetouchTab::onMaskRadial(const QPointF &centerNorm, double radiusNorm) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
     Mask &m = m_adj.masks[m_activeMask];

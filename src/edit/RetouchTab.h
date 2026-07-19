@@ -3,6 +3,7 @@
 #include <QWidget>
 #include <QImage>
 #include <QRect>
+#include <QColor>
 
 #include "edit/Adjustments.h"
 
@@ -58,6 +59,7 @@ public:
     void setActiveMaskAdjust(const MaskAdjust &a);
     void setActiveMaskShape(bool inverted, double feather, double hardness,
                             double brushRadius, bool autoMask);
+    void setPaintColor(const QColor &color); // no-op unless the active layer is MaskType::Paint
     void setActiveMaskOpacity(double opacity);       // 0..1
     void setActiveMaskBlend(BlendMode mode);
     void setActiveMaskVisible(bool visible);
