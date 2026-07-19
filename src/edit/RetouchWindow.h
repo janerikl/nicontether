@@ -8,6 +8,7 @@
 
 #include "edit/Adjustments.h"
 #include "edit/ExportPreset.h"
+#include "ui/ColorSwatchWidget.h"
 
 class RetouchTab;
 class FilmstripWidget;
@@ -143,6 +144,7 @@ private:
     QSlider *m_healBrush = nullptr;
     QPushButton *m_healClear = nullptr;
     FlyoutToolButton *m_maskToggle = nullptr; // left icon bar: local-mask tool
+    ColorSwatchWidget *m_colorSwatch = nullptr; // left icon bar: fg/bg color swatch
     QDockWidget *m_layersDock = nullptr;
     LayersPanel *m_layersPanel = nullptr;
     QDockWidget *m_maskDock = nullptr;

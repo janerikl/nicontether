@@ -561,6 +561,14 @@ void RetouchWindow::buildToolPanel() {
     connect(m_maskToggle, &FlyoutToolButton::flyoutRequested, this,
             [this] { openMaskFlyout(); });
 
+    m_colorSwatch = new ColorSwatchWidget;
+    m_toolsBar->addWidget(m_colorSwatch);
+
+    auto *swapShortcut = new QShortcut(QKeySequence(Qt::Key_X), this);
+    connect(swapShortcut, &QShortcut::activated, m_colorSwatch, &ColorSwatchWidget::swapColors);
+    auto *resetShortcut = new QShortcut(QKeySequence(Qt::Key_D), this);
+    connect(resetShortcut, &QShortcut::activated, m_colorSwatch, &ColorSwatchWidget::resetColors);
+
     // Each tool turns off the other two (and the WB eyedropper) when selected,
     // and swaps in that tool's options row under the main toolbar.
     connect(m_toolZoom, &QToolButton::toggled, this, [this](bool on) {
