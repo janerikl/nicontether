@@ -552,6 +552,13 @@ void RetouchWindow::buildToolPanel() {
     m_healToggle->setToolTip("Spot Heal (H) — click blemishes; Ctrl+wheel resizes brush");
     m_toolsBar->addWidget(m_healToggle);
 
+    m_brushToggle = new QToolButton;
+    m_brushToggle->setIcon(makeToolIcon(drawMaskBrush));
+    m_brushToggle->setCheckable(true);
+    m_brushToggle->setShortcut(QKeySequence(Qt::Key_B));
+    m_brushToggle->setToolTip("Brush (B) — paint with the foreground color; Ctrl+wheel resizes brush");
+    m_toolsBar->addWidget(m_brushToggle);
+
     m_maskToggle = new FlyoutToolButton;
     m_maskToggle->setIcon(makeFlyoutToolIcon(maskGlyph(m_activeMaskSubtool)));
     m_maskToggle->setCheckable(true);
@@ -578,6 +585,7 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+            { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
             if (tab) { tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
             m_toolOptionsStack->setCurrentIndex(0);
             m_toolOptionsBar->setVisible(true);
@@ -593,6 +601,7 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+            { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
             if (tab) { tab->setZoomMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
             m_toolOptionsStack->setCurrentIndex(1);
             m_toolOptionsBar->setVisible(true);
@@ -611,6 +620,7 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+            { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
             if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
             m_toolOptionsStack->setCurrentIndex(2);
             m_toolOptionsBar->setVisible(true);
@@ -629,6 +639,7 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
             { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
+            { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
             if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); }
             m_toolOptionsBar->setVisible(false); // layers/masks use their own docks
             if (m_layersDock) { m_layersDock->show(); m_layersDock->raise(); }
@@ -640,6 +651,31 @@ void RetouchWindow::buildToolPanel() {
         // A plain click on the tool creates a mask of the active subtool.
         if (on) addActiveMask();
         refreshMaskPanel();
+    });
+    connect(m_brushToggle, &QToolButton::toggled, this, [this](bool on) {
+        RetouchTab *tab = currentTab();
+        if (on) {
+            { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
+            { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
+            { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
+            { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
+            { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); }
+            m_toolOptionsStack->setCurrentIndex(3);
+            m_toolOptionsBar->setVisible(true);
+            if (tab && tab->isReady()) {
+                tab->addMask(MaskType::Paint);
+                tab->setPaintColor(m_colorSwatch->foregroundColor());
+                tab->setActiveMaskShape(false, 0.0, m_paintHardness->value() / 100.0,
+                                        m_paintSize->value() / 100.0, false);
+                tab->setActiveMaskOpacity(m_paintOpacity->value() / 100.0);
+            }
+            if (m_layersDock) { m_layersDock->show(); m_layersDock->raise(); }
+            refreshMaskPanel();
+        } else {
+            m_toolOptionsBar->setVisible(false);
+            if (tab && tab->isReady()) tab->setMaskMode(false);
+        }
     });
 }
 
@@ -742,6 +778,46 @@ void RetouchWindow::buildToolOptionsBar() {
     connect(m_healClear, &QPushButton::clicked, this, [this] {
         RetouchTab *tab = currentTab();
         if (tab) tab->clearHeals();
+    });
+
+    // --- Brush page (index 3) ---
+    auto *brushPage = new QWidget;
+    auto *brushRow = new QHBoxLayout(brushPage);
+    brushRow->setContentsMargins(4, 2, 4, 2);
+    m_paintSize = new QSlider(Qt::Horizontal);
+    m_paintSize->setRange(1, 40); // percent of image width, same scale as MaskPanel::m_brushSize
+    m_paintSize->setValue(6);
+    m_paintSize->setMinimumWidth(120);
+    m_paintHardness = new QSlider(Qt::Horizontal);
+    m_paintHardness->setRange(0, 100);
+    m_paintHardness->setValue(100);
+    m_paintHardness->setMinimumWidth(100);
+    m_paintOpacity = new QSlider(Qt::Horizontal);
+    m_paintOpacity->setRange(1, 100);
+    m_paintOpacity->setValue(100);
+    m_paintOpacity->setMinimumWidth(100);
+    brushRow->addWidget(new QLabel("Size:"));
+    brushRow->addWidget(m_paintSize);
+    brushRow->addWidget(new QLabel("Hardness:"));
+    brushRow->addWidget(m_paintHardness);
+    brushRow->addWidget(new QLabel("Opacity:"));
+    brushRow->addWidget(m_paintOpacity);
+    brushRow->addStretch(1);
+    m_toolOptionsStack->addWidget(brushPage);
+
+    connect(m_paintSize, &QSlider::valueChanged, this, [this](int v) {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->setActiveMaskShape(false, 0.0, m_paintHardness->value() / 100.0,
+                                         v / 100.0, false);
+    });
+    connect(m_paintHardness, &QSlider::valueChanged, this, [this](int v) {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->setActiveMaskShape(false, 0.0, v / 100.0,
+                                         m_paintSize->value() / 100.0, false);
+    });
+    connect(m_paintOpacity, &QSlider::valueChanged, this, [this](int v) {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->setActiveMaskOpacity(v / 100.0);
     });
 
     m_toolOptionsBar->addWidget(m_toolOptionsStack);

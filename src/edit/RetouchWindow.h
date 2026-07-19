@@ -143,6 +143,10 @@ private:
     QToolButton *m_healToggle = nullptr; // left icon bar: spot-heal tool
     QSlider *m_healBrush = nullptr;
     QPushButton *m_healClear = nullptr;
+    QToolButton *m_brushToggle = nullptr; // left icon bar: paint-brush tool
+    QSlider *m_paintSize = nullptr;
+    QSlider *m_paintHardness = nullptr;
+    QSlider *m_paintOpacity = nullptr;
     FlyoutToolButton *m_maskToggle = nullptr; // left icon bar: local-mask tool
     ColorSwatchWidget *m_colorSwatch = nullptr; // left icon bar: fg/bg color swatch
     QDockWidget *m_layersDock = nullptr;
