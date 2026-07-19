@@ -19,9 +19,28 @@ In scope:
 Out of scope (explicitly deferred):
 - Clone stamp tool.
 - Custom HSV color picker UI (uses Qt's built-in `QColorDialog`).
-- Blend modes other than Normal (source-over) compositing.
-- Painting onto a dedicated/new layer — brush always paints the currently
-  active layer.
+- A raw per-pixel `QImage` paint buffer — paint strokes are stored as
+  vector stroke points (like the existing Brush mask type), not literal
+  bitmap pixels (see "Architecture note" below).
+
+## Architecture note (supersedes initial "paint onto active layer" idea)
+
+This codebase has no per-layer rasterized pixel buffer: layers (`Mask` in
+`src/edit/Adjustments.h`) are procedural — geometry (radial/linear/brush
+stroke) + tone adjustments, composited fresh on every render in
+`applyMasks()` (`src/edit/Adjustments.cpp`). There is no bitmap layer type
+and no `QPainter`-based compositing path to paint into directly.
+
+The Brush tool is therefore implemented as a **new paint layer kind**,
+sibling to the existing `MaskType::Brush` mask: it reuses the exact same
+stroke storage (`QVector<BrushStrokePoint> stroke`, `brushRadius`,
+`hardness`) and the same `rasterizeBrush()` coverage/opacity/blend
+pipeline already in `applyMasks()`. The only new per-layer data is a
+`QColor paintColor` field. During compositing, a paint layer's "content"
+(the `loc` image in `applyMasks()`) is a flat fill of `paintColor` instead
+of `applyLayerContent(img, m.adj)`. This makes paint layers real, visible,
+reorderable, deletable entries in the Layers panel — consistent with every
+other layer type — without adding a new pixel-buffer subsystem.
 
 ## 1. Color Swatch Widget
 
@@ -55,50 +74,101 @@ required (resets to black/white on app restart).
 
 ## 2. Brush Tool
 
-New files: `src/edit/PaintTool.h` / `.cpp` (mirrors the shape of
-`HealTool.cpp`), plus wiring in `ImageCanvas`, `RetouchTab`, and
-`RetouchWindow`.
+No new tool-logic files. The brush is implemented as a new **paint layer
+kind**, sibling to `MaskType::Brush`, living entirely inside the existing
+`Mask`/`applyMasks()` machinery in `src/edit/Adjustments.h/.cpp`, plus UI
+wiring in `ImageCanvas`, `RetouchTab`, `RetouchWindow`, and `LayersPanel`.
+
+### Data model changes (`src/edit/Adjustments.h`)
+
+- Add `MaskType::Paint` to the `enum class MaskType`.
+- Add `QColor paintColor = Qt::black;` to `Mask`, included in
+  `Mask::operator==`.
+- A `Mask` with `type == MaskType::Paint` reuses the existing `stroke`,
+  `brushRadius`, and `hardness` fields exactly like `MaskType::Brush` (same
+  stroke-point storage, same `rasterizeBrush()` coverage rasterization).
+  `adj` (`MaskAdjust`) is unused for paint layers.
+
+### Compositing changes (`src/edit/Adjustments.cpp`)
+
+In `applyMasks()`, where `loc` (the layer's content image) is currently
+computed as:
+```cpp
+const QImage loc = imageLayer
+        ? applyLayerContent(coverFit(m.sourceImageCache, w, h), m.adj)
+        : applyLayerContent(img, m.adj);
+```
+add a branch for paint layers that fills a flat `paintColor` image instead:
+```cpp
+const bool paintLayer = m.type == MaskType::Paint;
+const QImage loc = imageLayer
+        ? applyLayerContent(coverFit(m.sourceImageCache, w, h), m.adj)
+        : paintLayer ? QImage(w, h, QImage::Format_ARGB32) /* filled below */
+                      : applyLayerContent(img, m.adj);
+```
+(exact fill mechanics detailed in the implementation plan). Coverage
+(`cov`) for `MaskType::Paint` is computed via the same
+`rasterizeBrush(m, cov, w, h, &img)` call already used for
+`MaskType::Brush` — extend that `if` condition to include `Paint`. Opacity
+and `BlendMode` compositing in the pixel loop below are unchanged (already
+generic over any `wgt`/`loc` source).
+
+Also extend `hasMaskEdits()` and the `m.type == MaskType::Brush &&
+m.stroke.isEmpty()) continue;` skip-check to treat `Paint` the same as
+`Brush` (skip empty-stroke paint layers).
 
 ### Activation
 
 A new "Brush" toolbar action is added next to the existing Heal action in
-`RetouchWindow::setupUi`, using the same icon-drawing/QAction pattern
-(`makeHealIcon` sibling, e.g. `makeBrushIcon`). Selecting it switches
-`ImageCanvas` into brush mode, mutually exclusive with Heal/Mask/Crop modes
-(same selection-group pattern already used for those tools).
+`RetouchWindow::setupUi`, using the same icon-drawing pattern
+(`makeHealIcon` sibling, e.g. `makeBrushIcon`), added to the same manual
+mutual-exclusion lambda chain as Heal/Mask/Crop/Zoom/WB-pick.
+`ImageCanvas` gets `bool m_paintMode` + `setPaintMode(bool on)`, mirroring
+`setHealMode`.
+
+Selecting the Brush tool creates (or reuses, if already selected) a
+`MaskType::Paint` layer in `RetouchTab`'s `m_adj.masks`, set as the active
+mask, exactly as clicking the mask-brush subtool creates/selects a brush
+mask today — so paint strokes land in the Layers panel as a normal,
+visible, reorderable, deletable, opacity/blend-adjustable layer.
 
 ### Options bar
 
-While Brush is active, a small options bar appears (mirroring `MaskPanel`'s
-hardness/feather sliders) with:
-- **Size** — also adjustable via ctrl+wheel on canvas, matching the existing
-  heal/mask brush convention (`setBrushRadius` / `healBrushRadiusChanged`).
-- **Hardness** — 0–100%, controls edge falloff of the brush stamp (soft
-  radial gradient at low hardness, hard circular edge at 100%). Same concept
-  as `MaskPanel`'s hardness control.
-- **Opacity** — 0–100%, controls per-stroke alpha blending onto the layer.
+While Brush is active, an options row (mirroring the existing Spot Heal
+options row in `RetouchWindow::buildToolOptionsBar()`) shows:
+- **Size** — also adjustable via ctrl+wheel on canvas
+  (`setBrushRadius`/`maskBrushRadiusChanged`, already shared with the mask
+  brush).
+- **Hardness** — 0–100%, maps directly to `Mask::hardness` (same field the
+  mask brush already uses).
+- **Opacity** — 0–100%, maps directly to `Mask::opacity` (already exists
+  on every layer).
 
 ### Painting behavior
 
-- Reuses `ImageCanvas`'s existing mouse event plumbing
-  (`mousePressEvent`/`mouseMoveEvent`/`mouseReleaseEvent`) and
-  display→image-normalized coordinate mapping — the same infrastructure the
-  heal and mask brushes already use. Adds a new point-stream signal, e.g.
-  `paintBrushPoint(QPointF ptNorm)`, alongside the existing
-  `maskBrushPoint`/heal equivalents.
-- `RetouchTab` connects `paintBrushPoint` to `PaintTool`, which rasterizes a
-  brush stamp (radius = size, falloff = hardness) at each point and
-  composites it in Normal (source-over) blend mode, at the given opacity,
-  directly onto the pixel data of the currently active layer (per the
-  existing Layers panel selection).
-- Strokes are treated as a single undoable edit per mouse-down/up, going
-  through the same undo/history stack as heal edits.
+- Reuses `ImageCanvas`'s existing mouse-event plumbing and
+  display→image-normalized coordinate mapping via the same
+  `maskBrushPoint(QPointF ptNorm, bool erase)` signal the mask brush
+  already emits (no new canvas signal needed) — the paint tool just routes
+  through the same path when `m_paintMode` is active instead of
+  `m_maskMode`.
+- `RetouchTab::onMaskBrushPoint` (or a thin paint-mode equivalent) appends
+  to the active paint layer's `stroke` list and calls `retone()`, exactly
+  like the mask brush.
+- On mouse release, `markEdited()` is called once (mirroring
+  `onMaskEditFinished()`), so a full drag stroke coalesces into one
+  history entry via the existing 350ms-debounced commit system — no new
+  undo/history code needed.
 
 ### Color source
 
-`RetouchTab` connects `ColorSwatchWidget::foregroundColorChanged` to
-`PaintTool`, so every new stroke paints with whatever the current
-foreground color is at stroke-start time.
+`RetouchTab` connects `ColorSwatchWidget::foregroundColorChanged` to set
+`paintColor` on the active paint layer (and on newly-created paint layers
+at creation time), so new strokes always use the current foreground color.
+Changing fg color while an existing paint layer is selected does not
+retroactively recolor strokes already drawn on a *different* paint layer —
+each paint layer has its own fixed `paintColor` once created (matches how
+each mask layer has its own fixed `adj`).
 
 ## Testing
 
@@ -107,6 +177,8 @@ foreground color is at stroke-start time.
   with Heal/Mask tools which are also manually verified).
 - Verify: swatch click opens color dialog and updates the square; swap
   arrow and `X` key flip fg/bg; reset icon and `D` key reset to
-  black/white; brush paints fg color onto the active layer at correct
-  size/hardness/opacity; ctrl+wheel resizes brush; stroke undoes as one
-  step via Ctrl+Z.
+  black/white; brush creates a new Paint layer visible in the Layers
+  panel; strokes render in the current fg color at correct
+  size/hardness/opacity; ctrl+wheel resizes brush; a full drag stroke
+  undoes as one step via Ctrl+Z; paint layer can be reordered, hidden,
+  deleted, and have its opacity/blend mode changed like any other layer.
