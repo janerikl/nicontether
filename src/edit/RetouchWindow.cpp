@@ -371,6 +371,18 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
                 m_prefsDialog->selectModelById(
                     QString::fromStdString(cammodel::matchModel(name.toStdString())));
             });
+    connect(m_prefsDialog, &PreferencesDialog::calibrationRequested, this,
+            [this] {
+                m_prefsDialog->hide();
+                setMode(Mode::Tether);
+                m_tetherView->startCalibration();
+            });
+    connect(m_tetherView, &TetherView::calibrationFinished, this,
+            [this](int w, int h) {
+                m_prefsDialog->setAfFrame(w, h);
+                m_statusLabel->setText(
+                    QString("Calibration saved: AF frame %1 × %2").arg(w).arg(h));
+            });
 
     // Apply the current model's AF frame to the live view at startup.
     {

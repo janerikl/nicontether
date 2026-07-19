@@ -4,6 +4,7 @@
 
 class QComboBox;
 class QSpinBox;
+class QPushButton;
 
 // File → Preferences… dialog. Holds the camera-model dropdown and the AF
 // coordinate frame size used by click-to-focus. AF frame is remembered per
@@ -17,9 +18,12 @@ public slots:
     // Select a model by id (used for auto-detect). No-op if id is empty or
     // already the current selection, so a manual override survives reconnects.
     void selectModelById(const QString &id);
+    // Push calibrated values into the fields and persist them for the model.
+    void setAfFrame(int w, int h);
 
 signals:
     void afFrameSizeChanged(int w, int h);
+    void calibrationRequested();
 
 private:
     void onModelChanged();
@@ -30,6 +34,7 @@ private:
     QComboBox *m_model = nullptr;
     QSpinBox *m_frameW = nullptr;
     QSpinBox *m_frameH = nullptr;
+    QPushButton *m_calibrate = nullptr;
 };
 
 // Returns the persisted AF frame for a model id (per-model override, else the

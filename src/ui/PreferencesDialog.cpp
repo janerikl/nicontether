@@ -8,6 +8,7 @@
 #include <QVBoxLayout>
 #include <QDialogButtonBox>
 #include <QLabel>
+#include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
 
@@ -38,6 +39,11 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     m_frameH->setRange(1, 20000);
     form->addRow("AF frame width:", m_frameW);
     form->addRow("AF frame height:", m_frameH);
+
+    m_calibrate = new QPushButton("Calibrate…");
+    form->addRow(QString(), m_calibrate);
+    connect(m_calibrate, &QPushButton::clicked, this,
+            [this] { emit calibrationRequested(); });
 
     auto *hint = new QLabel(
         "Click-to-focus calibration. Center is always correct; tune the AF "
@@ -103,4 +109,14 @@ void PreferencesDialog::selectModelById(const QString &id) {
     int idx = m_model->findData(id);
     if (idx < 0 || idx == m_model->currentIndex()) return;
     m_model->setCurrentIndex(idx); // triggers onModelChanged()
+}
+
+void PreferencesDialog::setAfFrame(int w, int h) {
+    {
+        QSignalBlocker bw(m_frameW);
+        QSignalBlocker bh(m_frameH);
+        m_frameW->setValue(w);
+        m_frameH->setValue(h);
+    }
+    onFrameEdited(); // persist for the current model + emit afFrameSizeChanged
 }
