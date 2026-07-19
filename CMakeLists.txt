@@ -90,3 +90,10 @@ add_test(NAME af_calibrator_test COMMAND af_calibrator_test)
 add_executable(grid_overlay_test tests/GridOverlayTest.cpp)
 target_include_directories(grid_overlay_test PRIVATE src)
 add_test(NAME grid_overlay_test COMMAND grid_overlay_test)
+add_executable(adjustments_paint_test tests/AdjustmentsPaintTest.cpp src/edit/Adjustments.cpp)
+target_include_directories(adjustments_paint_test PRIVATE src)
+target_link_libraries(adjustments_paint_test PRIVATE Qt6::Widgets)
+# The project forces a Release build (NDEBUG) by default, which would compile
+# out this test's assert()s; force them on regardless of build type.
+target_compile_options(adjustments_paint_test PRIVATE -UNDEBUG)
+add_test(NAME adjustments_paint_test COMMAND adjustments_paint_test)

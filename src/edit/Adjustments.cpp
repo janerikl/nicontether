@@ -287,12 +287,19 @@ void applyMasks(QImage &img, const QVector<Mask> &masks) {
         if (!m.visible || m.opacity <= 0.0) continue;
         const bool imageLayer = m.isImageLayer();
         if (imageLayer && (m.sourceMissing || m.sourceImageCache.isNull())) continue;
-        if (!imageLayer && m.adj.isZero()) continue;
-        if (m.type == MaskType::Brush && m.stroke.isEmpty()) continue;
-        const QImage loc = imageLayer
-                                ? applyLayerContent(coverFit(m.sourceImageCache, w, h), m.adj)
-                                : applyLayerContent(img, m.adj);
-        if (m.type == MaskType::Brush) rasterizeBrush(m, cov, w, h, &img);
+        const bool paintLayer = m.type == MaskType::Paint;
+        if (!imageLayer && !paintLayer && m.adj.isZero()) continue;
+        if ((m.type == MaskType::Brush || paintLayer) && m.stroke.isEmpty()) continue;
+        QImage loc;
+        if (imageLayer) {
+            loc = applyLayerContent(coverFit(m.sourceImageCache, w, h), m.adj);
+        } else if (paintLayer) {
+            loc = QImage(w, h, QImage::Format_ARGB32);
+            loc.fill(m.paintColor);
+        } else {
+            loc = applyLayerContent(img, m.adj);
+        }
+        if (m.type == MaskType::Brush || paintLayer) rasterizeBrush(m, cov, w, h, &img);
         const double op = clampd(m.opacity, 0.0, 1.0);
         for (int y = 0; y < h; ++y) {
             QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
@@ -467,6 +474,10 @@ static bool hasMaskEdits(const Adjustments &adj) {
         if (!m.visible || m.opacity <= 0.0) continue;
         if (m.isImageLayer()) {
             if (m.sourceMissing || m.sourceImageCache.isNull()) continue;
+            return true;
+        }
+        if (m.type == MaskType::Paint) {
+            if (m.stroke.isEmpty()) continue;
             return true;
         }
         if (m.adj.isZero()) continue;
