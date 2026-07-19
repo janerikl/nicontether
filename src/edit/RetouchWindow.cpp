@@ -962,6 +962,11 @@ void RetouchWindow::buildLayersDock() {
         RetouchTab *tab = currentTab();
         if (tab && tab->isReady()) { tab->addMask(MaskType::None); refreshMaskPanel(); }
     });
+    connect(m_layersPanel, &LayersPanel::addImageLayerRequested, this,
+            [this](const QString &path) {
+                RetouchTab *tab = currentTab();
+                if (tab && tab->isReady()) { tab->addImageLayer(path); refreshMaskPanel(); }
+            });
     connect(m_layersPanel, &LayersPanel::duplicateMaskRequested, this, [this] {
         RetouchTab *tab = currentTab();
         if (tab) { tab->duplicateActiveMask(); refreshMaskPanel(); }

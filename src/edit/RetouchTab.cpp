@@ -6,6 +6,7 @@
 
 #include <QVBoxLayout>
 #include <QFutureWatcher>
+#include <QFileInfo>
 #include <QTimer>
 #include <QThread>
 #include <QtConcurrent>
@@ -36,6 +37,10 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     : QWidget(parent), m_path(path) {
     // Restore previously-saved edits, if any (does not mark dirty).
     EditSidecar::load(m_path, m_adj);
+    // Any image layers restored from the sidecar need their source photo
+    // decoded again — the cache is never persisted.
+    for (const Mask &m : m_adj.masks)
+        if (m.isImageLayer()) kickoffImageLayerDecode(m.sourceImagePath);
 
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -54,6 +59,7 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     connect(m_canvas, &ImageCanvas::maskLinearDragged, this, &RetouchTab::onMaskLinear);
     connect(m_canvas, &ImageCanvas::maskBrushPoint, this, &RetouchTab::onMaskBrushPoint);
     connect(m_canvas, &ImageCanvas::maskEditFinished, this, &RetouchTab::onMaskEditFinished);
+    connect(m_canvas, &ImageCanvas::imageLayerDropped, this, &RetouchTab::addImageLayer);
     connect(m_canvas, &ImageCanvas::maskBrushRadiusChanged, this, [this](double r) {
         if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
         m_adj.masks[m_activeMask].brushRadius = r;
@@ -405,6 +411,43 @@ int RetouchTab::addMask(MaskType type) {
     markEdited();
     emit masksChanged();
     return m_activeMask;
+}
+
+int RetouchTab::addImageLayer(const QString &path) {
+    Mask m;
+    m.type = MaskType::None; // covers the full frame; no shape
+    m.name = QFileInfo(path).fileName();
+    m.sourceImagePath = path;
+    m_adj.masks.append(m);
+    m_activeMask = m_adj.masks.size() - 1;
+    m_maskMode = false;
+    m_canvas->setMaskMode(MaskType::None, false);
+    pushMaskGizmo();
+    markEdited();
+    emit masksChanged();
+    kickoffImageLayerDecode(path);
+    return m_activeMask;
+}
+
+void RetouchTab::kickoffImageLayerDecode(const QString &path) {
+    auto *watcher = new QFutureWatcher<QImage>(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished, this, [this, path, watcher] {
+        QImage img = watcher->result();
+        watcher->deleteLater();
+        bool changed = false;
+        for (Mask &m : m_adj.masks) {
+            if (m.sourceImagePath == path && m.sourceImageCache.isNull() && !m.sourceMissing) {
+                if (img.isNull()) m.sourceMissing = true;
+                else m.sourceImageCache = img;
+                changed = true;
+            }
+        }
+        if (changed) {
+            retone();
+            emit masksChanged();
+        }
+    });
+    watcher->setFuture(QtConcurrent::run(RawLoader::loadAny, path));
 }
 
 int RetouchTab::duplicateActiveMask() {

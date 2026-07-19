@@ -112,6 +112,7 @@ bool save(const QString &imagePath, const Adjustments &a) {
             j["visible"] = m.visible;
             j["opacity"] = m.opacity;
             j["blend"] = int(m.blend);
+            j["sourceImagePath"] = m.sourceImagePath;
             j["type"] = int(m.type);
             j["inverted"] = m.inverted;
             j["feather"] = m.feather;
@@ -210,6 +211,7 @@ bool load(const QString &imagePath, Adjustments &out) {
         m.visible = j["visible"].toBool(true);
         m.opacity = j["opacity"].toDouble(1.0);
         m.blend = static_cast<BlendMode>(j["blend"].toInt(0));
+        m.sourceImagePath = j["sourceImagePath"].toString();
         m.type = static_cast<MaskType>(j["type"].toInt(0));
         m.inverted = j["inverted"].toBool();
         m.feather = j["feather"].toDouble(0.5);

@@ -255,9 +255,23 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
 
 QImage applyLayerContent(const QImage &src, const MaskAdjust &a); // fwd decl
 
+// Scale `src` to cover a w×h target (aspect-fill) and center-crop to exactly
+// that size — classic CSS `background-size: cover`. Used to fit a dropped
+// image layer's source photo to whatever resolution is currently rendering
+// (preview-scaled or full-res export).
+QImage coverFit(const QImage &src, int w, int h) {
+    if (src.isNull() || w <= 0 || h <= 0) return QImage();
+    QImage scaled = src.scaled(w, h, Qt::KeepAspectRatioByExpanding,
+                               Qt::SmoothTransformation);
+    const int x = (scaled.width() - w) / 2;
+    const int y = (scaled.height() - h) / 2;
+    return scaled.copy(x, y, w, h);
+}
+
 // Apply all layers in stack order, blending each layer's full tone/colour/
 // detail content into the composite-so-far by its per-pixel mask weight,
-// opacity, and blend mode.
+// opacity, and blend mode. Image layers substitute a cover-fit of their own
+// source photo for "the composite so far" as the input to that tone pass.
 void applyMasks(QImage &img, const QVector<Mask> &masks) {
     const int w = img.width(), h = img.height();
     if (w == 0 || h == 0) return;
@@ -265,9 +279,13 @@ void applyMasks(QImage &img, const QVector<Mask> &masks) {
     std::vector<uchar> cov;
     for (const Mask &m : masks) {
         if (!m.visible || m.opacity <= 0.0) continue;
-        if (m.adj.isZero()) continue;
+        const bool imageLayer = m.isImageLayer();
+        if (imageLayer && (m.sourceMissing || m.sourceImageCache.isNull())) continue;
+        if (!imageLayer && m.adj.isZero()) continue;
         if (m.type == MaskType::Brush && m.stroke.isEmpty()) continue;
-        const QImage loc = applyLayerContent(img, m.adj);
+        const QImage loc = imageLayer
+                                ? applyLayerContent(coverFit(m.sourceImageCache, w, h), m.adj)
+                                : applyLayerContent(img, m.adj);
         if (m.type == MaskType::Brush) rasterizeBrush(m, cov, w, h, &img);
         const double op = clampd(m.opacity, 0.0, 1.0);
         for (int y = 0; y < h; ++y) {
@@ -436,10 +454,15 @@ QImage applyLayerContent(const QImage &src, const MaskAdjust &a) {
 
 } // namespace
 
-// True if any mask carries a non-zero local adjustment.
+// True if any mask carries a non-zero local adjustment, or is an image layer
+// (which has visible content even with identity adjustments).
 static bool hasMaskEdits(const Adjustments &adj) {
     for (const Mask &m : adj.masks) {
         if (!m.visible || m.opacity <= 0.0) continue;
+        if (m.isImageLayer()) {
+            if (m.sourceMissing || m.sourceImageCache.isNull()) continue;
+            return true;
+        }
         if (m.adj.isZero()) continue;
         if (m.type == MaskType::Brush && m.stroke.isEmpty()) continue;
         return true;

@@ -6,8 +6,21 @@
 #include <QKeyEvent>
 #include <QCursor>
 #include <QPixmap>
+#include <QDragEnterEvent>
+#include <QDragLeaveEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <cmath>
 #include <algorithm>
+
+namespace {
+bool hasLocalFileUrl(const QMimeData *data) {
+    if (!data || !data->hasUrls()) return false;
+    for (const QUrl &u : data->urls())
+        if (u.isLocalFile()) return true;
+    return false;
+}
+} // namespace
 
 namespace {
 constexpr double kMinScale = 0.05;
@@ -45,6 +58,7 @@ ImageCanvas::ImageCanvas(QWidget *parent) : QWidget(parent) {
     setAutoFillBackground(true);
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
+    setAcceptDrops(true);
     QPalette pal = palette();
     pal.setColor(QPalette::Window, QColor(30, 30, 30));
     setPalette(pal);
@@ -271,6 +285,10 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
     if (m_img.isNull()) {
         p.setPen(Qt::lightGray);
         p.drawText(rect(), Qt::AlignCenter, m_placeholder);
+        if (m_dragHighlight) {
+            p.setPen(QPen(QColor(120, 200, 255), 3, Qt::DashLine));
+            p.drawRect(rect().adjusted(2, 2, -2, -2));
+        }
         return;
     }
     QRect tr = targetRect();
@@ -397,6 +415,11 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
             }
             p.drawEllipse(QPointF(m_mousePos), rad, rad);
         }
+    }
+
+    if (m_dragHighlight) {
+        p.setPen(QPen(QColor(120, 200, 255), 3, Qt::DashLine));
+        p.drawRect(rect().adjusted(2, 2, -2, -2));
     }
 }
 
@@ -711,4 +734,30 @@ void ImageCanvas::keyReleaseEvent(QKeyEvent *ev) {
 void ImageCanvas::leaveEvent(QEvent *) {
     // Hide the brush cursor and spot-heal overlay once the mouse leaves.
     if (m_healMode) update();
+}
+
+void ImageCanvas::dragEnterEvent(QDragEnterEvent *ev) {
+    if (hasLocalFileUrl(ev->mimeData())) {
+        ev->acceptProposedAction();
+        m_dragHighlight = true;
+        update();
+    }
+}
+
+void ImageCanvas::dragLeaveEvent(QDragLeaveEvent *) {
+    m_dragHighlight = false;
+    update();
+}
+
+void ImageCanvas::dropEvent(QDropEvent *ev) {
+    m_dragHighlight = false;
+    update();
+    if (!hasLocalFileUrl(ev->mimeData())) return;
+    for (const QUrl &u : ev->mimeData()->urls()) {
+        if (u.isLocalFile()) {
+            ev->acceptProposedAction();
+            emit imageLayerDropped(u.toLocalFile());
+            return; // one layer per drop
+        }
+    }
 }

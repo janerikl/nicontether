@@ -41,4 +41,10 @@ QImage load(const QString &rawPath) {
     return result;
 }
 
+QImage loadAny(const QString &path) {
+    QImage img = load(path);
+    if (!img.isNull()) return img;
+    return QImage(path);
+}
+
 } // namespace RawLoader

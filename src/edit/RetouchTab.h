@@ -50,6 +50,7 @@ public:
     // Local adjustment masks.
     void setMaskMode(bool on);              // enter/leave mask editing on the canvas
     int addMask(MaskType type);             // append + select; returns its index
+    int addImageLayer(const QString &path); // append an image layer; returns its index
     int duplicateActiveMask();              // copy + insert above; returns its index
     void selectMask(int index);             // -1 = none
     void deleteActiveMask();
@@ -124,6 +125,7 @@ private:
     void applyHistoryState(); // apply m_history[m_histIndex]
     void updateHealSpots();   // push heal-op markers (display coords) to the canvas
     void pushMaskGizmo();     // sync active mask geometry to the canvas
+    void kickoffImageLayerDecode(const QString &path); // async-decode an image layer's source
 
     QString m_path;
     QImage m_base;   // full-res decoded RAW (immutable)

@@ -4,8 +4,12 @@
 #include <QImage>
 #include <QPixmap>
 
+class QMimeData;
+
 // Horizontal thumbnail strip of captured frames. Emits the file path when a
-// thumbnail is activated so the main window can show a large preview.
+// thumbnail is activated so the main window can show a large preview. Also a
+// drag source: dragging a thumbnail out exposes its file as a standard
+// text/uri-list, e.g. to drop it onto the retoucher's canvas as an image layer.
 class FilmstripWidget : public QListWidget {
     Q_OBJECT
 public:
@@ -31,6 +35,7 @@ signals:
 
 protected:
     void contextMenuEvent(QContextMenuEvent *) override;
+    QMimeData *mimeData(const QList<QListWidgetItem *> &items) const override;
 
 private:
     // Scale an image to a thumbnail pixmap, or a gray placeholder if null.

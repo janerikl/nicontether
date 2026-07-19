@@ -8,6 +8,10 @@
 
 #include "edit/Adjustments.h"
 
+class QDragEnterEvent;
+class QDragLeaveEvent;
+class QDropEvent;
+
 // Displays an image with zoom + pan, and supports crop rubber-band selection and
 // a white-balance eyedropper. Zoom: Ctrl+wheel (anchored to the cursor),
 // left-drag a marquee box to zoom to a region, Space+drag to pan. All crop/pick
@@ -66,6 +70,7 @@ signals:
     void maskLinearDragged(const QPointF &p0Norm, const QPointF &p1Norm);
     void maskBrushPoint(const QPointF &ptNorm, bool erase); // one stroke sample
     void maskEditFinished();                    // drag released → commit history
+    void imageLayerDropped(const QString &path); // a photo was dropped in as a layer
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -77,6 +82,9 @@ protected:
     void keyReleaseEvent(QKeyEvent *) override;
     void resizeEvent(QResizeEvent *) override;
     void leaveEvent(QEvent *) override;
+    void dragEnterEvent(QDragEnterEvent *) override;
+    void dragLeaveEvent(QDragLeaveEvent *) override;
+    void dropEvent(QDropEvent *) override;
 
 private:
     enum class Drag { None, Creating, Moving, Resizing };
@@ -133,4 +141,6 @@ private:
     bool m_panning = false;
     QPoint m_panLast;
     bool m_spaceDown = false;
+
+    bool m_dragHighlight = false; // a valid image drag is hovering the canvas
 };

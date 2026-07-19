@@ -7,6 +7,8 @@
 #include <QContextMenuEvent>
 #include <QStyledItemDelegate>
 #include <QPainter>
+#include <QMimeData>
+#include <QUrl>
 
 namespace {
 constexpr int kBadgeRole = Qt::UserRole + 1;
@@ -46,6 +48,8 @@ FilmstripWidget::FilmstripWidget(QWidget *parent) : QListWidget(parent) {
     setSpacing(4);
     setSelectionMode(QAbstractItemView::ExtendedSelection);
     setItemDelegate(new BadgeDelegate(this));
+    setDragEnabled(true);
+    setDragDropMode(QAbstractItemView::DragOnly);
 
     connect(this, &QListWidget::itemClicked, this, [this](QListWidgetItem *item) {
         // Plain click opens the photo; Ctrl/Shift-click only builds a selection
@@ -104,6 +108,15 @@ void FilmstripWidget::addCapture(const QString &path, const QImage &preview) {
     insertItem(0, item); // newest first
     setCurrentItem(item);
     scrollToTop();
+}
+
+QMimeData *FilmstripWidget::mimeData(const QList<QListWidgetItem *> &items) const {
+    auto *data = QListWidget::mimeData(items);
+    QList<QUrl> urls;
+    for (QListWidgetItem *it : items)
+        urls << QUrl::fromLocalFile(it->data(Qt::UserRole).toString());
+    if (!urls.isEmpty()) data->setUrls(urls);
+    return data;
 }
 
 void FilmstripWidget::contextMenuEvent(QContextMenuEvent *ev) {

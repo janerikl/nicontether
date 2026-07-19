@@ -5,11 +5,14 @@
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QComboBox>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSlider>
@@ -128,8 +131,19 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     scroll->setWidget(editArea);
     root->addWidget(scroll, 2);
 
-    connect(m_add, &QPushButton::clicked, this,
+    auto *addMenu = new QMenu(m_add);
+    QAction *addLayerAction = addMenu->addAction("Add Layer");
+    connect(addLayerAction, &QAction::triggered, this,
             [this] { emit addMaskRequested(); });
+    QAction *addImageAction = addMenu->addAction("Add Image Layer…");
+    connect(addImageAction, &QAction::triggered, this, [this] {
+        QString path = QFileDialog::getOpenFileName(
+            this, "Add Image Layer", QString(),
+            "Images (*.jpg *.jpeg *.png *.tif *.tiff *.nef *.NEF);;All Files (*)");
+        if (!path.isEmpty()) emit addImageLayerRequested(path);
+    });
+    m_add->setMenu(addMenu);
+
     connect(m_duplicate, &QPushButton::clicked, this,
             [this] { emit duplicateMaskRequested(); });
     connect(m_delete, &QPushButton::clicked, this,
@@ -190,6 +204,10 @@ void LayersPanel::rebuildList() {
         QString label = m.name.isEmpty()
                             ? QString("Layer %1 (%2)").arg(i + 1).arg(maskTypeLabel(m.type))
                             : m.name;
+        if (m.isImageLayer()) {
+            if (m.sourceMissing) label += " (missing)";
+            else if (m.sourceImageCache.isNull()) label += " (loading…)";
+        }
         auto *item = new QListWidgetItem(label);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(m.visible ? Qt::Checked : Qt::Unchecked);

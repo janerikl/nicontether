@@ -32,6 +32,7 @@ public:
 
 signals:
     void addMaskRequested();
+    void addImageLayerRequested(const QString &path); // "Add Image Layer…" chosen a file
     void selectMaskRequested(int index);
     void deleteMaskRequested();
     void duplicateMaskRequested();
