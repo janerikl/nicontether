@@ -13,6 +13,8 @@
 #include "capture/NefPreview.h"
 
 #include <QScrollArea>
+#include <QSettings>
+#include <QCloseEvent>
 #include <QKeySequence>
 #include <QShortcut>
 #include <cmath>
@@ -375,7 +377,21 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
         if (tab && tab->isReady()) tab->zoomFit();
     });
 
+    // Restore saved window geometry + dock layout, or fall back to defaults.
+    // Restore runs *after* setMode so persisted show/hide of the editing docks
+    // wins; then Masks/Controls visibility is re-asserted by app logic.
     setMode(Mode::Retouch);
+    QSettings settings;
+    if (settings.contains("window/state")) {
+        if (settings.contains("window/geometry"))
+            restoreGeometry(settings.value("window/geometry").toByteArray());
+        restoreState(settings.value("window/state").toByteArray());
+        // Masks/Controls visibility is app-controlled, never persisted-visible.
+        if (m_maskDock)     m_maskDock->hide();
+        if (m_controlsDock) m_controlsDock->hide();
+    } else {
+        applyDefaultDockLayout();
+    }
 }
 
 // View menu: toggle visibility of the Tools bar, Adjustments dock, and the
@@ -1133,6 +1149,13 @@ void RetouchWindow::setMode(Mode mode) {
     QSignalBlocker b2(m_retouchModeAction);
     m_tetherModeAction->setChecked(mode == Mode::Tether);
     m_retouchModeAction->setChecked(mode == Mode::Retouch);
+}
+
+void RetouchWindow::closeEvent(QCloseEvent *event) {
+    QSettings settings;
+    settings.setValue("window/geometry", saveGeometry());
+    settings.setValue("window/state", saveState());
+    QMainWindow::closeEvent(event);
 }
 
 void RetouchWindow::applyModeChrome(Mode mode) {

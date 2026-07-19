@@ -42,6 +42,9 @@ public:
     enum class Mode { Retouch, Tether };
     void setMode(Mode mode);
 
+protected:
+    void closeEvent(QCloseEvent *event) override;
+
 private slots:
     void onOpenSession();
     void onOpenPhotos();
