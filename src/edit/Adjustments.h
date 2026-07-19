@@ -75,7 +75,12 @@ struct MaskAdjust {
     bool operator!=(const MaskAdjust &o) const { return !(*this == o); }
 };
 
-enum class MaskType { Radial, Linear, Brush };
+enum class MaskType { Radial, Linear, Brush, None };
+
+// How a layer's local adjustment composites over what's below it. Applied
+// per-channel in sRGB space, then mixed with the layer below by mask weight
+// x opacity (see blendChannel in Adjustments.cpp).
+enum class BlendMode { Normal, Multiply, Screen, Overlay, SoftLight };
 
 // One sampled point of a brush stroke (width-normalized). `erase` marks a dab
 // painted while holding Alt, which subtracts coverage instead of adding it.
@@ -88,11 +93,18 @@ struct BrushStrokePoint {
     }
 };
 
-// A local adjustment mask. All geometry is stored normalized to the image WIDTH
-// (x' = x/W, y' = y/W) so it is resolution-independent and scales uniformly
-// between the display preview and full-res export. Applied after the global
-// tone pass, in cropped-oriented image space.
+// One adjustment layer in the stack. All geometry is stored normalized to the
+// image WIDTH (x' = x/W, y' = y/W) so it is resolution-independent and scales
+// uniformly between the display preview and full-res export. Applied after
+// the global (base layer) tone pass, in cropped-oriented image space, in
+// stack order. `type == MaskType::None` is an unmasked layer — its adjustment
+// applies to the whole frame (geometry fields are unused).
 struct Mask {
+    QString name;
+    bool visible = true;
+    double opacity = 1.0;      // 0..1, on top of the mask's own weight
+    BlendMode blend = BlendMode::Normal;
+
     MaskType type = MaskType::Radial;
     bool inverted = false;
     double feather = 0.5; // 0..1 fraction of the radius/edge that fades
@@ -118,7 +130,9 @@ struct Mask {
     MaskAdjust adj;
 
     bool operator==(const Mask &o) const {
-        return type == o.type && inverted == o.inverted &&
+        return name == o.name && visible == o.visible &&
+               std::abs(opacity - o.opacity) < 1e-9 && blend == o.blend &&
+               type == o.type && inverted == o.inverted &&
                std::abs(feather - o.feather) < 1e-9 && center == o.center &&
                std::abs(radiusX - o.radiusX) < 1e-9 &&
                std::abs(radiusY - o.radiusY) < 1e-9 &&
@@ -172,7 +186,9 @@ struct Adjustments {
     // Photoshop-style Levels (composite + per-channel). Applied after the curve.
     Levels levels;
 
-    // Local adjustment masks, applied after the global tone pass in order.
+    // Adjustment layer stack, composited over the base (global) tone pass in
+    // order — the "Base" layer is the global fields above; each entry here is
+    // an additional layer with its own tone/colour, mask, opacity and blend.
     QVector<Mask> masks;
 
     // Spot-heal ops (oriented-image coords; applied before crop).

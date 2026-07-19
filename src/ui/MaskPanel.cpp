@@ -1,26 +1,45 @@
 #include "ui/MaskPanel.h"
 
+#include <QAbstractItemModel>
+#include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
 #include <QPushButton>
 #include <QSlider>
 #include <QVBoxLayout>
 #include <cmath>
+
+namespace {
+QString maskTypeLabel(MaskType t) {
+    switch (t) {
+    case MaskType::Radial: return "Radial";
+    case MaskType::Linear: return "Graduated";
+    case MaskType::Brush:  return "Brush";
+    case MaskType::None:   return "Layer";
+    }
+    return "Layer";
+}
+} // namespace
 
 MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(6, 6, 6, 6);
     root->setSpacing(6);
 
-    // Masks are added from the tool's flyout in the sidebar (Photoshop-style),
-    // so this panel is edit-only: pick the active mask, set its shape, adjust.
+    // Layers are added from the tool's flyout in the sidebar (Photoshop-style),
+    // so this panel is edit-only: pick the active layer, reorder, set its
+    // shape/opacity/blend, and adjust its tone/colour.
 
-    // Mask selector + delete.
+    // Layer list: checkable (visibility) rows, drag to reorder, delete button.
     auto *selRow = new QHBoxLayout;
-    m_maskList = new QComboBox;
+    m_maskList = new QListWidget;
+    m_maskList->setDragDropMode(QAbstractItemView::InternalMove);
+    m_maskList->setSelectionMode(QAbstractItemView::SingleSelection);
     m_delete = new QPushButton("Delete");
     selRow->addWidget(m_maskList, 1);
     selRow->addWidget(m_delete);
@@ -30,6 +49,23 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     m_hint->setWordWrap(true);
     m_hint->setStyleSheet("color: #999;");
     root->addWidget(m_hint);
+
+    // Name / opacity / blend mode.
+    auto *props = new QFormLayout;
+    m_name = new QLineEdit;
+    props->addRow("Name:", m_name);
+    m_opacity = new QSlider(Qt::Horizontal);
+    m_opacity->setRange(0, 100);
+    m_opacity->setValue(100);
+    props->addRow("Opacity:", m_opacity);
+    m_blend = new QComboBox;
+    m_blend->addItem("Normal", int(BlendMode::Normal));
+    m_blend->addItem("Multiply", int(BlendMode::Multiply));
+    m_blend->addItem("Screen", int(BlendMode::Screen));
+    m_blend->addItem("Overlay", int(BlendMode::Overlay));
+    m_blend->addItem("Soft Light", int(BlendMode::SoftLight));
+    props->addRow("Blend:", m_blend);
+    root->addLayout(props);
 
     // Shape controls.
     auto *shape = new QFormLayout;
@@ -73,9 +109,32 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
 
     connect(m_delete, &QPushButton::clicked, this,
             [this] { emit deleteMaskRequested(); });
-    connect(m_maskList, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this](int i) {
-                if (!m_syncing) emit selectMaskRequested(i);
+    connect(m_maskList, &QListWidget::currentRowChanged, this, [this](int i) {
+        if (!m_syncing) emit selectMaskRequested(i);
+    });
+    connect(m_maskList, &QListWidget::itemChanged, this,
+            [this](QListWidgetItem *item) {
+                if (m_syncing) return;
+                int i = m_maskList->row(item);
+                if (i == m_active)
+                    emit maskVisibleChanged(item->checkState() == Qt::Checked);
+            });
+    connect(m_maskList->model(), &QAbstractItemModel::rowsMoved, this,
+            [this](const QModelIndex &, int start, int, const QModelIndex &,
+                   int destRow) {
+                if (m_syncing) return;
+                int to = destRow > start ? destRow - 1 : destRow;
+                emit maskReorderRequested(start, to);
+            });
+    connect(m_name, &QLineEdit::editingFinished, this,
+            [this] { if (!m_syncing) emit maskNameChanged(m_name->text()); });
+    connect(m_opacity, &QSlider::valueChanged, this, [this](int v) {
+        if (!m_syncing) emit maskOpacityChanged(v / 100.0);
+    });
+    connect(m_blend, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) {
+                if (m_syncing) return;
+                emit maskBlendChanged(BlendMode(m_blend->currentData().toInt()));
             });
     connect(m_invert, &QCheckBox::toggled, this, [this] { emitShape(); });
     connect(m_autoMask, &QCheckBox::toggled, this, [this] { emitShape(); });
@@ -106,43 +165,58 @@ void MaskPanel::setMasks(const QVector<Mask> &masks, int activeIndex) {
     m_masks = masks;
     m_active = activeIndex;
     setEnabled(true);
+    rebuildList();
+    loadActive();
+}
+
+void MaskPanel::rebuildList() {
     m_syncing = true;
     m_maskList->clear();
-    for (int i = 0; i < masks.size(); ++i) {
-        const char *t = masks[i].type == MaskType::Radial    ? "Radial"
-                        : masks[i].type == MaskType::Linear ? "Graduated"
-                                                            : "Brush";
-        m_maskList->addItem(QString("Mask %1 (%2)").arg(i + 1).arg(t));
+    for (int i = 0; i < m_masks.size(); ++i) {
+        const Mask &m = m_masks[i];
+        QString label = m.name.isEmpty()
+                            ? QString("Layer %1 (%2)").arg(i + 1).arg(maskTypeLabel(m.type))
+                            : m.name;
+        auto *item = new QListWidgetItem(label);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(m.visible ? Qt::Checked : Qt::Unchecked);
+        m_maskList->addItem(item);
     }
-    if (activeIndex >= 0 && activeIndex < masks.size())
-        m_maskList->setCurrentIndex(activeIndex);
+    if (m_active >= 0 && m_active < m_masks.size())
+        m_maskList->setCurrentRow(m_active);
     m_syncing = false;
-    loadActive();
 }
 
 void MaskPanel::loadActive() {
     const bool has = m_active >= 0 && m_active < m_masks.size();
     m_syncing = true;
-    // Shape/adjust controls only make sense with an active mask.
     for (QWidget *w : std::initializer_list<QWidget *>{
-             m_invert, m_feather, m_hardness, m_brushSize, m_autoMask, m_delete,
-             m_brightness, m_contrast, m_highlights, m_shadows, m_saturation,
-             m_vibrance, m_temperature, m_tint})
+             m_name, m_opacity, m_blend, m_invert, m_feather, m_hardness,
+             m_brushSize, m_autoMask, m_delete, m_brightness, m_contrast,
+             m_highlights, m_shadows, m_saturation, m_vibrance, m_temperature,
+             m_tint})
         w->setEnabled(has);
     if (has) {
         const Mask &m = m_masks[m_active];
+        m_name->setText(m.name);
+        m_opacity->setValue(int(std::lround(m.opacity * 100)));
+        int blendIdx = m_blend->findData(int(m.blend));
+        m_blend->setCurrentIndex(blendIdx >= 0 ? blendIdx : 0);
         m_invert->setChecked(m.inverted);
         m_feather->setValue(int(m.feather * 100));
         m_hardness->setValue(int(m.hardness * 100));
         m_brushSize->setValue(int(m.brushRadius * 100));
         m_autoMask->setChecked(m.autoMask);
         const bool brush = m.type == MaskType::Brush;
+        const bool geometric = m.type != MaskType::None;
         m_hardnessLabel->setVisible(brush);
         m_hardness->setVisible(brush);
         m_brushSizeLabel->setVisible(brush);
         m_brushSize->setVisible(brush);
         m_autoMask->setVisible(brush);
-        m_feather->setEnabled(m.type != MaskType::Brush);
+        m_invert->setVisible(geometric);
+        m_feather->setVisible(geometric);
+        m_feather->setEnabled(geometric && m.type != MaskType::Brush);
         const MaskAdjust &a = m.adj;
         m_brightness->setValue(a.brightness);
         m_contrast->setValue(a.contrast);

@@ -18,7 +18,7 @@ bool exists(const QString &imagePath) {
 
 bool save(const QString &imagePath, const Adjustments &a) {
     QJsonObject o;
-    o["version"] = 1;
+    o["version"] = 2;
     o["brightness"] = a.brightness;
     o["contrast"] = a.contrast;
     o["highlights"] = a.highlights;
@@ -71,6 +71,10 @@ bool save(const QString &imagePath, const Adjustments &a) {
         QJsonArray masks;
         for (const Mask &m : a.masks) {
             QJsonObject j;
+            j["name"] = m.name;
+            j["visible"] = m.visible;
+            j["opacity"] = m.opacity;
+            j["blend"] = int(m.blend);
             j["type"] = int(m.type);
             j["inverted"] = m.inverted;
             j["feather"] = m.feather;
@@ -175,6 +179,10 @@ bool load(const QString &imagePath, Adjustments &out) {
     for (const QJsonValue &v : o["masks"].toArray()) {
         QJsonObject j = v.toObject();
         Mask m;
+        m.name = j["name"].toString();
+        m.visible = j["visible"].toBool(true);
+        m.opacity = j["opacity"].toDouble(1.0);
+        m.blend = static_cast<BlendMode>(j["blend"].toInt(0));
         m.type = static_cast<MaskType>(j["type"].toInt(0));
         m.inverted = j["inverted"].toBool();
         m.feather = j["feather"].toDouble(0.5);

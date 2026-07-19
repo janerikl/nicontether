@@ -9,6 +9,7 @@
 #include <QTimer>
 #include <QThread>
 #include <QtConcurrent>
+#include <algorithm>
 
 void RenderWorker::render(const QImage &src, const Adjustments &adj) {
     emit done(applyAdjustments(src, adj));
@@ -395,11 +396,13 @@ void RetouchTab::setMaskMode(bool on) {
 int RetouchTab::addMask(MaskType type) {
     Mask m;
     m.type = type;
+    m.name = QStringLiteral("Layer %1").arg(m_adj.masks.size() + 1);
     m_adj.masks.append(m);
     m_activeMask = m_adj.masks.size() - 1;
-    m_maskMode = true;
-    m_canvas->setMaskMode(type, true);
+    m_maskMode = (type != MaskType::None);
+    m_canvas->setMaskMode(type, m_maskMode);
     pushMaskGizmo();
+    markEdited();
     emit masksChanged();
     return m_activeMask;
 }
@@ -428,6 +431,54 @@ void RetouchTab::setActiveMaskAdjust(const MaskAdjust &a) {
     m_adj.masks[m_activeMask].adj = a;
     retone();
     markEdited();
+}
+
+void RetouchTab::setActiveMaskOpacity(double opacity) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    double clamped = std::clamp(opacity, 0.0, 1.0);
+    if (std::abs(m.opacity - clamped) < 1e-9) return;
+    m.opacity = clamped;
+    retone();
+    markEdited();
+}
+
+void RetouchTab::setActiveMaskBlend(BlendMode mode) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    if (m.blend == mode) return;
+    m.blend = mode;
+    retone();
+    markEdited();
+}
+
+void RetouchTab::setActiveMaskVisible(bool visible) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    if (m.visible == visible) return;
+    m.visible = visible;
+    retone();
+    markEdited();
+    emit masksChanged();
+}
+
+void RetouchTab::setActiveMaskName(const QString &name) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    m_adj.masks[m_activeMask].name = name;
+    emit masksChanged();
+}
+
+void RetouchTab::moveMask(int from, int to) {
+    if (from < 0 || from >= m_adj.masks.size() || to < 0 ||
+        to >= m_adj.masks.size() || from == to)
+        return;
+    m_adj.masks.move(from, to);
+    if (m_activeMask == from) m_activeMask = to;
+    else if (from < m_activeMask && m_activeMask <= to) --m_activeMask;
+    else if (to <= m_activeMask && m_activeMask < from) ++m_activeMask;
+    retone();
+    markEdited();
+    emit masksChanged();
 }
 
 void RetouchTab::setActiveMaskShape(bool inverted, double feather,

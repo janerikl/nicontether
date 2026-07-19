@@ -216,6 +216,7 @@ QPixmap (*maskGlyph(MaskType t))(const QColor &) {
     case MaskType::Radial: return drawMaskRadial;
     case MaskType::Linear: return drawMaskLinear;
     case MaskType::Brush:  return drawMaskBrush;
+    case MaskType::None:   return drawMask;
     }
     return drawMaskRadial;
 }
@@ -434,8 +435,12 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
             restoreGeometry(settings.value("window/geometry").toByteArray());
         restoreState(settings.value("window/state").toByteArray());
         // Masks/Controls visibility is app-controlled, never persisted-visible.
-        if (m_maskDock)     m_maskDock->hide();
-        if (m_controlsDock) m_controlsDock->hide();
+        // The tether toolbar is likewise mode-driven: restoreState() would
+        // resurrect it if the last session ended in Tether mode, but startup
+        // always forces Retouch, so re-assert its hidden state here.
+        if (m_maskDock)       m_maskDock->hide();
+        if (m_controlsDock)   m_controlsDock->hide();
+        if (m_tetherToolBar)  m_tetherToolBar->hide();
     } else {
         applyDefaultDockLayout();
     }
@@ -929,7 +934,7 @@ void RetouchWindow::refreshLevels() {
 }
 
 void RetouchWindow::buildMaskDock() {
-    auto *dock = new QDockWidget("Masks", this);
+    auto *dock = new QDockWidget("Layers", this);
     m_maskDock = dock;
     dock->setObjectName("maskDock");
     dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
@@ -957,6 +962,31 @@ void RetouchWindow::buildMaskDock() {
                 RetouchTab *tab = currentTab();
                 if (tab) tab->setActiveMaskShape(inv, f, h, br, am);
             });
+    connect(m_maskPanel, &MaskPanel::maskOpacityChanged, this,
+            [this](double opacity) {
+                RetouchTab *tab = currentTab();
+                if (tab) tab->setActiveMaskOpacity(opacity);
+            });
+    connect(m_maskPanel, &MaskPanel::maskBlendChanged, this,
+            [this](BlendMode mode) {
+                RetouchTab *tab = currentTab();
+                if (tab) tab->setActiveMaskBlend(mode);
+            });
+    connect(m_maskPanel, &MaskPanel::maskVisibleChanged, this,
+            [this](bool visible) {
+                RetouchTab *tab = currentTab();
+                if (tab) { tab->setActiveMaskVisible(visible); refreshMaskPanel(); }
+            });
+    connect(m_maskPanel, &MaskPanel::maskNameChanged, this,
+            [this](const QString &name) {
+                RetouchTab *tab = currentTab();
+                if (tab) tab->setActiveMaskName(name);
+            });
+    connect(m_maskPanel, &MaskPanel::maskReorderRequested, this,
+            [this](int from, int to) {
+                RetouchTab *tab = currentTab();
+                if (tab) { tab->moveMask(from, to); refreshMaskPanel(); }
+            });
 }
 
 void RetouchWindow::refreshMaskPanel() {
@@ -970,9 +1000,10 @@ void RetouchWindow::refreshMaskPanel() {
 
 void RetouchWindow::openMaskFlyout() {
     const QVector<SubTool> tools{
-        {int(MaskType::Radial), drawMaskRadial, "Radial", "Radial mask"},
-        {int(MaskType::Linear), drawMaskLinear, "Graduated", "Graduated mask"},
-        {int(MaskType::Brush), drawMaskBrush, "Brush", "Brush mask"},
+        {int(MaskType::Radial), drawMaskRadial, "Radial", "Radial mask layer"},
+        {int(MaskType::Linear), drawMaskLinear, "Graduated", "Graduated mask layer"},
+        {int(MaskType::Brush), drawMaskBrush, "Brush", "Brush mask layer"},
+        {int(MaskType::None), drawMask, "Layer", "Unmasked adjustment layer"},
     };
     auto *flyout = new ToolFlyout(tools, int(m_activeMaskSubtool), this);
     connect(flyout, &ToolFlyout::chosen, this, [this](int id) {

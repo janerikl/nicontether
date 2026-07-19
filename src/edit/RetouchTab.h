@@ -55,6 +55,11 @@ public:
     void setActiveMaskAdjust(const MaskAdjust &a);
     void setActiveMaskShape(bool inverted, double feather, double hardness,
                             double brushRadius, bool autoMask);
+    void setActiveMaskOpacity(double opacity);       // 0..1
+    void setActiveMaskBlend(BlendMode mode);
+    void setActiveMaskVisible(bool visible);
+    void setActiveMaskName(const QString &name);
+    void moveMask(int from, int to);                 // reorder within the stack
     const QVector<Mask> &masks() const { return m_adj.masks; }
     int activeMaskIndex() const { return m_activeMask; }
     void showOriginal(bool on); // press-and-hold before/after

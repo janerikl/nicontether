@@ -126,6 +126,32 @@ inline double smoothstep01(double t) {
     return t * t * (3.0 - 2.0 * t);
 }
 
+// Blend one 0..255 channel of the layer's local result ("src") with the
+// channel below it ("dst"), per standard Photoshop-style formulas in
+// non-linear (sRGB) space.
+inline double blendChannel(BlendMode mode, double dst, double src) {
+    switch (mode) {
+    case BlendMode::Multiply:
+        return dst * src / 255.0;
+    case BlendMode::Screen:
+        return 255.0 - (255.0 - dst) * (255.0 - src) / 255.0;
+    case BlendMode::Overlay:
+        return dst <= 127.5 ? (2.0 * dst * src) / 255.0
+                            : 255.0 - 2.0 * (255.0 - dst) * (255.0 - src) / 255.0;
+    case BlendMode::SoftLight: {
+        double a = dst / 255.0, b = src / 255.0;
+        double d = a <= 0.25 ? ((16.0 * a - 12.0) * a + 4.0) * a
+                              : std::sqrt(a);
+        double r = b <= 0.5 ? a - (1.0 - 2.0 * b) * a * (1.0 - a)
+                            : a + (2.0 * b - 1.0) * (d - a);
+        return r * 255.0;
+    }
+    case BlendMode::Normal:
+    default:
+        return src;
+    }
+}
+
 // Mask weight [0,1] at a width-normalized point for radial/linear masks.
 double radialWeight(const Mask &m, double nx, double ny) {
     double dx = nx - m.center.x(), dy = ny - m.center.y();
@@ -220,28 +246,36 @@ void applyMasks(QImage &img, const QVector<Mask> &masks) {
     const double W = w;
     std::vector<uchar> cov;
     for (const Mask &m : masks) {
+        if (!m.visible || m.opacity <= 0.0) continue;
         if (m.adj.isZero()) continue;
         if (m.type == MaskType::Brush && m.stroke.isEmpty()) continue;
         const LocalParams lp = makeLocalParams(m.adj);
         if (m.type == MaskType::Brush) rasterizeBrush(m, cov, w, h, &img);
+        const double op = clampd(m.opacity, 0.0, 1.0);
         for (int y = 0; y < h; ++y) {
             QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
             for (int x = 0; x < w; ++x) {
                 double wgt;
-                if (m.type == MaskType::Radial)
+                if (m.type == MaskType::None)
+                    wgt = 1.0;
+                else if (m.type == MaskType::Radial)
                     wgt = radialWeight(m, x / W, y / W);
                 else if (m.type == MaskType::Linear)
                     wgt = linearWeight(m, x / W, y / W);
                 else
                     wgt = cov[size_t(y) * w + x] / 255.0;
+                wgt *= op;
                 if (wgt <= 0.0) continue;
                 QRgb src = line[x];
                 QRgb loc = applyLocal(src, lp);
+                double br = blendChannel(m.blend, qRed(src), qRed(loc));
+                double bg = blendChannel(m.blend, qGreen(src), qGreen(loc));
+                double bb = blendChannel(m.blend, qBlue(src), qBlue(loc));
                 double inv = 1.0 - wgt;
                 line[x] = qRgba(
-                    int(std::lround(qRed(src) * inv + qRed(loc) * wgt)),
-                    int(std::lround(qGreen(src) * inv + qGreen(loc) * wgt)),
-                    int(std::lround(qBlue(src) * inv + qBlue(loc) * wgt)),
+                    clamp8(int(std::lround(qRed(src) * inv + br * wgt))),
+                    clamp8(int(std::lround(qGreen(src) * inv + bg * wgt))),
+                    clamp8(int(std::lround(qBlue(src) * inv + bb * wgt))),
                     qAlpha(src));
             }
         }
@@ -303,6 +337,7 @@ QImage boxBlur(const QImage &src, int radius) {
 // True if any mask carries a non-zero local adjustment.
 static bool hasMaskEdits(const Adjustments &adj) {
     for (const Mask &m : adj.masks) {
+        if (!m.visible || m.opacity <= 0.0) continue;
         if (m.adj.isZero()) continue;
         if (m.type == MaskType::Brush && m.stroke.isEmpty()) continue;
         return true;
@@ -340,7 +375,9 @@ QImage maskCoverageOverlay(const Mask &m, int w, int h, const QColor &tint,
         QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
         for (int x = 0; x < ow; ++x) {
             double wgt;
-            if (m.type == MaskType::Radial)
+            if (m.type == MaskType::None)
+                wgt = 1.0;
+            else if (m.type == MaskType::Radial)
                 wgt = radialWeight(m, x / W, y / W);
             else if (m.type == MaskType::Linear)
                 wgt = linearWeight(m, x / W, y / W);
@@ -539,7 +576,7 @@ QString historyStepLabel(const Adjustments &prev, const Adjustments &curr) {
     if (curr.vignette != prev.vignette)       return QStringLiteral("Vignette");
     if (curr.curve != prev.curve)             return QStringLiteral("Curve");
     if (curr.levels != prev.levels)           return QStringLiteral("Levels");
-    if (curr.masks != prev.masks)             return QStringLiteral("Mask");
+    if (curr.masks != prev.masks)             return QStringLiteral("Layer");
     if (curr.heals != prev.heals)             return QStringLiteral("Spot Heal");
     if (curr.rotationQuadrants != prev.rotationQuadrants)
         return QStringLiteral("Rotate");
