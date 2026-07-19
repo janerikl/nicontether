@@ -427,18 +427,18 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
 
     // Restore saved window geometry + dock layout, or fall back to defaults.
     // Restore runs *after* setMode so persisted show/hide of the editing docks
-    // wins; then Masks/Controls visibility is re-asserted by app logic.
+    // (including Layers) wins; then Controls visibility is re-asserted by app
+    // logic.
     setMode(Mode::Retouch);
     QSettings settings;
     if (settings.contains("window/state")) {
         if (settings.contains("window/geometry"))
             restoreGeometry(settings.value("window/geometry").toByteArray());
         restoreState(settings.value("window/state").toByteArray());
-        // Masks/Controls visibility is app-controlled, never persisted-visible.
+        // Controls visibility is app-controlled, never persisted-visible.
         // The tether toolbar is likewise mode-driven: restoreState() would
         // resurrect it if the last session ended in Tether mode, but startup
         // always forces Retouch, so re-assert its hidden state here.
-        if (m_maskDock)       m_maskDock->hide();
         if (m_controlsDock)   m_controlsDock->hide();
         if (m_tetherToolBar)  m_tetherToolBar->hide();
     } else {
@@ -454,6 +454,7 @@ void RetouchWindow::buildViewMenu() {
     if (m_adjustmentsDock) viewMenu->addAction(m_adjustmentsDock->toggleViewAction());
     if (m_historyDock) viewMenu->addAction(m_historyDock->toggleViewAction());
     if (m_levelsDock) viewMenu->addAction(m_levelsDock->toggleViewAction());
+    if (m_maskDock) viewMenu->addAction(m_maskDock->toggleViewAction());
 
     auto *filmstripAction = new QAction("Filmstrip", this);
     filmstripAction->setCheckable(true);
@@ -474,10 +475,10 @@ void RetouchWindow::buildViewMenu() {
 }
 
 // Re-apply the default dock arrangement to the (already-created) docks: all
-// editing docks on the right, Levels split above the Adjustments/History/Masks
-// tab group, Tools toolbar on the left. Mask stays hidden; applyModeChrome then
-// asserts mode-driven visibility (Masks/Controls). Used on first launch (no
-// saved state) and by Reset Panels.
+// editing docks on the right, Levels split above the Adjustments/History/Layers
+// tab group, Tools toolbar on the left. applyModeChrome then asserts
+// mode-driven visibility (editing docks hidden in Tether mode; Controls shown
+// there instead). Used on first launch (no saved state) and by Reset Panels.
 void RetouchWindow::applyDefaultDockLayout() {
     for (QDockWidget *d : {m_levelsDock, m_adjustmentsDock, m_historyDock,
                            m_maskDock, m_controlsDock}) {
@@ -495,13 +496,14 @@ void RetouchWindow::applyDefaultDockLayout() {
     if (m_toolsBar)
         addToolBar(Qt::LeftToolBarArea, m_toolsBar);
 
-    // Default visibility for the persistent editing docks; Masks hidden.
+    // Default visibility for the persistent editing docks.
     if (m_adjustmentsDock) m_adjustmentsDock->show();
     if (m_historyDock)     m_historyDock->show();
     if (m_levelsDock)      m_levelsDock->show();
-    if (m_maskDock)        m_maskDock->hide();
+    if (m_maskDock)        m_maskDock->show();
 
-    // Let mode/tool chrome have the final say on Masks/Controls/Tools visibility.
+    // Let mode/tool chrome have the final say on editing-dock/Controls/Tools
+    // visibility.
     const bool tether = m_tetherModeAction && m_tetherModeAction->isChecked();
     applyModeChrome(tether ? Mode::Tether : Mode::Retouch);
 }
@@ -616,11 +618,11 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); }
-            m_toolOptionsBar->setVisible(false); // masks use their own dock
+            m_toolOptionsBar->setVisible(false); // layers use their own dock
             if (m_maskDock) { m_maskDock->show(); m_maskDock->raise(); }
-        } else {
-            if (m_maskDock) m_maskDock->hide();
         }
+        // Layers panel stays visible when the K tool is toggled off — it's a
+        // persistent stack, not a transient tool-options popup.
         if (tab && tab->isReady()) tab->setMaskMode(on);
         // A plain click on the tool creates a mask of the active subtool.
         if (on) addActiveMask();
@@ -1265,6 +1267,7 @@ void RetouchWindow::applyModeChrome(Mode mode) {
     if (m_toolsBar)        m_toolsBar->setVisible(!tether);
     if (m_adjustmentsDock) m_adjustmentsDock->setVisible(!tether);
     if (m_historyDock)     m_historyDock->setVisible(!tether);
+    if (m_maskDock)        m_maskDock->setVisible(!tether);
 
     // Editing-only actions are meaningless while tethering.
     m_saveAction->setEnabled(!tether);
@@ -1306,7 +1309,6 @@ void RetouchWindow::deselectAllTools() {
         m_maskToggle->setChecked(false);
     }
     if (tab) tab->setMaskMode(false);
-    if (m_maskDock) m_maskDock->hide();
     if (m_toolOptionsBar) m_toolOptionsBar->setVisible(false);
 }
 
