@@ -40,6 +40,23 @@ void LiveViewWidget::clearReticle() {
     update();
 }
 
+void LiveViewWidget::setCalibrationMode(bool on) {
+    m_calibrating = on;
+    if (!on) {
+        m_hasCrosshair = false;
+    } else {
+        // Hide the normal AF reticle while calibrating.
+        m_hasReticle = false;
+    }
+    update();
+}
+
+void LiveViewWidget::setCalibrationCrosshair(bool on, QPointF norm) {
+    m_hasCrosshair = on;
+    m_crosshairNorm = norm;
+    update();
+}
+
 QRect LiveViewWidget::drawnRect() const {
     if (m_frame.isNull()) return QRect();
     QSize scaled = m_frame.size().scaled(size(), Qt::KeepAspectRatio);
@@ -73,11 +90,33 @@ void LiveViewWidget::paintEvent(QPaintEvent *) {
         painter.setBrush(Qt::NoBrush);
         painter.drawRect(box);
     }
+
+    if (m_hasCrosshair) {
+        QPointF c(r.x() + m_crosshairNorm.x() * r.width(),
+                  r.y() + m_crosshairNorm.y() * r.height());
+        QPen pen(QColor(80, 180, 255), 2);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        int rad = 14;
+        painter.drawEllipse(c, rad, rad);
+        painter.drawLine(QPointF(c.x() - rad - 6, c.y()), QPointF(c.x() + rad + 6, c.y()));
+        painter.drawLine(QPointF(c.x(), c.y() - rad - 6), QPointF(c.x(), c.y() + rad + 6));
+    }
 }
 
 void LiveViewWidget::mousePressEvent(QMouseEvent *ev) {
     QRect r = drawnRect();
     if (m_frame.isNull() || !r.contains(ev->pos())) return;
+
+    if (m_calibrating) {
+        double nx = double(ev->pos().x() - r.x()) / r.width();
+        double ny = double(ev->pos().y() - r.y()) / r.height();
+        m_crosshairNorm = QPointF(nx, ny);
+        m_hasCrosshair = true;
+        update();
+        emit calibrationPointPicked(nx, ny);
+        return;
+    }
 
     // AF frame size, falling back to the decoded frame's own pixels if unset.
     int fw = m_afFrameW > 0 ? m_afFrameW : m_frame.width();

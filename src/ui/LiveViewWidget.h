@@ -18,6 +18,11 @@ public:
     // <= 0, clicks fall back to the decoded frame's own pixel dimensions.
     void setAfFrameSize(int w, int h);
 
+    // Calibration mode: clicks emit calibrationPointPicked instead of firing AF,
+    // and a crosshair is drawn at the target position.
+    void setCalibrationMode(bool on);
+    void setCalibrationCrosshair(bool on, QPointF norm = {});
+
 public slots:
     // Update the reticle color after an AF-area command: green on success,
     // red on failure.
@@ -27,6 +32,7 @@ public slots:
 
 signals:
     void focusRequested(int sensorX, int sensorY);
+    void calibrationPointPicked(double normX, double normY);
 
 protected:
     void paintEvent(QPaintEvent *) override;
@@ -44,4 +50,8 @@ private:
     QPointF m_reticleNorm;               // 0..1 position within the drawn image
     AfState m_afState = AfState::Pending;
     double m_afBoxFrac = 0.12;           // reticle box size as fraction of min(drawn w,h)
+
+    bool m_calibrating = false;
+    bool m_hasCrosshair = false;
+    QPointF m_crosshairNorm;
 };
