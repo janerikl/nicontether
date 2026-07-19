@@ -15,13 +15,13 @@ class CurveEditor;
 class LevelsPanel;
 
 // The layer stack: a full-height list (drag to reorder, eye icon to toggle
-// visibility, Duplicate/Delete) plus, for the selected layer, its name,
+// visibility, Add/Duplicate/Delete) plus, for the selected layer, its name,
 // opacity, blend mode, and the *complete* tone/colour/curve/levels/detail
 // adjustment set — the same power as the main Adjustments dock, scoped to
 // this layer. Mask shape editing (type/invert/feather/brush) lives in the
-// separate MaskPanel dock. Layers are added from the sidebar tool's flyout,
-// not here. Purely a view — it emits intent signals and is refreshed via
-// setMasks(); RetouchWindow routes to the tab.
+// separate MaskPanel dock; new layers start unmasked (whole image) and a mask
+// can be added there afterward. Purely a view — it emits intent signals and
+// is refreshed via setMasks(); RetouchWindow routes to the tab.
 class LayersPanel : public QWidget {
     Q_OBJECT
 public:
@@ -31,6 +31,7 @@ public:
     void clear();
 
 signals:
+    void addMaskRequested();
     void selectMaskRequested(int index);
     void deleteMaskRequested();
     void duplicateMaskRequested();
@@ -51,6 +52,7 @@ private:
     bool m_syncing = false;
 
     QListWidget *m_maskList = nullptr;
+    QPushButton *m_add = nullptr;
     QPushButton *m_duplicate = nullptr;
     QPushButton *m_delete = nullptr;
 

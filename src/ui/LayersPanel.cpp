@@ -41,8 +41,10 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     m_maskList->setMinimumHeight(140);
     selRow->addWidget(m_maskList, 1);
     auto *listButtons = new QVBoxLayout;
+    m_add = new QPushButton("Add");
     m_duplicate = new QPushButton("Duplicate");
     m_delete = new QPushButton("Delete");
+    listButtons->addWidget(m_add);
     listButtons->addWidget(m_duplicate);
     listButtons->addWidget(m_delete);
     listButtons->addStretch(1);
@@ -126,6 +128,8 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     scroll->setWidget(editArea);
     root->addWidget(scroll, 2);
 
+    connect(m_add, &QPushButton::clicked, this,
+            [this] { emit addMaskRequested(); });
     connect(m_duplicate, &QPushButton::clicked, this,
             [this] { emit duplicateMaskRequested(); });
     connect(m_delete, &QPushButton::clicked, this,
