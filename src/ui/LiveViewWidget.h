@@ -44,6 +44,7 @@ signals:
 protected:
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *) override;
+    void contextMenuEvent(QContextMenuEvent *) override;
 
 private:
     QRect drawnRect() const; // where the frame is painted (letterboxed)

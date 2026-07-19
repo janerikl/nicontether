@@ -3,6 +3,10 @@
 #include <QPainter>
 #include <QMouseEvent>
 #include <QtMath>
+#include <QMenu>
+#include <QActionGroup>
+#include <QContextMenuEvent>
+#include <QSettings>
 
 #include "ui/AfMapping.h"
 
@@ -12,6 +16,8 @@ LiveViewWidget::LiveViewWidget(QWidget *parent) : QWidget(parent) {
     QPalette pal = palette();
     pal.setColor(QPalette::Window, Qt::black);
     setPalette(pal);
+    m_gridMode = GridMode(QSettings().value("liveview/gridMode",
+                                            int(GridMode::Off)).toInt());
 }
 
 void LiveViewWidget::setFrame(const QImage &frame) {
@@ -60,6 +66,7 @@ void LiveViewWidget::setCalibrationCrosshair(bool on, QPointF norm) {
 void LiveViewWidget::setGridMode(GridMode m) {
     if (m_gridMode == m) return;
     m_gridMode = m;
+    QSettings().setValue("liveview/gridMode", int(m));
     update();
 }
 
@@ -163,4 +170,28 @@ void LiveViewWidget::mousePressEvent(QMouseEvent *ev) {
     update();
 
     emit focusRequested(af.x, af.y);
+}
+
+void LiveViewWidget::contextMenuEvent(QContextMenuEvent *ev) {
+    QMenu menu(this);
+    auto *group = new QActionGroup(&menu);
+    group->setExclusive(true);
+    struct Item { const char *label; GridMode mode; };
+    const Item items[] = {
+        {"Off",           GridMode::Off},
+        {"Rule of Thirds",GridMode::Thirds},
+        {"Golden Ratio",  GridMode::GoldenRatio},
+        {"Golden Spiral", GridMode::GoldenSpiral},
+        {"Center Crosshair", GridMode::Crosshair},
+        {"Diagonals",     GridMode::Diagonals},
+    };
+    for (const auto &it : items) {
+        QAction *a = menu.addAction(it.label);
+        a->setCheckable(true);
+        a->setChecked(m_gridMode == it.mode);
+        group->addAction(a);
+        GridMode m = it.mode;
+        connect(a, &QAction::triggered, this, [this, m]() { setGridMode(m); });
+    }
+    menu.exec(ev->globalPos());
 }
