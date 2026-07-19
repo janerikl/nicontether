@@ -12,13 +12,18 @@ class QPushButton;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class CurveEditor;
+class LevelsPanel;
 
-// Layers panel: an ordered list of adjustment layers (drag to reorder, eye
-// icon to toggle visibility) plus, for the selected layer, its name, opacity,
-// blend mode, mask shape (invert / feather / brush hardness & size), and its
-// eight-slider tone/colour adjustment. Layers are added from the sidebar
-// tool's flyout, not here. Purely a view — it emits intent signals and is
-// refreshed via setMasks(); RetouchWindow routes to the tab.
+// Layers panel: a real Lightroom/Photoshop-style layer stack. A full-height
+// list at top (drag to reorder, eye icon to toggle visibility, Duplicate/
+// Delete), and below it the *complete* editing surface for whichever layer is
+// selected — name, opacity, blend mode, its mask shape (invert / feather /
+// brush hardness & size), and the full tone/colour/curve/levels/detail
+// adjustment set (the same power as the main Adjustments dock, scoped to this
+// layer). Layers are added from the sidebar tool's flyout, not here. Purely a
+// view — it emits intent signals and is refreshed via setMasks(); RetouchWindow
+// routes to the tab.
 class MaskPanel : public QWidget {
     Q_OBJECT
 public:
@@ -33,6 +38,7 @@ public:
 signals:
     void selectMaskRequested(int index);
     void deleteMaskRequested();
+    void duplicateMaskRequested();
     void maskAdjustChanged(const MaskAdjust &a);
     void maskShapeChanged(bool inverted, double feather, double hardness,
                           double brushRadius, bool autoMask);
@@ -53,6 +59,7 @@ private:
     bool m_syncing = false;
 
     QListWidget *m_maskList = nullptr;
+    QPushButton *m_duplicate = nullptr;
     QPushButton *m_delete = nullptr;
     QLabel *m_hint = nullptr;
 
@@ -76,4 +83,11 @@ private:
     QSlider *m_vibrance = nullptr;
     QSlider *m_temperature = nullptr;
     QSlider *m_tint = nullptr;
+
+    CurveEditor *m_curve = nullptr;
+    LevelsPanel *m_levels = nullptr;
+    Levels m_curLevels;   // last value LevelsPanel reported (it has no getter)
+    QSlider *m_clarity = nullptr;
+    QSlider *m_sharpen = nullptr;
+    QSlider *m_vignette = nullptr;
 };

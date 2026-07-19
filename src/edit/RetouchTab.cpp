@@ -407,6 +407,23 @@ int RetouchTab::addMask(MaskType type) {
     return m_activeMask;
 }
 
+int RetouchTab::duplicateActiveMask() {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return -1;
+    Mask copy = m_adj.masks[m_activeMask];
+    copy.name = copy.name.isEmpty() ? QStringLiteral("Layer copy")
+                                    : copy.name + QStringLiteral(" copy");
+    int insertAt = m_activeMask + 1;
+    m_adj.masks.insert(insertAt, copy);
+    m_activeMask = insertAt;
+    m_maskMode = (copy.type != MaskType::None);
+    m_canvas->setMaskMode(copy.type, m_maskMode);
+    pushMaskGizmo();
+    retone();
+    markEdited();
+    emit masksChanged();
+    return m_activeMask;
+}
+
 void RetouchTab::selectMask(int index) {
     if (index < -1 || index >= m_adj.masks.size()) return;
     m_activeMask = index;

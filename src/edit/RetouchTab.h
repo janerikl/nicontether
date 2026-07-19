@@ -50,6 +50,7 @@ public:
     // Local adjustment masks.
     void setMaskMode(bool on);              // enter/leave mask editing on the canvas
     int addMask(MaskType type);             // append + select; returns its index
+    int duplicateActiveMask();              // copy + insert above; returns its index
     void selectMask(int index);             // -1 = none
     void deleteActiveMask();
     void setActiveMaskAdjust(const MaskAdjust &a);

@@ -6,6 +6,63 @@
 #include <QJsonObject>
 #include <QJsonArray>
 
+namespace {
+
+QJsonObject levelsChannelToJson(const LevelsChannel &c) {
+    QJsonObject j;
+    j["inBlack"] = c.inBlack;
+    j["inWhite"] = c.inWhite;
+    j["gamma"] = c.gamma;
+    j["outBlack"] = c.outBlack;
+    j["outWhite"] = c.outWhite;
+    return j;
+}
+
+LevelsChannel levelsChannelFromJson(const QJsonObject &j) {
+    LevelsChannel c;
+    c.inBlack = j["inBlack"].toInt(0);
+    c.inWhite = j["inWhite"].toInt(255);
+    c.gamma = j["gamma"].toDouble(1.0);
+    c.outBlack = j["outBlack"].toInt(0);
+    c.outWhite = j["outWhite"].toInt(255);
+    return c;
+}
+
+QJsonObject levelsToJson(const Levels &lv) {
+    QJsonObject j;
+    j["rgb"] = levelsChannelToJson(lv.rgb);
+    j["r"] = levelsChannelToJson(lv.r);
+    j["g"] = levelsChannelToJson(lv.g);
+    j["b"] = levelsChannelToJson(lv.b);
+    return j;
+}
+
+Levels levelsFromJson(const QJsonObject &j) {
+    Levels lv;
+    lv.rgb = levelsChannelFromJson(j["rgb"].toObject());
+    lv.r = levelsChannelFromJson(j["r"].toObject());
+    lv.g = levelsChannelFromJson(j["g"].toObject());
+    lv.b = levelsChannelFromJson(j["b"].toObject());
+    return lv;
+}
+
+QJsonArray curveToJson(const QVector<QPointF> &curve) {
+    QJsonArray a;
+    for (const QPointF &p : curve) a.append(QJsonArray{p.x(), p.y()});
+    return a;
+}
+
+QVector<QPointF> curveFromJson(const QJsonArray &a) {
+    QVector<QPointF> curve;
+    for (const QJsonValue &v : a) {
+        QJsonArray p = v.toArray();
+        if (p.size() == 2) curve.append(QPointF(p[0].toDouble(), p[1].toDouble()));
+    }
+    return curve;
+}
+
+} // namespace
+
 namespace EditSidecar {
 
 QString pathFor(const QString &imagePath) {
@@ -18,7 +75,7 @@ bool exists(const QString &imagePath) {
 
 bool save(const QString &imagePath, const Adjustments &a) {
     QJsonObject o;
-    o["version"] = 2;
+    o["version"] = 3;
     o["brightness"] = a.brightness;
     o["contrast"] = a.contrast;
     o["highlights"] = a.highlights;
@@ -44,28 +101,8 @@ bool save(const QString &imagePath, const Adjustments &a) {
         c["h"] = a.cropRect.height();
         o["crop"] = c;
     }
-    QJsonArray curve;
-    for (const QPointF &p : a.curve)
-        curve.append(QJsonArray{p.x(), p.y()});
-    o["curve"] = curve;
-
-    if (!a.levels.isIdentity()) {
-        auto chan = [](const LevelsChannel &c) {
-            QJsonObject j;
-            j["inBlack"] = c.inBlack;
-            j["inWhite"] = c.inWhite;
-            j["gamma"] = c.gamma;
-            j["outBlack"] = c.outBlack;
-            j["outWhite"] = c.outWhite;
-            return j;
-        };
-        QJsonObject lv;
-        lv["rgb"] = chan(a.levels.rgb);
-        lv["r"] = chan(a.levels.r);
-        lv["g"] = chan(a.levels.g);
-        lv["b"] = chan(a.levels.b);
-        o["levels"] = lv;
-    }
+    o["curve"] = curveToJson(a.curve);
+    if (!a.levels.isIdentity()) o["levels"] = levelsToJson(a.levels);
 
     if (!a.masks.isEmpty()) {
         QJsonArray masks;
@@ -103,6 +140,14 @@ bool save(const QString &imagePath, const Adjustments &a) {
             ad["vibrance"] = m.adj.vibrance;
             ad["temperature"] = m.adj.temperature;
             ad["tint"] = m.adj.tint;
+            ad["wbR"] = m.adj.wbR;
+            ad["wbG"] = m.adj.wbG;
+            ad["wbB"] = m.adj.wbB;
+            ad["clarity"] = m.adj.clarity;
+            ad["sharpen"] = m.adj.sharpen;
+            ad["vignette"] = m.adj.vignette;
+            ad["curve"] = curveToJson(m.adj.curve);
+            if (!m.adj.levels.isIdentity()) ad["levels"] = levelsToJson(m.adj.levels);
             j["adj"] = ad;
             masks.append(j);
         }
@@ -156,26 +201,8 @@ bool load(const QString &imagePath, Adjustments &out) {
         a.cropRect = QRect(c["x"].toInt(), c["y"].toInt(),
                            c["w"].toInt(), c["h"].toInt());
     }
-    for (const QJsonValue &v : o["curve"].toArray()) {
-        QJsonArray p = v.toArray();
-        if (p.size() == 2) a.curve.append(QPointF(p[0].toDouble(), p[1].toDouble()));
-    }
-    if (o.contains("levels")) {
-        QJsonObject lv = o["levels"].toObject();
-        auto chan = [](const QJsonObject &j) {
-            LevelsChannel c;
-            c.inBlack = j["inBlack"].toInt(0);
-            c.inWhite = j["inWhite"].toInt(255);
-            c.gamma = j["gamma"].toDouble(1.0);
-            c.outBlack = j["outBlack"].toInt(0);
-            c.outWhite = j["outWhite"].toInt(255);
-            return c;
-        };
-        a.levels.rgb = chan(lv["rgb"].toObject());
-        a.levels.r = chan(lv["r"].toObject());
-        a.levels.g = chan(lv["g"].toObject());
-        a.levels.b = chan(lv["b"].toObject());
-    }
+    a.curve = curveFromJson(o["curve"].toArray());
+    if (o.contains("levels")) a.levels = levelsFromJson(o["levels"].toObject());
     for (const QJsonValue &v : o["masks"].toArray()) {
         QJsonObject j = v.toObject();
         Mask m;
@@ -211,6 +238,14 @@ bool load(const QString &imagePath, Adjustments &out) {
         m.adj.vibrance = ad["vibrance"].toInt();
         m.adj.temperature = ad["temperature"].toInt();
         m.adj.tint = ad["tint"].toInt();
+        m.adj.wbR = ad["wbR"].toDouble(1.0);
+        m.adj.wbG = ad["wbG"].toDouble(1.0);
+        m.adj.wbB = ad["wbB"].toDouble(1.0);
+        m.adj.clarity = ad["clarity"].toInt();
+        m.adj.sharpen = ad["sharpen"].toInt();
+        m.adj.vignette = ad["vignette"].toInt();
+        m.adj.curve = curveFromJson(ad["curve"].toArray());
+        if (ad.contains("levels")) m.adj.levels = levelsFromJson(ad["levels"].toObject());
         a.masks.append(m);
     }
     for (const QJsonValue &v : o["heals"].toArray()) {

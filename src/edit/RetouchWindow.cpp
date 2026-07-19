@@ -954,6 +954,10 @@ void RetouchWindow::buildMaskDock() {
         RetouchTab *tab = currentTab();
         if (tab) { tab->deleteActiveMask(); refreshMaskPanel(); }
     });
+    connect(m_maskPanel, &MaskPanel::duplicateMaskRequested, this, [this] {
+        RetouchTab *tab = currentTab();
+        if (tab) { tab->duplicateActiveMask(); refreshMaskPanel(); }
+    });
     connect(m_maskPanel, &MaskPanel::maskAdjustChanged, this,
             [this](const MaskAdjust &a) {
                 RetouchTab *tab = currentTab();

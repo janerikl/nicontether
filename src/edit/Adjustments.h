@@ -61,16 +61,41 @@ struct MaskAdjust {
     int vibrance = 0;
     int temperature = 0;
     int tint = 0;
+    double wbR = 1.0;
+    double wbG = 1.0;
+    double wbB = 1.0;
 
+    // Detail / effects — same meaning as the global fields, applied within
+    // this layer only (see applyLayerContent in Adjustments.cpp).
+    int clarity = 0;
+    int sharpen = 0;
+    int vignette = 0;
+
+    // Tone curve + Levels, same semantics as the global fields.
+    QVector<QPointF> curve;
+    Levels levels;
+
+    bool hasCurve() const {
+        if (curve.size() < 2) return false;
+        for (const QPointF &p : curve)
+            if (std::abs(p.x() - p.y()) > 1e-4) return true;
+        return false;
+    }
     bool isZero() const {
         return !brightness && !contrast && !highlights && !shadows &&
-               !saturation && !vibrance && !temperature && !tint;
+               !saturation && !vibrance && !temperature && !tint &&
+               std::abs(wbR - 1.0) < 1e-4 && std::abs(wbG - 1.0) < 1e-4 &&
+               std::abs(wbB - 1.0) < 1e-4 && !clarity && !sharpen && !vignette &&
+               !hasCurve() && levels.isIdentity();
     }
     bool operator==(const MaskAdjust &o) const {
         return brightness == o.brightness && contrast == o.contrast &&
                highlights == o.highlights && shadows == o.shadows &&
                saturation == o.saturation && vibrance == o.vibrance &&
-               temperature == o.temperature && tint == o.tint;
+               temperature == o.temperature && tint == o.tint &&
+               wbR == o.wbR && wbG == o.wbG && wbB == o.wbB &&
+               clarity == o.clarity && sharpen == o.sharpen &&
+               vignette == o.vignette && curve == o.curve && levels == o.levels;
     }
     bool operator!=(const MaskAdjust &o) const { return !(*this == o); }
 };

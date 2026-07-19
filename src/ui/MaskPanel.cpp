@@ -1,4 +1,6 @@
 #include "ui/MaskPanel.h"
+#include "edit/CurveEditor.h"
+#include "ui/LevelsPanel.h"
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
@@ -10,6 +12,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSlider>
 #include <QVBoxLayout>
 #include <cmath>
@@ -31,24 +34,39 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     root->setContentsMargins(6, 6, 6, 6);
     root->setSpacing(6);
 
-    // Layers are added from the tool's flyout in the sidebar (Photoshop-style),
-    // so this panel is edit-only: pick the active layer, reorder, set its
-    // shape/opacity/blend, and adjust its tone/colour.
-
-    // Layer list: checkable (visibility) rows, drag to reorder, delete button.
+    // Layer list: checkable (visibility) rows, drag to reorder, Duplicate/Delete.
+    // Given a generous share of the panel's height — this is a real layer
+    // stack, not a one-off tool popup.
     auto *selRow = new QHBoxLayout;
     m_maskList = new QListWidget;
     m_maskList->setDragDropMode(QAbstractItemView::InternalMove);
     m_maskList->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_delete = new QPushButton("Delete");
+    m_maskList->setMinimumHeight(140);
     selRow->addWidget(m_maskList, 1);
-    selRow->addWidget(m_delete);
-    root->addLayout(selRow);
+    auto *listButtons = new QVBoxLayout;
+    m_duplicate = new QPushButton("Duplicate");
+    m_delete = new QPushButton("Delete");
+    listButtons->addWidget(m_duplicate);
+    listButtons->addWidget(m_delete);
+    listButtons->addStretch(1);
+    selRow->addLayout(listButtons);
+    root->addLayout(selRow, 1);
 
-    m_hint = new QLabel("Drag on the image to draw the mask.");
+    m_hint = new QLabel("Add a layer from the sidebar tool (K). Layers with a "
+                        "mask shape are painted/dragged on the image.");
     m_hint->setWordWrap(true);
     m_hint->setStyleSheet("color: #999;");
     root->addWidget(m_hint);
+
+    // Everything below is the full editing surface for the selected layer —
+    // scrollable, since it carries the same weight as the main Adjustments dock.
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto *editArea = new QWidget;
+    auto *edit = new QVBoxLayout(editArea);
+    edit->setContentsMargins(0, 0, 0, 0);
+    edit->setSpacing(6);
 
     // Name / opacity / blend mode.
     auto *props = new QFormLayout;
@@ -65,9 +83,10 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     m_blend->addItem("Overlay", int(BlendMode::Overlay));
     m_blend->addItem("Soft Light", int(BlendMode::SoftLight));
     props->addRow("Blend:", m_blend);
-    root->addLayout(props);
+    edit->addLayout(props);
 
-    // Shape controls.
+    // Layer mask shape controls.
+    edit->addWidget(new QLabel("<b>Layer Mask</b>"));
     auto *shape = new QFormLayout;
     m_invert = new QCheckBox("Invert mask");
     shape->addRow(m_invert);
@@ -84,29 +103,60 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     shape->addRow(m_brushSizeLabel, m_brushSize);
     m_autoMask = new QCheckBox("Auto Mask (stop at edges)");
     shape->addRow(m_autoMask);
-    root->addLayout(shape);
+    edit->addLayout(shape);
 
-    // Tone/colour sliders.
-    root->addWidget(new QLabel("<b>Local adjustments</b>"));
-    auto *form = new QFormLayout;
-    auto mk = [&](const QString &label) {
+    // Tone/colour sliders — the same set as the main Adjustments dock.
+    edit->addWidget(new QLabel("<b>Tone</b>"));
+    auto *toneForm = new QFormLayout;
+    auto mk = [&](QFormLayout *form, const QString &label, int lo = -100, int hi = 100) {
         auto *s = new QSlider(Qt::Horizontal);
-        s->setRange(-100, 100);
+        s->setRange(lo, hi);
         form->addRow(label + ":", s);
         connect(s, &QSlider::valueChanged, this, [this] { emitAdjust(); });
         return s;
     };
-    m_brightness = mk("Brightness");
-    m_contrast = mk("Contrast");
-    m_highlights = mk("Highlights");
-    m_shadows = mk("Shadows");
-    m_saturation = mk("Saturation");
-    m_vibrance = mk("Vibrance");
-    m_temperature = mk("Temperature");
-    m_tint = mk("Tint");
-    root->addLayout(form);
-    root->addStretch(1);
+    m_brightness = mk(toneForm, "Brightness");
+    m_contrast = mk(toneForm, "Contrast");
+    m_highlights = mk(toneForm, "Highlights");
+    m_shadows = mk(toneForm, "Shadows");
+    edit->addLayout(toneForm);
 
+    edit->addWidget(new QLabel("<b>Colour</b>"));
+    auto *colForm = new QFormLayout;
+    m_saturation = mk(colForm, "Saturation");
+    m_vibrance = mk(colForm, "Vibrance");
+    m_temperature = mk(colForm, "Temperature");
+    m_tint = mk(colForm, "Tint (green/magenta)");
+    edit->addLayout(colForm);
+
+    edit->addWidget(new QLabel("<b>Tone Curve</b>"));
+    m_curve = new CurveEditor;
+    edit->addWidget(m_curve);
+    connect(m_curve, &CurveEditor::curveChanged, this,
+            [this](const QVector<QPointF> &) { emitAdjust(); });
+
+    edit->addWidget(new QLabel("<b>Levels</b>"));
+    m_levels = new LevelsPanel;
+    edit->addWidget(m_levels);
+    connect(m_levels, &LevelsPanel::levelsChanged, this,
+            [this](const Levels &lv) {
+                m_curLevels = lv;
+                emitAdjust();
+            });
+
+    edit->addWidget(new QLabel("<b>Detail &amp; Effects</b>"));
+    auto *fxForm = new QFormLayout;
+    m_clarity = mk(fxForm, "Clarity");
+    m_sharpen = mk(fxForm, "Sharpen", 0, 100);
+    m_vignette = mk(fxForm, "Vignette");
+    edit->addLayout(fxForm);
+    edit->addStretch(1);
+
+    scroll->setWidget(editArea);
+    root->addWidget(scroll, 2);
+
+    connect(m_duplicate, &QPushButton::clicked, this,
+            [this] { emit duplicateMaskRequested(); });
     connect(m_delete, &QPushButton::clicked, this,
             [this] { emit deleteMaskRequested(); });
     connect(m_maskList, &QListWidget::currentRowChanged, this, [this](int i) {
@@ -191,10 +241,11 @@ void MaskPanel::loadActive() {
     const bool has = m_active >= 0 && m_active < m_masks.size();
     m_syncing = true;
     for (QWidget *w : std::initializer_list<QWidget *>{
-             m_name, m_opacity, m_blend, m_invert, m_feather, m_hardness,
-             m_brushSize, m_autoMask, m_delete, m_brightness, m_contrast,
-             m_highlights, m_shadows, m_saturation, m_vibrance, m_temperature,
-             m_tint})
+             m_name, m_opacity, m_blend, m_duplicate, m_invert, m_feather,
+             m_hardness, m_brushSize, m_autoMask, m_delete, m_brightness,
+             m_contrast, m_highlights, m_shadows, m_saturation, m_vibrance,
+             m_temperature, m_tint, m_curve, m_levels, m_clarity, m_sharpen,
+             m_vignette})
         w->setEnabled(has);
     if (has) {
         const Mask &m = m_masks[m_active];
@@ -226,6 +277,15 @@ void MaskPanel::loadActive() {
         m_vibrance->setValue(a.vibrance);
         m_temperature->setValue(a.temperature);
         m_tint->setValue(a.tint);
+        m_curve->setCurve(a.curve);
+        m_curLevels = a.levels;
+        m_levels->setLevels(a.levels);
+        m_clarity->setValue(a.clarity);
+        m_sharpen->setValue(a.sharpen);
+        m_vignette->setValue(a.vignette);
+    } else {
+        m_curve->resetCurve();
+        m_levels->clear();
     }
     m_syncing = false;
 }
@@ -241,6 +301,18 @@ void MaskPanel::emitAdjust() {
     a.vibrance = m_vibrance->value();
     a.temperature = m_temperature->value();
     a.tint = m_tint->value();
+    a.clarity = m_clarity->value();
+    a.sharpen = m_sharpen->value();
+    a.vignette = m_vignette->value();
+    a.curve = m_curve->curve();
+    a.levels = m_curLevels;
+    // White balance has no per-layer UI yet; preserve whatever the active
+    // layer already has (e.g. loaded from an older sidecar).
+    if (m_active >= 0 && m_active < m_masks.size()) {
+        a.wbR = m_masks[m_active].adj.wbR;
+        a.wbG = m_masks[m_active].adj.wbG;
+        a.wbB = m_masks[m_active].adj.wbB;
+    }
     emit maskAdjustChanged(a);
 }
 

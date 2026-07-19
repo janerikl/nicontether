@@ -66,37 +66,52 @@ void buildLevelsLut(const LevelsChannel &c, int lut[256]) {
     }
 }
 
-// Precomputed per-mask local tone/colour transform (temp/tint as WB-style
-// gains, then contrast/brightness, highlights/shadows, saturation/vibrance).
-struct LocalParams {
-    double contrastFactor;
-    double brightness;
+// Full tone/colour transform — shared by the global pass (applyAdjustments)
+// and per-layer content (applyLayerContent): WB gains, curve, levels,
+// contrast/brightness, highlights/shadows, saturation/vibrance.
+struct ToneParams {
+    double contrastFactor, brightness;
     double wbR, wbG, wbB;
     double hiAmt, shAmt, satScale, vibAmt;
+    int curveLut[256];
+    int lvlRgb[256], lvlR[256], lvlG[256], lvlB[256];
 };
 
-LocalParams makeLocalParams(const MaskAdjust &a) {
-    LocalParams p;
-    const double c = a.contrast;
+ToneParams makeToneParams(int contrast, int brightness, int highlights,
+                          int shadows, int saturation, int vibrance,
+                          int temperature, int tint, double wbR, double wbG,
+                          double wbB, const QVector<QPointF> &curve,
+                          const Levels &levels) {
+    ToneParams p;
+    const double c = contrast;
     p.contrastFactor = (259.0 * (c + 255.0)) / (255.0 * (259.0 - c));
-    p.brightness = a.brightness;
-    const double tempF = a.temperature / 100.0;
-    const double tintF = a.tint / 100.0;
-    p.wbR = 1.0 + 0.4 * tempF;
-    p.wbG = 1.0 + 0.4 * tintF;
-    p.wbB = 1.0 - 0.4 * tempF;
-    p.hiAmt = a.highlights / 100.0;
-    p.shAmt = a.shadows / 100.0;
-    p.satScale = 1.0 + a.saturation / 100.0;
-    p.vibAmt = a.vibrance / 100.0;
+    p.brightness = brightness;
+    const double tempF = temperature / 100.0;
+    const double tintF = tint / 100.0;
+    p.wbR = wbR * (1.0 + 0.4 * tempF);
+    p.wbG = wbG * (1.0 + 0.4 * tintF);
+    p.wbB = wbB * (1.0 - 0.4 * tempF);
+    p.hiAmt = highlights / 100.0;
+    p.shAmt = shadows / 100.0;
+    p.satScale = 1.0 + saturation / 100.0;
+    p.vibAmt = vibrance / 100.0;
+    buildCurveLut(curve, p.curveLut);
+    buildLevelsLut(levels.rgb, p.lvlRgb);
+    buildLevelsLut(levels.r, p.lvlR);
+    buildLevelsLut(levels.g, p.lvlG);
+    buildLevelsLut(levels.b, p.lvlB);
     return p;
 }
 
-// Apply one mask's local tone/colour to a pixel (mirrors the global per-pixel
-// loop minus WB gains / curve / levels, which are global-only).
-QRgb applyLocal(QRgb px, const LocalParams &p) {
+QRgb applyTone(QRgb px, const ToneParams &p) {
     double r = qRed(px), g = qGreen(px), b = qBlue(px);
     r *= p.wbR; g *= p.wbG; b *= p.wbB;
+    r = p.curveLut[clamp8(int(r))];
+    g = p.curveLut[clamp8(int(g))];
+    b = p.curveLut[clamp8(int(b))];
+    r = p.lvlR[p.lvlRgb[clamp8(int(r))]];
+    g = p.lvlG[p.lvlRgb[clamp8(int(g))]];
+    b = p.lvlB[p.lvlRgb[clamp8(int(b))]];
     r = p.contrastFactor * (r - 128) + 128 + p.brightness;
     g = p.contrastFactor * (g - 128) + 128 + p.brightness;
     b = p.contrastFactor * (b - 128) + 128 + p.brightness;
@@ -238,8 +253,11 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
     }
 }
 
-// Apply all local masks in order, blending each mask's local tone/colour into
-// the (already globally-adjusted) image by its per-pixel weight.
+QImage applyLayerContent(const QImage &src, const MaskAdjust &a); // fwd decl
+
+// Apply all layers in stack order, blending each layer's full tone/colour/
+// detail content into the composite-so-far by its per-pixel mask weight,
+// opacity, and blend mode.
 void applyMasks(QImage &img, const QVector<Mask> &masks) {
     const int w = img.width(), h = img.height();
     if (w == 0 || h == 0) return;
@@ -249,11 +267,12 @@ void applyMasks(QImage &img, const QVector<Mask> &masks) {
         if (!m.visible || m.opacity <= 0.0) continue;
         if (m.adj.isZero()) continue;
         if (m.type == MaskType::Brush && m.stroke.isEmpty()) continue;
-        const LocalParams lp = makeLocalParams(m.adj);
+        const QImage loc = applyLayerContent(img, m.adj);
         if (m.type == MaskType::Brush) rasterizeBrush(m, cov, w, h, &img);
         const double op = clampd(m.opacity, 0.0, 1.0);
         for (int y = 0; y < h; ++y) {
             QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+            const QRgb *locLine = reinterpret_cast<const QRgb *>(loc.scanLine(y));
             for (int x = 0; x < w; ++x) {
                 double wgt;
                 if (m.type == MaskType::None)
@@ -267,10 +286,10 @@ void applyMasks(QImage &img, const QVector<Mask> &masks) {
                 wgt *= op;
                 if (wgt <= 0.0) continue;
                 QRgb src = line[x];
-                QRgb loc = applyLocal(src, lp);
-                double br = blendChannel(m.blend, qRed(src), qRed(loc));
-                double bg = blendChannel(m.blend, qGreen(src), qGreen(loc));
-                double bb = blendChannel(m.blend, qBlue(src), qBlue(loc));
+                QRgb locPx = locLine[x];
+                double br = blendChannel(m.blend, qRed(src), qRed(locPx));
+                double bg = blendChannel(m.blend, qGreen(src), qGreen(locPx));
+                double bb = blendChannel(m.blend, qBlue(src), qBlue(locPx));
                 double inv = 1.0 - wgt;
                 line[x] = qRgba(
                     clamp8(int(std::lround(qRed(src) * inv + br * wgt))),
@@ -330,6 +349,89 @@ QImage boxBlur(const QImage &src, int radius) {
         }
     }
     return dst;
+}
+
+// Midtone local-contrast boost (large-radius blur, mixed in by midtone weight).
+void applyClarity(QImage &img, int clarity) {
+    if (clarity == 0) return;
+    const int w = img.width(), h = img.height();
+    int radius = std::max(2, std::min(w, h) / 60);
+    QImage blur = boxBlur(img, radius);
+    double amt = clarity / 100.0;
+    for (int y = 0; y < h; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        const QRgb *bl = reinterpret_cast<const QRgb *>(blur.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            QRgb p = line[x], q = bl[x];
+            double lz = (0.299 * qRed(p) + 0.587 * qGreen(p) + 0.114 * qBlue(p)) / 255.0;
+            double mid = 1.0 - std::abs(lz - 0.5) * 2.0; // midtone weight
+            double k = amt * mid;
+            int r = clamp8(int(qRed(p) + k * (qRed(p) - qRed(q))));
+            int g = clamp8(int(qGreen(p) + k * (qGreen(p) - qGreen(q))));
+            int b = clamp8(int(qBlue(p) + k * (qBlue(p) - qBlue(q))));
+            line[x] = qRgba(r, g, b, qAlpha(p));
+        }
+    }
+}
+
+// Small-radius unsharp mask.
+void applySharpen(QImage &img, int sharpen) {
+    if (sharpen <= 0) return;
+    const int w = img.width(), h = img.height();
+    QImage blur = boxBlur(img, 1);
+    double amt = sharpen / 100.0 * 1.5;
+    for (int y = 0; y < h; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        const QRgb *bl = reinterpret_cast<const QRgb *>(blur.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            QRgb p = line[x], q = bl[x];
+            int r = clamp8(int(qRed(p) + amt * (qRed(p) - qRed(q))));
+            int g = clamp8(int(qGreen(p) + amt * (qGreen(p) - qGreen(q))));
+            int b = clamp8(int(qBlue(p) + amt * (qBlue(p) - qBlue(q))));
+            line[x] = qRgba(r, g, b, qAlpha(p));
+        }
+    }
+}
+
+void applyVignette(QImage &img, int vignette) {
+    if (vignette == 0) return;
+    const int w = img.width(), h = img.height();
+    double amt = vignette / 100.0;
+    double cx = w / 2.0, cy = h / 2.0;
+    double maxd = std::sqrt(cx * cx + cy * cy);
+    for (int y = 0; y < h; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            double dx = x - cx, dy = y - cy;
+            double d = std::sqrt(dx * dx + dy * dy) / maxd; // 0..1
+            double f = 1.0 + amt * d * d; // amt<0 darkens corners
+            QRgb p = line[x];
+            line[x] = qRgba(clamp8(int(qRed(p) * f)),
+                            clamp8(int(qGreen(p) * f)),
+                            clamp8(int(qBlue(p) * f)), qAlpha(p));
+        }
+    }
+}
+
+// Full per-layer content: the same tone/colour/detail pipeline as the global
+// pass, applied to `src` in isolation. Used both for the base's global fields
+// (via applyAdjustments) and for each additional layer's MaskAdjust — layers
+// are just as capable as the base, minus geometry (which stays global).
+QImage applyLayerContent(const QImage &src, const MaskAdjust &a) {
+    QImage img = src.convertToFormat(QImage::Format_ARGB32);
+    const int w = img.width(), h = img.height();
+    ToneParams tp = makeToneParams(a.contrast, a.brightness, a.highlights,
+                                   a.shadows, a.saturation, a.vibrance,
+                                   a.temperature, a.tint, a.wbR, a.wbG, a.wbB,
+                                   a.curve, a.levels);
+    for (int y = 0; y < h; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        for (int x = 0; x < w; ++x) line[x] = applyTone(line[x], tp);
+    }
+    applyClarity(img, a.clarity);
+    applySharpen(img, a.sharpen);
+    applyVignette(img, a.vignette);
+    return img;
 }
 
 } // namespace
@@ -422,139 +524,24 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj) {
     img = img.convertToFormat(QImage::Format_ARGB32);
     const int w = img.width(), h = img.height();
 
-    // --- Per-pixel: white balance, curve, contrast, brightness, highlights/
-    //     shadows, saturation/vibrance, temperature/tint ---
-    const double c = adj.contrast;
-    const double contrastFactor = (259.0 * (c + 255.0)) / (255.0 * (259.0 - c));
-    int curveLut[256];
-    buildCurveLut(adj.curve, curveLut);
-
-    // Levels LUTs: composite (all channels) then per-channel.
-    int lvlRgb[256], lvlR[256], lvlG[256], lvlB[256];
-    buildLevelsLut(adj.levels.rgb, lvlRgb);
-    buildLevelsLut(adj.levels.r, lvlR);
-    buildLevelsLut(adj.levels.g, lvlG);
-    buildLevelsLut(adj.levels.b, lvlB);
-
-    const double tempF = adj.temperature / 100.0; // -1..1
-    const double tintF = adj.tint / 100.0;
-    const double wbR = adj.wbR * (1.0 + 0.4 * tempF);
-    const double wbG = adj.wbG * (1.0 + 0.4 * tintF);
-    const double wbB = adj.wbB * (1.0 - 0.4 * tempF);
-
-    const double hiAmt = adj.highlights / 100.0;
-    const double shAmt = adj.shadows / 100.0;
-    const double satScale = 1.0 + adj.saturation / 100.0;
-    const double vibAmt = adj.vibrance / 100.0;
-
+    // --- Per-pixel: white balance, curve, levels, contrast, brightness,
+    //     highlights/shadows, saturation/vibrance ---
+    ToneParams tp = makeToneParams(adj.contrast, adj.brightness, adj.highlights,
+                                   adj.shadows, adj.saturation, adj.vibrance,
+                                   adj.temperature, adj.tint, adj.wbR, adj.wbG,
+                                   adj.wbB, adj.curve, adj.levels);
     for (int y = 0; y < h; ++y) {
         QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
-        for (int x = 0; x < w; ++x) {
-            QRgb px = line[x];
-            double r = qRed(px), g = qGreen(px), b = qBlue(px);
-
-            // White balance (eyedropper gains + temp/tint).
-            r *= wbR; g *= wbG; b *= wbB;
-
-            // Curve, then Levels (composite then per-channel), then contrast.
-            r = curveLut[clamp8(int(r))];
-            g = curveLut[clamp8(int(g))];
-            b = curveLut[clamp8(int(b))];
-            r = lvlR[lvlRgb[clamp8(int(r))]];
-            g = lvlG[lvlRgb[clamp8(int(g))]];
-            b = lvlB[lvlRgb[clamp8(int(b))]];
-            r = contrastFactor * (r - 128) + 128 + adj.brightness;
-            g = contrastFactor * (g - 128) + 128 + adj.brightness;
-            b = contrastFactor * (b - 128) + 128 + adj.brightness;
-
-            // Highlights / shadows, weighted by luma.
-            double luma = 0.299 * r + 0.587 * g + 0.114 * b;
-            double ln = clampd(luma / 255.0, 0.0, 1.0);
-            if (hiAmt != 0.0) {
-                double wgt = ln * ln;                 // stronger in highlights
-                double d = hiAmt * 60.0 * wgt;
-                r += d; g += d; b += d;
-            }
-            if (shAmt != 0.0) {
-                double wgt = (1.0 - ln) * (1.0 - ln); // stronger in shadows
-                double d = shAmt * 60.0 * wgt;
-                r += d; g += d; b += d;
-            }
-
-            // Saturation + vibrance.
-            luma = 0.299 * r + 0.587 * g + 0.114 * b;
-            double mx = std::max({r, g, b}), mn = std::min({r, g, b});
-            double sat = mx > 0 ? (mx - mn) / mx : 0.0;
-            double scale = satScale + vibAmt * (1.0 - sat);
-            r = luma + (r - luma) * scale;
-            g = luma + (g - luma) * scale;
-            b = luma + (b - luma) * scale;
-
-            line[x] = qRgba(clamp8(int(std::lround(r))),
-                            clamp8(int(std::lround(g))),
-                            clamp8(int(std::lround(b))), qAlpha(px));
-        }
+        for (int x = 0; x < w; ++x) line[x] = applyTone(line[x], tp);
     }
 
-    // --- Local adjustment masks (blend per-mask tone/colour by weight) ---
+    // --- Additional layers (blend per-layer full content by weight) ---
     if (!adj.masks.isEmpty()) applyMasks(img, adj.masks);
 
-    // --- Clarity (midtone local contrast) ---
-    if (adj.clarity != 0) {
-        int radius = std::max(2, std::min(w, h) / 60);
-        QImage blur = boxBlur(img, radius);
-        double amt = adj.clarity / 100.0;
-        for (int y = 0; y < h; ++y) {
-            QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
-            const QRgb *bl = reinterpret_cast<const QRgb *>(blur.scanLine(y));
-            for (int x = 0; x < w; ++x) {
-                QRgb p = line[x], q = bl[x];
-                double lz = (0.299 * qRed(p) + 0.587 * qGreen(p) + 0.114 * qBlue(p)) / 255.0;
-                double mid = 1.0 - std::abs(lz - 0.5) * 2.0; // midtone weight
-                double k = amt * mid;
-                int r = clamp8(int(qRed(p) + k * (qRed(p) - qRed(q))));
-                int g = clamp8(int(qGreen(p) + k * (qGreen(p) - qGreen(q))));
-                int b = clamp8(int(qBlue(p) + k * (qBlue(p) - qBlue(q))));
-                line[x] = qRgba(r, g, b, qAlpha(p));
-            }
-        }
-    }
-
-    // --- Sharpen (small-radius unsharp mask) ---
-    if (adj.sharpen > 0) {
-        QImage blur = boxBlur(img, 1);
-        double amt = adj.sharpen / 100.0 * 1.5;
-        for (int y = 0; y < h; ++y) {
-            QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
-            const QRgb *bl = reinterpret_cast<const QRgb *>(blur.scanLine(y));
-            for (int x = 0; x < w; ++x) {
-                QRgb p = line[x], q = bl[x];
-                int r = clamp8(int(qRed(p) + amt * (qRed(p) - qRed(q))));
-                int g = clamp8(int(qGreen(p) + amt * (qGreen(p) - qGreen(q))));
-                int b = clamp8(int(qBlue(p) + amt * (qBlue(p) - qBlue(q))));
-                line[x] = qRgba(r, g, b, qAlpha(p));
-            }
-        }
-    }
-
-    // --- Vignette ---
-    if (adj.vignette != 0) {
-        double amt = adj.vignette / 100.0;
-        double cx = w / 2.0, cy = h / 2.0;
-        double maxd = std::sqrt(cx * cx + cy * cy);
-        for (int y = 0; y < h; ++y) {
-            QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
-            for (int x = 0; x < w; ++x) {
-                double dx = x - cx, dy = y - cy;
-                double d = std::sqrt(dx * dx + dy * dy) / maxd; // 0..1
-                double f = 1.0 + amt * d * d; // amt<0 darkens corners
-                QRgb p = line[x];
-                line[x] = qRgba(clamp8(int(qRed(p) * f)),
-                                clamp8(int(qGreen(p) * f)),
-                                clamp8(int(qBlue(p) * f)), qAlpha(p));
-            }
-        }
-    }
+    // --- Clarity / sharpen / vignette (base layer only; layers have their own) ---
+    applyClarity(img, adj.clarity);
+    applySharpen(img, adj.sharpen);
+    applyVignette(img, adj.vignette);
 
     return img;
 }
