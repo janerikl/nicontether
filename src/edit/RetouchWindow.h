@@ -28,6 +28,10 @@ class PreferencesDialog;
 class LevelsPanel;
 class MaskPanel;
 class LayersPanel;
+class TonePanel;
+class ColorPanel;
+class ToneCurvePanel;
+class DetailEffectsPanel;
 
 // Separate top-level window for retouching photos. Own filmstrip selector plus
 // one tab per open photo, an adjustments dock, and JPEG/PNG export.
@@ -152,11 +156,26 @@ private:
     ColorSwatchWidget *m_colorSwatch = nullptr; // left icon bar: fg/bg color swatch
     QDockWidget *m_layersDock = nullptr;
     LayersPanel *m_layersPanel = nullptr;
+    QDockWidget *m_tonePanelDock = nullptr;
+    TonePanel *m_tonePanel = nullptr;
+    QDockWidget *m_colorPanelDock = nullptr;
+    ColorPanel *m_colorPanel = nullptr;
+    QDockWidget *m_toneCurveDock = nullptr;
+    ToneCurvePanel *m_toneCurvePanel = nullptr;
+    QDockWidget *m_layerLevelsDock = nullptr;
+    LevelsPanel *m_layerLevelsPanel = nullptr; // per-layer Levels, distinct from the global m_levelsPanel
+    QDockWidget *m_detailEffectsDock = nullptr;
+    DetailEffectsPanel *m_detailEffectsPanel = nullptr;
     QDockWidget *m_maskDock = nullptr;
     MaskPanel *m_maskPanel = nullptr;
     void buildLayersDock();
+    void buildTonePanelDock();
+    void buildColorPanelDock();
+    void buildToneCurveDock();
+    void buildLayerLevelsDock();
+    void buildDetailEffectsDock();
     void buildMaskDock();
-    void refreshMaskPanel(); // refreshes both Layers and Masks panels
+    void refreshMaskPanel(); // refreshes Layers, Tone, Color, Tone Curve, Levels, Detail & Effects, and Masks panels
     // Local-mask subtool selected via the tool's Photoshop-style flyout; a plain
     // click on the mask tool creates a mask of this type.
     MaskType m_activeMaskSubtool = MaskType::Radial;

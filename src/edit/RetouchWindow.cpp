@@ -8,6 +8,10 @@
 #include "ui/LevelsPanel.h"
 #include "ui/MaskPanel.h"
 #include "ui/LayersPanel.h"
+#include "ui/TonePanel.h"
+#include "ui/ColorPanel.h"
+#include "ui/ToneCurvePanel.h"
+#include "ui/DetailEffectsPanel.h"
 #include "ui/ToolFlyout.h"
 #include "ui/TetherView.h"
 #include "ui/PreferencesDialog.h"
@@ -345,6 +349,11 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     buildHistoryDock();
     buildLevelsDock();
     buildLayersDock();
+    buildTonePanelDock();
+    buildColorPanelDock();
+    buildToneCurveDock();
+    buildLayerLevelsDock();
+    buildDetailEffectsDock();
     buildMaskDock();
     buildViewMenu();
 
@@ -458,6 +467,11 @@ void RetouchWindow::buildViewMenu() {
     if (m_historyDock) viewMenu->addAction(m_historyDock->toggleViewAction());
     if (m_levelsDock) viewMenu->addAction(m_levelsDock->toggleViewAction());
     if (m_layersDock) viewMenu->addAction(m_layersDock->toggleViewAction());
+    if (m_tonePanelDock) viewMenu->addAction(m_tonePanelDock->toggleViewAction());
+    if (m_colorPanelDock) viewMenu->addAction(m_colorPanelDock->toggleViewAction());
+    if (m_toneCurveDock) viewMenu->addAction(m_toneCurveDock->toggleViewAction());
+    if (m_layerLevelsDock) viewMenu->addAction(m_layerLevelsDock->toggleViewAction());
+    if (m_detailEffectsDock) viewMenu->addAction(m_detailEffectsDock->toggleViewAction());
     if (m_maskDock) viewMenu->addAction(m_maskDock->toggleViewAction());
 
     auto *filmstripAction = new QAction("Filmstrip", this);
@@ -485,7 +499,9 @@ void RetouchWindow::buildViewMenu() {
 // there instead). Used on first launch (no saved state) and by Reset Panels.
 void RetouchWindow::applyDefaultDockLayout() {
     for (QDockWidget *d : {m_levelsDock, m_adjustmentsDock, m_historyDock,
-                           m_layersDock, m_maskDock, m_controlsDock}) {
+                           m_layersDock, m_tonePanelDock, m_colorPanelDock,
+                           m_toneCurveDock, m_layerLevelsDock,
+                           m_detailEffectsDock, m_maskDock, m_controlsDock}) {
         if (d) {
             d->setFloating(false);
             addDockWidget(Qt::RightDockWidgetArea, d);
@@ -495,8 +511,10 @@ void RetouchWindow::applyDefaultDockLayout() {
         tabifyDockWidget(m_adjustmentsDock, m_historyDock);
     if (m_adjustmentsDock && m_layersDock)
         tabifyDockWidget(m_adjustmentsDock, m_layersDock);
-    if (m_layersDock && m_maskDock)
-        tabifyDockWidget(m_layersDock, m_maskDock);
+    for (QDockWidget *d : {m_tonePanelDock, m_colorPanelDock, m_toneCurveDock,
+                           m_layerLevelsDock, m_detailEffectsDock, m_maskDock}) {
+        if (m_layersDock && d) tabifyDockWidget(m_layersDock, d);
+    }
     if (m_levelsDock && m_adjustmentsDock)
         splitDockWidget(m_levelsDock, m_adjustmentsDock, Qt::Vertical);
     if (m_toolsBar)
@@ -507,6 +525,11 @@ void RetouchWindow::applyDefaultDockLayout() {
     if (m_historyDock)     m_historyDock->show();
     if (m_levelsDock)      m_levelsDock->show();
     if (m_layersDock)      m_layersDock->show();
+    if (m_tonePanelDock)     m_tonePanelDock->show();
+    if (m_colorPanelDock)    m_colorPanelDock->show();
+    if (m_toneCurveDock)     m_toneCurveDock->show();
+    if (m_layerLevelsDock)   m_layerLevelsDock->show();
+    if (m_detailEffectsDock) m_detailEffectsDock->show();
     if (m_maskDock)        m_maskDock->show();
 
     // Let mode/tool chrome have the final say on editing-dock/Controls/Tools
@@ -648,8 +671,11 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
             if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); }
             m_toolOptionsBar->setVisible(false); // layers/masks use their own docks
-            if (m_layersDock) { m_layersDock->show(); m_layersDock->raise(); }
-            if (m_maskDock) { m_maskDock->show(); m_maskDock->raise(); }
+            for (QDockWidget *d : {m_layersDock, m_tonePanelDock, m_colorPanelDock,
+                                   m_toneCurveDock, m_layerLevelsDock,
+                                   m_detailEffectsDock, m_maskDock}) {
+                if (d) { d->show(); d->raise(); }
+            }
         }
         // Layers/Masks panels stay visible when the K tool is toggled off —
         // they're persistent docks, not transient tool-options popups.
@@ -676,7 +702,11 @@ void RetouchWindow::buildToolPanel() {
                                         m_paintSize->value() / 100.0, false);
                 tab->setActiveMaskOpacity(m_paintOpacity->value() / 100.0);
             }
-            if (m_layersDock) { m_layersDock->show(); m_layersDock->raise(); }
+            for (QDockWidget *d : {m_layersDock, m_tonePanelDock, m_colorPanelDock,
+                                   m_toneCurveDock, m_layerLevelsDock,
+                                   m_detailEffectsDock}) {
+                if (d) { d->show(); d->raise(); }
+            }
             refreshMaskPanel();
         } else {
             m_toolOptionsBar->setVisible(false);
@@ -1068,11 +1098,6 @@ void RetouchWindow::buildLayersDock() {
         RetouchTab *tab = currentTab();
         if (tab) { tab->duplicateActiveMask(); refreshMaskPanel(); }
     });
-    connect(m_layersPanel, &LayersPanel::maskAdjustChanged, this,
-            [this](const MaskAdjust &a) {
-                RetouchTab *tab = currentTab();
-                if (tab) tab->setActiveMaskAdjust(a);
-            });
     connect(m_layersPanel, &LayersPanel::maskOpacityChanged, this,
             [this](double opacity) {
                 RetouchTab *tab = currentTab();
@@ -1097,6 +1122,129 @@ void RetouchWindow::buildLayersDock() {
             [this](int from, int to) {
                 RetouchTab *tab = currentTab();
                 if (tab) { tab->moveMask(from, to); refreshMaskPanel(); }
+            });
+}
+
+void RetouchWindow::buildTonePanelDock() {
+    auto *dock = new QDockWidget("Tone", this);
+    m_tonePanelDock = dock;
+    dock->setObjectName("tonePanelDock");
+    dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    m_tonePanel = new TonePanel;
+    dock->setWidget(m_tonePanel);
+    addDockWidget(Qt::RightDockWidgetArea, dock);
+    if (m_layersDock) tabifyDockWidget(m_layersDock, dock);
+    dock->hide(); // default visibility set by applyDefaultDockLayout/mode chrome
+
+    connect(m_tonePanel, &TonePanel::adjustChanged, this,
+            [this](int brightness, int contrast, int highlights, int shadows) {
+                RetouchTab *tab = currentTab();
+                if (!tab) return;
+                int idx = tab->activeMaskIndex();
+                if (idx < 0 || idx >= tab->masks().size()) return;
+                MaskAdjust a = tab->masks()[idx].adj;
+                a.brightness = brightness;
+                a.contrast = contrast;
+                a.highlights = highlights;
+                a.shadows = shadows;
+                tab->setActiveMaskAdjust(a);
+            });
+}
+
+void RetouchWindow::buildColorPanelDock() {
+    auto *dock = new QDockWidget("Color", this);
+    m_colorPanelDock = dock;
+    dock->setObjectName("colorPanelDock");
+    dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    m_colorPanel = new ColorPanel;
+    dock->setWidget(m_colorPanel);
+    addDockWidget(Qt::RightDockWidgetArea, dock);
+    if (m_layersDock) tabifyDockWidget(m_layersDock, dock);
+    dock->hide();
+
+    connect(m_colorPanel, &ColorPanel::adjustChanged, this,
+            [this](int saturation, int vibrance, int temperature, int tint) {
+                RetouchTab *tab = currentTab();
+                if (!tab) return;
+                int idx = tab->activeMaskIndex();
+                if (idx < 0 || idx >= tab->masks().size()) return;
+                MaskAdjust a = tab->masks()[idx].adj;
+                a.saturation = saturation;
+                a.vibrance = vibrance;
+                a.temperature = temperature;
+                a.tint = tint;
+                tab->setActiveMaskAdjust(a);
+            });
+}
+
+void RetouchWindow::buildToneCurveDock() {
+    auto *dock = new QDockWidget("Tone Curve", this);
+    m_toneCurveDock = dock;
+    dock->setObjectName("toneCurveDock");
+    dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    m_toneCurvePanel = new ToneCurvePanel;
+    dock->setWidget(m_toneCurvePanel);
+    addDockWidget(Qt::RightDockWidgetArea, dock);
+    if (m_layersDock) tabifyDockWidget(m_layersDock, dock);
+    dock->hide();
+
+    connect(m_toneCurvePanel, &ToneCurvePanel::curveChanged, this,
+            [this](const QVector<QPointF> &curve) {
+                RetouchTab *tab = currentTab();
+                if (!tab) return;
+                int idx = tab->activeMaskIndex();
+                if (idx < 0 || idx >= tab->masks().size()) return;
+                MaskAdjust a = tab->masks()[idx].adj;
+                a.curve = curve;
+                tab->setActiveMaskAdjust(a);
+            });
+}
+
+void RetouchWindow::buildLayerLevelsDock() {
+    auto *dock = new QDockWidget("Levels", this);
+    m_layerLevelsDock = dock;
+    dock->setObjectName("layerLevelsDock");
+    dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    m_layerLevelsPanel = new LevelsPanel;
+    dock->setWidget(m_layerLevelsPanel);
+    addDockWidget(Qt::RightDockWidgetArea, dock);
+    if (m_layersDock) tabifyDockWidget(m_layersDock, dock);
+    dock->hide();
+
+    connect(m_layerLevelsPanel, &LevelsPanel::levelsChanged, this,
+            [this](const Levels &lv) {
+                RetouchTab *tab = currentTab();
+                if (!tab) return;
+                int idx = tab->activeMaskIndex();
+                if (idx < 0 || idx >= tab->masks().size()) return;
+                MaskAdjust a = tab->masks()[idx].adj;
+                a.levels = lv;
+                tab->setActiveMaskAdjust(a);
+            });
+}
+
+void RetouchWindow::buildDetailEffectsDock() {
+    auto *dock = new QDockWidget("Detail & Effects", this);
+    m_detailEffectsDock = dock;
+    dock->setObjectName("detailEffectsDock");
+    dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    m_detailEffectsPanel = new DetailEffectsPanel;
+    dock->setWidget(m_detailEffectsPanel);
+    addDockWidget(Qt::RightDockWidgetArea, dock);
+    if (m_layersDock) tabifyDockWidget(m_layersDock, dock);
+    dock->hide();
+
+    connect(m_detailEffectsPanel, &DetailEffectsPanel::adjustChanged, this,
+            [this](int clarity, int sharpen, int vignette) {
+                RetouchTab *tab = currentTab();
+                if (!tab) return;
+                int idx = tab->activeMaskIndex();
+                if (idx < 0 || idx >= tab->masks().size()) return;
+                MaskAdjust a = tab->masks()[idx].adj;
+                a.clarity = clarity;
+                a.sharpen = sharpen;
+                a.vignette = vignette;
+                tab->setActiveMaskAdjust(a);
             });
 }
 
@@ -1129,9 +1277,29 @@ void RetouchWindow::refreshMaskPanel() {
         if (ready) m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex());
         else m_layersPanel->clear();
     }
+    const int idx = ready ? tab->activeMaskIndex() : -1;
+    const bool hasSelection = ready && idx >= 0 && idx < tab->masks().size();
+    if (hasSelection) {
+        const MaskAdjust &a = tab->masks()[idx].adj;
+        if (m_tonePanel) m_tonePanel->setAdjustments(a.brightness, a.contrast, a.highlights, a.shadows);
+        if (m_colorPanel) m_colorPanel->setAdjustments(a.saturation, a.vibrance, a.temperature, a.tint);
+        if (m_toneCurvePanel) m_toneCurvePanel->setCurve(a.curve);
+        if (m_layerLevelsPanel) {
+            m_layerLevelsPanel->setEnabled(true);
+            m_layerLevelsPanel->setLevels(a.levels);
+        }
+        if (m_detailEffectsPanel) m_detailEffectsPanel->setAdjustments(a.clarity, a.sharpen, a.vignette);
+    } else {
+        if (m_tonePanel) m_tonePanel->clear();
+        if (m_colorPanel) m_colorPanel->clear();
+        if (m_toneCurvePanel) m_toneCurvePanel->clear();
+        if (m_layerLevelsPanel) {
+            m_layerLevelsPanel->clear();
+            m_layerLevelsPanel->setEnabled(false);
+        }
+        if (m_detailEffectsPanel) m_detailEffectsPanel->clear();
+    }
     if (m_maskPanel) {
-        const int idx = ready ? tab->activeMaskIndex() : -1;
-        const bool hasSelection = ready && idx >= 0 && idx < tab->masks().size();
         if (hasSelection) m_maskPanel->setMask(tab->masks()[idx], true);
         else m_maskPanel->clear();
     }
@@ -1362,8 +1530,8 @@ void RetouchWindow::openPhoto(const QString &path) {
         if (tab == currentTab()) refreshMaskPanel();
     });
     connect(tab, &RetouchTab::maskPreviewUpdated, this, [this, tab] {
-        if (tab == currentTab() && m_layersPanel)
-            m_layersPanel->setLevelsPreviewImage(tab->maskPreviewImage());
+        if (tab == currentTab() && m_layerLevelsPanel)
+            m_layerLevelsPanel->setImage(tab->maskPreviewImage());
     });
     connect(tab, &RetouchTab::editStateChanged, this,
             [this, tab](bool dirty, bool hasEdits) {
@@ -1415,6 +1583,11 @@ void RetouchWindow::applyModeChrome(Mode mode) {
     if (m_adjustmentsDock) m_adjustmentsDock->setVisible(!tether);
     if (m_historyDock)     m_historyDock->setVisible(!tether);
     if (m_layersDock)      m_layersDock->setVisible(!tether);
+    if (m_tonePanelDock)     m_tonePanelDock->setVisible(!tether);
+    if (m_colorPanelDock)    m_colorPanelDock->setVisible(!tether);
+    if (m_toneCurveDock)     m_toneCurveDock->setVisible(!tether);
+    if (m_layerLevelsDock)   m_layerLevelsDock->setVisible(!tether);
+    if (m_detailEffectsDock) m_detailEffectsDock->setVisible(!tether);
     if (m_maskDock)        m_maskDock->setVisible(!tether);
 
     // Editing-only actions are meaningless while tethering.
@@ -1591,6 +1764,14 @@ void RetouchWindow::setDockEnabled(bool enabled) {
     if (!enabled && m_cropApply) m_cropApply->setEnabled(false);
     if (!enabled && m_levelsPanel) m_levelsPanel->clear();
     if (!enabled && m_layersPanel) m_layersPanel->clear();
+    if (!enabled && m_tonePanel) m_tonePanel->clear();
+    if (!enabled && m_colorPanel) m_colorPanel->clear();
+    if (!enabled && m_toneCurvePanel) m_toneCurvePanel->clear();
+    if (!enabled && m_layerLevelsPanel) {
+        m_layerLevelsPanel->clear();
+        m_layerLevelsPanel->setEnabled(false);
+    }
+    if (!enabled && m_detailEffectsPanel) m_detailEffectsPanel->clear();
     if (!enabled && m_maskPanel) m_maskPanel->clear();
 }
 
