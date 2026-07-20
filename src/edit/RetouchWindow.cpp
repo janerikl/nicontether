@@ -1299,7 +1299,18 @@ void RetouchWindow::buildLayersDock() {
             });
     connect(m_layersPanel, &LayersPanel::duplicateMaskRequested, this, [this] {
         RetouchTab *tab = currentTab();
-        if (tab) { tab->duplicateActiveMask(); refreshMaskPanel(); }
+        if (!tab) return;
+        if (tab->activeMaskIndex() == -1 && !tab->path().isEmpty()) {
+            // Duplicating the locked Background row: add a real, unlocked
+            // image layer sourced from the same photo, placed at the
+            // bottom of the stack (directly above Background).
+            int idx = tab->addImageLayer(tab->path());
+            tab->moveMask(idx, 0);
+            tab->selectMask(0);
+        } else {
+            tab->duplicateActiveMask();
+        }
+        refreshMaskPanel();
     });
     connect(m_layersPanel, &LayersPanel::maskAdjustChanged, this,
             [this](const MaskAdjust &a) {
@@ -1353,16 +1364,22 @@ void RetouchWindow::refreshMaskPanel() {
     RetouchTab *tab = currentTab();
     const bool ready = tab && tab->isReady();
     if (m_layersPanel) {
-        if (ready) m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex());
+        if (ready) m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex(),
+                                           !tab->path().isEmpty());
         else m_layersPanel->clear();
     }
+    const int idx = ready ? tab->activeMaskIndex() : -1;
+    const bool isImageLayer = ready && idx >= 0 && idx < tab->masks().size() &&
+                              tab->masks()[idx].isImageLayer();
     if (m_eraseToggle) {
-        const int idx = ready ? tab->activeMaskIndex() : -1;
-        const bool isImageLayer = ready && idx >= 0 && idx < tab->masks().size() &&
-                                  tab->masks()[idx].isImageLayer();
         m_eraseToggle->setEnabled(isImageLayer);
         if (!isImageLayer && m_eraseToggle->isChecked())
             m_eraseToggle->setChecked(false);
+    }
+    if (m_healToggle) {
+        m_healToggle->setEnabled(isImageLayer);
+        if (!isImageLayer && m_healToggle->isChecked())
+            m_healToggle->setChecked(false);
     }
 }
 
