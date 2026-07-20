@@ -52,6 +52,13 @@ LevelsPanel::LevelsPanel(QWidget *parent) : QWidget(parent) {
     auto *btns = new QHBoxLayout;
     m_auto = new QPushButton("Auto");
     m_reset = new QPushButton("Reset");
+    m_targetPick = new QPushButton(QString::fromUtf8("◉")); // ◉ target
+    m_targetPick->setCheckable(true);
+    m_targetPick->setFixedWidth(28);
+    m_targetPick->setToolTip(
+        "Targeted color adjustment: click a color on the image, then drag "
+        "left/right to adjust that color range's channel level");
+    btns->addWidget(m_targetPick);
     btns->addWidget(m_auto);
     btns->addWidget(m_reset);
     btns->addStretch(1);
@@ -68,6 +75,8 @@ LevelsPanel::LevelsPanel(QWidget *parent) : QWidget(parent) {
             [this](double) { onSpinChanged(); });
     connect(m_auto, &QPushButton::clicked, this, &LevelsPanel::onAuto);
     connect(m_reset, &QPushButton::clicked, this, &LevelsPanel::onReset);
+    connect(m_targetPick, &QPushButton::toggled, this,
+            &LevelsPanel::targetPickToggled);
 
     loadActiveIntoUi();
 }
@@ -83,7 +92,17 @@ LevelsChannel &LevelsPanel::activeChannel() {
 
 void LevelsPanel::setImage(const QImage &img) { m_hist->setImage(img); }
 
-void LevelsPanel::clear() { m_hist->clear(); }
+void LevelsPanel::clear() {
+    m_hist->clear();
+    setTargetPickChecked(false);
+}
+
+void LevelsPanel::setTargetPickChecked(bool on) {
+    QSignalBlocker block(m_targetPick);
+    m_targetPick->setChecked(on);
+}
+
+void LevelsPanel::setTargetPickVisible(bool on) { m_targetPick->setVisible(on); }
 
 void LevelsPanel::setLevels(const Levels &levels) {
     m_levels = levels;

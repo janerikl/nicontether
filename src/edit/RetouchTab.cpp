@@ -52,6 +52,12 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     connect(m_canvas, &ImageCanvas::cropSelected, this, &RetouchTab::onCanvasCrop);
     connect(m_canvas, &ImageCanvas::commitCropRequested, this, &RetouchTab::applyCrop);
     connect(m_canvas, &ImageCanvas::colorPicked, this, &RetouchTab::onColorPicked);
+    connect(m_canvas, &ImageCanvas::colorRangePickStarted, this,
+            &RetouchTab::onColorRangePickStarted);
+    connect(m_canvas, &ImageCanvas::colorRangeDragged, this,
+            &RetouchTab::onColorRangeDragged);
+    connect(m_canvas, &ImageCanvas::colorRangeReleased, this,
+            &RetouchTab::onColorRangeReleased);
     connect(m_canvas, &ImageCanvas::healAt, this, &RetouchTab::onHealAt);
     connect(m_canvas, &ImageCanvas::zoomChanged, this, &RetouchTab::zoomChanged);
     connect(m_canvas, &ImageCanvas::healBrushRadiusChanged, this, [this](int r) {
@@ -360,6 +366,58 @@ void RetouchTab::setCropAspect(double widthOverHeight) {
 void RetouchTab::setWbPickMode(bool on) {
     m_canvas->setPickMode(on);
     if (on) m_canvas->setFocus();
+}
+
+void RetouchTab::setColorRangePickMode(bool on) {
+    m_canvas->setColorRangePickMode(on);
+    if (on) m_canvas->setFocus();
+}
+
+// A targeted color-range pick started: reuse a close-enough existing entry
+// (same dominant channel) so re-picking the same color continues adjusting it,
+// otherwise append a fresh entry for this gesture.
+void RetouchTab::onColorRangePickStarted(const QColor &c) {
+    const int channel = (c.green() >= c.red() && c.green() >= c.blue())
+                            ? 1
+                            : (c.red() >= c.blue() ? 0 : 2);
+    m_crIndex = -1;
+    for (int i = 0; i < m_adj.colorRanges.size(); ++i) {
+        const ColorRangeAdjust &cr = m_adj.colorRanges[i];
+        if (cr.channel != channel) continue;
+        const int dr = cr.r - c.red(), dg = cr.g - c.green(), db = cr.b - c.blue();
+        if (dr * dr + dg * dg + db * db <= 30 * 30) {
+            m_crIndex = i;
+            break;
+        }
+    }
+    if (m_crIndex < 0) {
+        ColorRangeAdjust cr;
+        cr.r = c.red();
+        cr.g = c.green();
+        cr.b = c.blue();
+        cr.channel = channel;
+        m_adj.colorRanges.append(cr);
+        m_crIndex = m_adj.colorRanges.size() - 1;
+    }
+    m_crBaseAmount = m_adj.colorRanges[m_crIndex].amount;
+}
+
+void RetouchTab::onColorRangeDragged(int dxPixels) {
+    if (m_crIndex < 0 || m_crIndex >= m_adj.colorRanges.size()) return;
+    const int amount = qBound(-100, m_crBaseAmount + dxPixels / 3, 100);
+    if (m_adj.colorRanges[m_crIndex].amount == amount) return;
+    m_adj.colorRanges[m_crIndex].amount = amount;
+    m_canvas->setColorRangeAmount(amount);
+    retone();
+}
+
+void RetouchTab::onColorRangeReleased() {
+    if (m_crIndex < 0 || m_crIndex >= m_adj.colorRanges.size()) return;
+    const bool removed = m_adj.colorRanges[m_crIndex].amount == 0;
+    if (removed) m_adj.colorRanges.removeAt(m_crIndex);
+    m_crIndex = -1;
+    if (removed) retone();
+    markEdited();
 }
 
 void RetouchTab::setHealMode(bool on) {

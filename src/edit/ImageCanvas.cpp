@@ -96,6 +96,19 @@ void ImageCanvas::setPickMode(bool on) {
     setCursor(on ? Qt::CrossCursor : (m_cropMode ? Qt::CrossCursor : Qt::ArrowCursor));
 }
 
+void ImageCanvas::setColorRangePickMode(bool on) {
+    m_colorRangeMode = on;
+    if (!on) m_colorRangeDragging = false;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+void ImageCanvas::setColorRangeAmount(int amount) {
+    if (m_colorRangeAmount == amount) return;
+    m_colorRangeAmount = amount;
+    if (m_colorRangeDragging) update();
+}
+
 void ImageCanvas::setHealMode(bool on) {
     m_healMode = on;
     setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
@@ -421,6 +434,42 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         }
     }
 
+    // Targeted color-range drag feedback: a swatch of the picked color (border
+    // tinted by the channel being adjusted) plus a centered-zero amount bar.
+    if (m_colorRangeDragging) {
+        const int sw = 22;
+        QPoint tl = m_colorRangeStart + QPoint(14, -14 - sw);
+        tl.setX(std::clamp(tl.x(), 2, width() - sw - 2));
+        tl.setY(std::clamp(tl.y(), 2, height() - sw - 10));
+        const QRect swatch(tl, QSize(sw, sw));
+        static const QColor chColors[3] = {QColor(235, 80, 80),
+                                           QColor(80, 200, 80),
+                                           QColor(90, 130, 255)};
+        p.setPen(QPen(QColor(0, 0, 0, 180), 1));
+        p.setBrush(m_colorRangeColor);
+        p.drawRoundedRect(swatch.adjusted(-1, -1, 1, 1), 4, 4);
+        p.setPen(QPen(chColors[std::clamp(m_colorRangeChannel, 0, 2)], 2));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(swatch, 4, 4);
+        // Amount bar: fill grows from the centre, right for +, left for -.
+        const QRect bar(swatch.left() - 8, swatch.bottom() + 4, sw + 16, 4);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0, 0, 0, 140));
+        p.drawRoundedRect(bar, 2, 2);
+        const int cx = bar.center().x();
+        const int half = bar.width() / 2 - 1;
+        const int len = int(std::lround(half * std::abs(m_colorRangeAmount) / 100.0));
+        if (len > 0) {
+            QRect fill = m_colorRangeAmount > 0
+                             ? QRect(cx, bar.top(), len, bar.height())
+                             : QRect(cx - len, bar.top(), len, bar.height());
+            p.setBrush(QColor(255, 255, 255, 220));
+            p.drawRoundedRect(fill, 2, 2);
+        }
+        p.setPen(QPen(QColor(255, 255, 255, 180), 1));
+        p.drawLine(cx, bar.top() - 1, cx, bar.bottom() + 1);
+    }
+
     if (m_dragHighlight) {
         p.setPen(QPen(QColor(120, 200, 255), 3, Qt::DashLine));
         p.drawRect(rect().adjusted(2, 2, -2, -2));
@@ -446,6 +495,25 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
     if (m_pickMode && ev->button() == Qt::LeftButton) {
         QPoint ip = imagePointAt(ev->pos());
         if (ip.x() >= 0) emit colorPicked(m_img.pixelColor(ip.x(), ip.y()));
+        return;
+    }
+
+    // Targeted color-range tool: sample the pixel, then track a horizontal drag.
+    if (m_colorRangeMode && ev->button() == Qt::LeftButton) {
+        QPoint ip = imagePointAt(ev->pos());
+        if (ip.x() >= 0) {
+            const QColor c = m_img.pixelColor(ip.x(), ip.y());
+            m_colorRangeDragging = true;
+            m_colorRangeStart = ev->pos();
+            m_colorRangeColor = c;
+            m_colorRangeChannel = (c.green() >= c.red() && c.green() >= c.blue())
+                                      ? 1
+                                      : (c.red() >= c.blue() ? 0 : 2);
+            m_colorRangeAmount = 0;
+            setCursor(Qt::SizeHorCursor);
+            emit colorRangePickStarted(c);
+            update();
+        }
         return;
     }
 
@@ -515,6 +583,11 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
 }
 
 void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
+    if (m_colorRangeDragging) {
+        emit colorRangeDragged(ev->pos().x() - m_colorRangeStart.x());
+        update();
+        return;
+    }
     if (m_maskMode) {
         m_mousePos = ev->pos();
         if (m_maskDragging) {
@@ -634,6 +707,13 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
 }
 
 void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
+    if (m_colorRangeDragging && ev->button() == Qt::LeftButton) {
+        m_colorRangeDragging = false;
+        setCursor(m_colorRangeMode ? Qt::CrossCursor : Qt::ArrowCursor);
+        emit colorRangeReleased();
+        update();
+        return;
+    }
     if (m_maskDragging && ev->button() == Qt::LeftButton) {
         m_maskDragging = false;
         emit maskEditFinished();

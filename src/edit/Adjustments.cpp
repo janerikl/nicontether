@@ -76,6 +76,24 @@ void buildLevelsLut(const LevelsChannel &c, std::vector<int> &lut) {
     }
 }
 
+inline double smoothstep01(double t) {
+    t = clampd(t, 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Targeted color-range tolerance: pixels farther than this (redmean colour
+// distance, 8-bit scale — see colorDist) from the picked target get no
+// adjustment; closer pixels fade in with smoothstep falloff.
+constexpr double kColorRangeTolerance = 60.0;
+
+// One precomputed targeted color-range entry: target in 8-bit scale (matching
+// the redmean distance units), delta in the 16-bit working range.
+struct ColorRangeParam {
+    double tr, tg, tb;
+    int channel;
+    double delta;
+};
+
 // Full tone/colour transform — shared by the global pass (applyAdjustments)
 // and per-layer content (applyLayerContent): WB gains, curve, levels,
 // contrast/brightness, highlights/shadows, saturation/vibrance.
@@ -85,13 +103,15 @@ struct ToneParams {
     double hiAmt, shAmt, satScale, vibAmt;
     std::vector<int> curveLut;
     std::vector<int> lvlRgb, lvlR, lvlG, lvlB;
+    std::vector<ColorRangeParam> colorRanges;
 };
 
 ToneParams makeToneParams(int contrast, int brightness, int highlights,
                           int shadows, int saturation, int vibrance,
                           int temperature, int tint, double wbR, double wbG,
                           double wbB, const QVector<QPointF> &curve,
-                          const Levels &levels) {
+                          const Levels &levels,
+                          const QVector<ColorRangeAdjust> &colorRanges = {}) {
     ToneParams p;
     const double c = contrast;
     // Classic Photoshop contrast formula: a dimensionless ratio, scale-
@@ -114,6 +134,11 @@ ToneParams makeToneParams(int contrast, int brightness, int highlights,
     buildLevelsLut(levels.r, p.lvlR);
     buildLevelsLut(levels.g, p.lvlG);
     buildLevelsLut(levels.b, p.lvlB);
+    for (const ColorRangeAdjust &cr : colorRanges) {
+        if (cr.amount == 0) continue;
+        p.colorRanges.push_back({double(cr.r), double(cr.g), double(cr.b),
+                                 cr.channel, cr.amount * 257.0});
+    }
     return p;
 }
 
@@ -126,6 +151,21 @@ QRgba64 applyTone(QRgba64 px, const ToneParams &p) {
     r = p.lvlR[p.lvlRgb[clamp16(int(r))]];
     g = p.lvlG[p.lvlRgb[clamp16(int(g))]];
     b = p.lvlB[p.lvlRgb[clamp16(int(b))]];
+    for (const ColorRangeParam &cr : p.colorRanges) {
+        // Redmean distance in 8-bit scale against the stored pick — same
+        // formula as colorDist below, on the post-levels pixel so the match
+        // tracks what the user sees.
+        const double pr = r / 257.0, pg = g / 257.0, pb = b / 257.0;
+        const double dr = pr - cr.tr, dg = pg - cr.tg, db = pb - cr.tb;
+        const double rmean = (pr + cr.tr) / 2.0;
+        const double d2 = (2.0 + rmean / 256.0) * dr * dr + 4.0 * dg * dg +
+                          (2.0 + (255.0 - rmean) / 256.0) * db * db;
+        if (d2 >= kColorRangeTolerance * kColorRangeTolerance) continue;
+        const double wgt =
+            1.0 - smoothstep01(std::sqrt(d2) / kColorRangeTolerance);
+        if (wgt <= 0.0) continue;
+        (cr.channel == 0 ? r : cr.channel == 1 ? g : b) += wgt * cr.delta;
+    }
     r = p.contrastFactor * (r - 32768.0) + 32768.0 + p.brightness;
     g = p.contrastFactor * (g - 32768.0) + 32768.0 + p.brightness;
     b = p.contrastFactor * (b - 32768.0) + 32768.0 + p.brightness;
@@ -148,11 +188,6 @@ QRgba64 applyTone(QRgba64 px, const ToneParams &p) {
     b = luma + (b - luma) * scale;
     return qRgba64(clamp16(int(std::lround(r))), clamp16(int(std::lround(g))),
                    clamp16(int(std::lround(b))), px.alpha());
-}
-
-inline double smoothstep01(double t) {
-    t = clampd(t, 0.0, 1.0);
-    return t * t * (3.0 - 2.0 * t);
 }
 
 // Blend one 0..255 channel of the layer's local result ("src") with the
@@ -685,7 +720,8 @@ bool hasToneEdits(const Adjustments &adj) {
            adj.denoise || adj.clarity || adj.sharpen || adj.vignette ||
            std::abs(adj.wbR - 1.0) > 1e-4 || std::abs(adj.wbG - 1.0) > 1e-4 ||
            std::abs(adj.wbB - 1.0) > 1e-4 || adj.hasCurve() ||
-           !adj.levels.isIdentity() || hasMaskEdits(adj);
+           !adj.levels.isIdentity() || !adj.colorRanges.isEmpty() ||
+           hasMaskEdits(adj);
 }
 
 QImage applyAdjustments(const QImage &base, const Adjustments &adj,
@@ -714,7 +750,8 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
     ToneParams tp = makeToneParams(adj.contrast, adj.brightness, adj.highlights,
                                    adj.shadows, adj.saturation, adj.vibrance,
                                    adj.temperature, adj.tint, adj.wbR, adj.wbG,
-                                   adj.wbB, adj.curve, adj.levels);
+                                   adj.wbB, adj.curve, adj.levels,
+                                   adj.colorRanges);
     for (int y = 0; y < h; ++y) {
         QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
         for (int x = 0; x < w; ++x) line[x] = applyTone(line[x], tp);
@@ -751,6 +788,7 @@ QString historyStepLabel(const Adjustments &prev, const Adjustments &curr) {
     if (curr.vignette != prev.vignette)       return QStringLiteral("Vignette");
     if (curr.curve != prev.curve)             return QStringLiteral("Curve");
     if (curr.levels != prev.levels)           return QStringLiteral("Levels");
+    if (curr.colorRanges != prev.colorRanges) return QStringLiteral("Color Range");
     if (curr.masks != prev.masks)             return QStringLiteral("Layer");
     if (curr.heals != prev.heals)             return QStringLiteral("Spot Heal");
     if (curr.rotationQuadrants != prev.rotationQuadrants)

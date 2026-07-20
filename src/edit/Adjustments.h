@@ -52,6 +52,23 @@ struct Levels {
     bool operator!=(const Levels &o) const { return !(*this == o); }
 };
 
+// One targeted color-range adjustment (Levels panel eyedropper tool): the
+// user clicks a spot on the image to sample a target color, then drags
+// horizontally; `amount` shifts the level of the sampled color's dominant
+// channel for all pixels colour-similar to the target (fixed tolerance,
+// smooth falloff — see applyTone in Adjustments.cpp).
+struct ColorRangeAdjust {
+    int r = 0, g = 0, b = 0;   // sampled target color, 0-255
+    int channel = 0;           // 0=R, 1=G, 2=B — dominant channel of the pick
+    int amount = 0;            // -100..100, drag-accumulated delta
+
+    bool operator==(const ColorRangeAdjust &o) const {
+        return r == o.r && g == o.g && b == o.b && channel == o.channel &&
+               amount == o.amount;
+    }
+    bool operator!=(const ColorRangeAdjust &o) const { return !(*this == o); }
+};
+
 // The subset of tone/colour adjustments a local mask can apply. These blend
 // cleanly per-pixel (weighted by the mask), unlike clarity/sharpen/vignette
 // (neighbourhood/position dependent) or curve/levels.
@@ -257,6 +274,10 @@ struct Adjustments {
     // Photoshop-style Levels (composite + per-channel). Applied after the curve.
     Levels levels;
 
+    // Targeted color-range adjustments (one per completed pick+drag gesture).
+    // Applied right after the Levels step.
+    QVector<ColorRangeAdjust> colorRanges;
+
     // Adjustment layer stack, composited over the base (global) tone pass in
     // order — the "Base" layer is the global fields above; each entry here is
     // an additional layer with its own tone/colour, mask, opacity and blend.
@@ -282,6 +303,7 @@ struct Adjustments {
                denoise == o.denoise && clarity == o.clarity &&
                sharpen == o.sharpen && vignette == o.vignette &&
                curve == o.curve && levels == o.levels &&
+               colorRanges == o.colorRanges &&
                masks == o.masks && heals == o.heals &&
                rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
                flipV == o.flipV && cropRect == o.cropRect;

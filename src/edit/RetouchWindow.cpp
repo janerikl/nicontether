@@ -596,7 +596,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
-            if (tab) { tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
+            if (tab) { tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); }
+            if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(0);
             m_toolOptionsBar->setVisible(true);
         } else {
@@ -612,7 +613,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
+            if (tab) { tab->setZoomMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); }
+            if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(1);
             m_toolOptionsBar->setVisible(true);
         } else {
@@ -631,7 +633,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); }
+            if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(2);
             m_toolOptionsBar->setVisible(true);
         } else {
@@ -650,7 +653,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); }
+            if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsBar->setVisible(false); // layers/masks use their own docks
             if (m_layersDock) { m_layersDock->show(); m_layersDock->raise(); }
         }
@@ -669,7 +673,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); }
+            if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(3);
             m_toolOptionsBar->setVisible(true);
             if (tab && tab->isReady()) {
@@ -888,7 +893,8 @@ void RetouchWindow::buildDock() {
             if (m_toolZoom) { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
             if (m_cropToggle) { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
             if (m_healToggle) { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setColorRangePickMode(false); }
+            if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
         }
         if (tab) tab->setWbPickMode(on);
     });
@@ -1017,6 +1023,23 @@ void RetouchWindow::buildLevelsDock() {
                 Adjustments a = tab->adjustments();
                 a.levels = lv;
                 tab->setAdjustments(a);
+            });
+    // Targeted color adjustment: mutually exclusive with every other canvas
+    // tool, same pattern as the tool-bar toggles.
+    connect(m_levelsPanel, &LevelsPanel::targetPickToggled, this,
+            [this](bool on) {
+                RetouchTab *tab = currentTab();
+                if (on) {
+                    if (m_toolZoom) { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
+                    if (m_cropToggle) { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
+                    if (m_healToggle) { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
+                    if (m_wbPick) { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
+                    if (m_maskToggle) { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+                    if (m_brushToggle) { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+                    if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
+                    if (m_toolOptionsBar) m_toolOptionsBar->setVisible(false);
+                }
+                if (tab && tab->isReady()) tab->setColorRangePickMode(on);
             });
 }
 
@@ -1445,6 +1468,8 @@ void RetouchWindow::deselectAllTools() {
         m_maskToggle->setChecked(false);
     }
     if (tab) tab->setMaskMode(false);
+    if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
+    if (tab) tab->setColorRangePickMode(false);
     if (m_toolOptionsBar) m_toolOptionsBar->setVisible(false);
 }
 

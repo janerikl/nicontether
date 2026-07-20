@@ -52,6 +52,7 @@ public:
     void resetCrop();
 
     void setWbPickMode(bool on);
+    void setColorRangePickMode(bool on); // Levels targeted color adjustment
     void setHealMode(bool on);
     void setZoomMode(bool on); // zoom tool: marquee-drag + Ctrl+wheel zoom
     void setHealBrush(int radiusDisplayPx);
@@ -127,6 +128,9 @@ private slots:
     void onDecodeFinished();
     void onCanvasCrop(const QRect &r);
     void onColorPicked(const QColor &c);
+    void onColorRangePickStarted(const QColor &c);
+    void onColorRangeDragged(int dxPixels);
+    void onColorRangeReleased();
     void onHealAt(const QPoint &imgPoint);
     void onRenderDone(const QImage &result, const QImage &maskSnapshot);
     void onMaskRadial(const QPointF &centerNorm, double radiusNorm);
@@ -156,6 +160,8 @@ private:
     int m_activeMask = -1; // index into m_adj.masks, or -1
     bool m_dirty = false; // unsaved changes since last save/load
     int m_healRadiusDisplay = 20; // brush radius in display pixels
+    int m_crIndex = -1;      // colorRanges entry being dragged, or -1
+    int m_crBaseAmount = 0;  // that entry's amount at drag start
     QRect m_pendingCrop; // in oriented-image coords, awaiting Apply
 
     QImage m_geomImg;            // oriented (+crop unless cropMode), full res, untoned

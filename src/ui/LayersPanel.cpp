@@ -220,6 +220,9 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     m_toneCurvePanel = new ToneCurvePanel;
     m_toneCurveSectionDock = addSection("layerSectionToneCurve", "Tone Curve", m_toneCurvePanel);
     m_levelsPanel = new LevelsPanel;
+    // The targeted color-adjustment tool only edits the global (base) levels;
+    // hide its toggle in the per-layer panel.
+    m_levelsPanel->setTargetPickVisible(false);
     m_levelsSectionDock = addSection("layerSectionLevels", "Levels", m_levelsPanel);
     m_detailEffectsPanel = new DetailEffectsPanel;
     m_detailEffectsSectionDock = addSection("layerSectionDetailEffects", "Detail & Effects",

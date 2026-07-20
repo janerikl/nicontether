@@ -33,6 +33,11 @@ public:
     void setCropMode(bool on);
     void setCropAspect(double widthOverHeight); // 0 = freeform
     void setPickMode(bool on); // white-balance eyedropper
+    // Targeted color-range tool (Levels panel): click samples a target color,
+    // horizontal drag adjusts it. A swatch of the picked color plus an amount
+    // bar is drawn next to the click point while dragging.
+    void setColorRangePickMode(bool on);
+    void setColorRangeAmount(int amount); // -100..100, shown in the drag swatch
     void setHealMode(bool on); // spot-heal brush
     void setZoomMode(bool on); // zoom tool: enables marquee-drag zoom + Ctrl+wheel
     void setBrushRadius(int displayPx);
@@ -60,6 +65,12 @@ signals:
     void cropSelected(const QRect &imageRect);
     void commitCropRequested();
     void colorPicked(const QColor &color);
+
+    // Targeted color-range gesture: press samples the pixel, moves report the
+    // horizontal delta from the press point, release commits the gesture.
+    void colorRangePickStarted(const QColor &color);
+    void colorRangeDragged(int dxPixels);
+    void colorRangeReleased();
     void healAt(const QPoint &imagePoint);
     void zoomChanged(double percent);
     void healBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while healing
@@ -105,6 +116,14 @@ private:
     QString m_placeholder = "Decoding…";
     bool m_cropMode = false;
     bool m_pickMode = false;
+
+    // Targeted color-range tool state.
+    bool m_colorRangeMode = false;
+    bool m_colorRangeDragging = false;
+    QPoint m_colorRangeStart;   // widget coords of the press
+    QColor m_colorRangeColor;   // sampled target color (swatch fill)
+    int m_colorRangeChannel = 0; // 0=R,1=G,2=B — dominant channel (swatch border)
+    int m_colorRangeAmount = 0;  // -100..100, shown in the amount bar
     bool m_healMode = false;
     bool m_zoomMode = false; // gates marquee-drag zoom + Ctrl+wheel zoom
     int m_brushRadius = 20; // display px, for the brush cursor

@@ -104,6 +104,19 @@ bool save(const QString &imagePath, const Adjustments &a) {
     }
     o["curve"] = curveToJson(a.curve);
     if (!a.levels.isIdentity()) o["levels"] = levelsToJson(a.levels);
+    if (!a.colorRanges.isEmpty()) {
+        QJsonArray ranges;
+        for (const ColorRangeAdjust &cr : a.colorRanges) {
+            QJsonObject j;
+            j["r"] = cr.r;
+            j["g"] = cr.g;
+            j["b"] = cr.b;
+            j["ch"] = cr.channel;
+            j["amt"] = cr.amount;
+            ranges.append(j);
+        }
+        o["colorRanges"] = ranges;
+    }
 
     if (!a.masks.isEmpty()) {
         QJsonArray masks;
@@ -208,6 +221,16 @@ bool load(const QString &imagePath, Adjustments &out) {
     }
     a.curve = curveFromJson(o["curve"].toArray());
     if (o.contains("levels")) a.levels = levelsFromJson(o["levels"].toObject());
+    for (const QJsonValue &v : o["colorRanges"].toArray()) {
+        QJsonObject j = v.toObject();
+        ColorRangeAdjust cr;
+        cr.r = j["r"].toInt();
+        cr.g = j["g"].toInt();
+        cr.b = j["b"].toInt();
+        cr.channel = j["ch"].toInt();
+        cr.amount = j["amt"].toInt();
+        a.colorRanges.append(cr);
+    }
     for (const QJsonValue &v : o["masks"].toArray()) {
         QJsonObject j = v.toObject();
         Mask m;

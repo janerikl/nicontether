@@ -23,9 +23,15 @@ public:
     void setImage(const QImage &img);      // preview to display in the histogram
     void setLevels(const Levels &levels);  // sync UI from a tab (no signal)
     void clear();                          // no active photo
+    void setTargetPickChecked(bool on);    // sync the targeted-pick toggle (no signal)
+    void setTargetPickVisible(bool on);    // hide the toggle (per-layer panel)
 
 signals:
     void levelsChanged(const Levels &levels);
+    // Targeted color adjustment toggle: click a color on the image, drag
+    // left/right to adjust its channel level. The window wires this into the
+    // exclusive canvas tool modes; the panel doesn't own the data.
+    void targetPickToggled(bool on);
 
 private:
     LevelsChannel &activeChannel();              // the channel the combo selects
@@ -48,4 +54,5 @@ private:
     QSpinBox *m_outWhite = nullptr;
     QPushButton *m_auto = nullptr;
     QPushButton *m_reset = nullptr;
+    QPushButton *m_targetPick = nullptr;
 };
