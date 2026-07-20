@@ -40,6 +40,8 @@ public:
     void addToFilmstrip(const QString &path);
     // Open the photo in a tab (or activate its existing tab).
     void openPhoto(const QString &path);
+    // Create a new blank/untitled tab (File > New). Never touches the filmstrip.
+    void createUntitledTab(const QSize &size);
 
     enum class Mode { Retouch, Tether };
     void setMode(Mode mode);
@@ -78,6 +80,7 @@ private:
     FilmstripWidget *m_filmstrip = nullptr;
     QSet<QString> m_filmstripPaths;
     QMap<QString, RetouchTab *> m_openTabs;
+    int m_untitledCounter = 0;
 
     // Unified window: central stack swaps editing tabs (page 0) / tether (page 1).
     QStackedWidget *m_modeStack = nullptr;

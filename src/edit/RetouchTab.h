@@ -39,6 +39,7 @@ class RetouchTab : public QWidget {
     Q_OBJECT
 public:
     explicit RetouchTab(const QString &path, QWidget *parent = nullptr);
+    explicit RetouchTab(const QSize &blankSize, QWidget *parent = nullptr); // File > New
     ~RetouchTab() override;
 
     QString path() const { return m_path; }
@@ -157,6 +158,7 @@ private:
     void updateHealSpots();   // push heal-op markers (display coords) to the canvas
     void pushMaskGizmo();     // sync active mask geometry to the canvas
     void kickoffImageLayerDecode(const QString &path); // async-decode an image layer's source
+    void setupCanvasAndWiring(); // shared canvas creation + connect()s for both constructors
 
     QString m_path;
     QImage m_base;   // full-res decoded RAW (immutable)

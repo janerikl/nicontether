@@ -1530,6 +1530,21 @@ void RetouchWindow::addToFilmstrip(const QString &path) {
         m_filmstrip->setBadge(path, FilmstripWidget::Saved);
 }
 
+void RetouchWindow::createUntitledTab(const QSize &size) {
+    QString key = QString("untitled:%1").arg(++m_untitledCounter);
+    auto *tab = new RetouchTab(size);
+    m_openTabs.insert(key, tab);
+    int idx = m_tabs->addTab(tab, QString("Untitled-%1").arg(m_untitledCounter));
+    m_tabs->setCurrentIndex(idx);
+    setDockEnabled(true);
+    syncDockFromTab();
+    refreshHistoryPanel();
+    refreshLevels();
+    refreshMaskPanel();
+    updateEditClipboardActions();
+    m_statusLabel->setText(QString("Untitled-%1 ready").arg(m_untitledCounter));
+}
+
 void RetouchWindow::openPhoto(const QString &path) {
     addToFilmstrip(path);
 

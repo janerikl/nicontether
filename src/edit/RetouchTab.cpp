@@ -45,6 +45,28 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     for (const Mask &m : m_adj.masks)
         if (m.isImageLayer()) kickoffImageLayerDecode(m.sourceImagePath);
 
+    setupCanvasAndWiring();
+
+    // Decode off the GUI thread.
+    m_watcher = new QFutureWatcher<QImage>(this);
+    connect(m_watcher, &QFutureWatcher<QImage>::finished, this,
+            &RetouchTab::onDecodeFinished);
+    m_watcher->setFuture(QtConcurrent::run(RawLoader::load, m_path));
+}
+
+RetouchTab::RetouchTab(const QSize &blankSize, QWidget *parent)
+    : QWidget(parent), m_path(QString()) {
+    m_base = QImage(blankSize, QImage::Format_ARGB32);
+    m_base.fill(Qt::transparent);
+
+    setupCanvasAndWiring();
+
+    rebuildGeom();
+    retone();
+    emit decoded(true);
+}
+
+void RetouchTab::setupCanvasAndWiring() {
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     m_canvas = new ImageCanvas;
@@ -124,12 +146,6 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     connect(m_renderThread, &QThread::finished, m_renderWorker, &QObject::deleteLater);
     connect(m_renderWorker, &RenderWorker::done, this, &RetouchTab::onRenderDone);
     m_renderThread->start();
-
-    // Decode off the GUI thread.
-    m_watcher = new QFutureWatcher<QImage>(this);
-    connect(m_watcher, &QFutureWatcher<QImage>::finished, this,
-            &RetouchTab::onDecodeFinished);
-    m_watcher->setFuture(QtConcurrent::run(RawLoader::load, m_path));
 }
 
 RetouchTab::~RetouchTab() {
