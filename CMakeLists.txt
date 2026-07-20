@@ -50,6 +50,8 @@ add_executable(nikontether
     src/edit/CurveEditor.cpp
     src/edit/EditSidecar.cpp
     src/edit/HealTool.cpp
+    src/edit/NewDocumentDialog.cpp
+    src/edit/NewDocumentSize.cpp
 )
 
 target_include_directories(nikontether PRIVATE src)

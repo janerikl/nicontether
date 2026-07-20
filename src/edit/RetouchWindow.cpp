@@ -1,4 +1,5 @@
 #include "edit/RetouchWindow.h"
+#include "edit/NewDocumentDialog.h"
 #include "edit/RetouchTab.h"
 #include "edit/ExportDialog.h"
 #include "edit/CurveEditor.h"
@@ -395,6 +396,9 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     // to make room for the contextual tool-options row below.
     auto *openSessionAction = new QAction("Open Session…", this);
     auto *openPhotosAction = new QAction("Open Photos…", this);
+    auto *newDocAction = new QAction("New…", this);
+    newDocAction->setShortcut(QKeySequence::New); // Ctrl+N
+    connect(newDocAction, &QAction::triggered, this, &RetouchWindow::onNewDocument);
     connect(openSessionAction, &QAction::triggered, this, &RetouchWindow::onOpenSession);
     connect(openPhotosAction, &QAction::triggered, this, &RetouchWindow::onOpenPhotos);
     connect(m_saveAction, &QAction::triggered, this, &RetouchWindow::onSave);
@@ -402,6 +406,8 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     connect(m_exportAction, &QAction::triggered, this, &RetouchWindow::onExport);
 
     m_fileMenu = menuBar()->addMenu("File");
+    m_fileMenu->addAction(newDocAction);
+    m_fileMenu->addSeparator();
     m_fileMenu->addAction(openSessionAction);
     m_fileMenu->addAction(openPhotosAction);
     // Recent sessions live inline here, between these two separators. Recent
@@ -1928,6 +1934,12 @@ void RetouchWindow::onOpenPhotos() {
         "RAW images (*.nef *.NEF *.cr2 *.cr3 *.arw *.dng *.raf *.rw2 *.orf);;All files (*)");
     for (const QString &f : files)
         openPhoto(f);
+}
+
+void RetouchWindow::onNewDocument() {
+    NewDocumentDialog dlg(this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    createUntitledTab(dlg.resultPixelSize());
 }
 
 void RetouchWindow::onSave() {

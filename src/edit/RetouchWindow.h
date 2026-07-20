@@ -50,6 +50,7 @@ protected:
 private slots:
     void onOpenSession();
     void onOpenPhotos();
+    void onNewDocument();
     void onSave();
     void onSaveAll();
     void onFilmstripSelected(const QString &path);
