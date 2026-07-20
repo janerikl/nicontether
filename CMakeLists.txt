@@ -102,3 +102,7 @@ target_link_libraries(adjustments_paint_test PRIVATE Qt6::Widgets)
 # out this test's assert()s; force them on regardless of build type.
 target_compile_options(adjustments_paint_test PRIVATE -UNDEBUG)
 add_test(NAME adjustments_paint_test COMMAND adjustments_paint_test)
+add_executable(new_document_size_test tests/NewDocumentSizeTest.cpp src/edit/NewDocumentSize.cpp)
+target_include_directories(new_document_size_test PRIVATE src)
+target_link_libraries(new_document_size_test PRIVATE Qt6::Widgets)
+add_test(NAME new_document_size_test COMMAND new_document_size_test)
