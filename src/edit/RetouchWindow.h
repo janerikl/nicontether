@@ -148,6 +148,8 @@ private:
     QSlider *m_paintHardness = nullptr;
     QSlider *m_paintOpacity = nullptr;
     FlyoutToolButton *m_maskToggle = nullptr; // left icon bar: local-mask tool
+    QToolButton *m_eraseToggle = nullptr; // left icon bar: erase tool
+    QSlider *m_eraseBrush = nullptr;
     ColorSwatchWidget *m_colorSwatch = nullptr; // left icon bar: fg/bg color swatch
     QDockWidget *m_layersDock = nullptr;
     LayersPanel *m_layersPanel = nullptr;
