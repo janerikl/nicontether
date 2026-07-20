@@ -59,6 +59,8 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     connect(m_canvas, &ImageCanvas::colorRangeReleased, this,
             &RetouchTab::onColorRangeReleased);
     connect(m_canvas, &ImageCanvas::healAt, this, &RetouchTab::onHealAt);
+    connect(m_canvas, &ImageCanvas::eraseAt, this, &RetouchTab::onEraseAt);
+    connect(m_canvas, &ImageCanvas::eraseFinished, this, &RetouchTab::onEraseFinished);
     connect(m_canvas, &ImageCanvas::zoomChanged, this, &RetouchTab::zoomChanged);
     connect(m_canvas, &ImageCanvas::healBrushRadiusChanged, this, [this](int r) {
         m_healRadiusDisplay = r; // keep in sync so heal ops use the new size
@@ -455,6 +457,16 @@ void RetouchTab::setHealBrush(int radiusDisplayPx) {
     m_canvas->setBrushRadius(radiusDisplayPx);
 }
 
+void RetouchTab::setEraseMode(bool on) {
+    m_canvas->setEraseMode(on);
+    if (on) m_canvas->setFocus();
+}
+
+void RetouchTab::setEraseBrush(int radiusDisplayPx) {
+    m_eraseRadiusDisplay = radiusDisplayPx;
+    m_canvas->setBrushRadius(radiusDisplayPx);
+}
+
 void RetouchTab::clearHeals() {
     if (m_adj.heals.isEmpty()) return;
     m_adj.heals.clear();
@@ -476,6 +488,26 @@ void RetouchTab::onHealAt(const QPoint &imgPoint) {
     m_adj.heals.append(op);
     rebuildGeom();
     markEdited();
+}
+
+// An erase dab was placed on the canvas (point in display-image, width-
+// normalized coords — same space as onMaskBrushPoint). Only image layers
+// can be erased; ImageCanvas already gates this on m_hasActiveImageLayer,
+// but the active layer can still be non-image if selection changed
+// mid-drag, so re-check here too.
+void RetouchTab::onEraseAt(const QPointF &ptNorm) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    if (!m.isImageLayer()) return;
+    double radiusNorm = (m_scaled.isNull() || m_scaled.width() <= 0)
+                             ? 0.06
+                             : m_eraseRadiusDisplay / double(m_scaled.width());
+    m.eraseStrokes.append(ErasePoint{ptNorm, radiusNorm});
+    retone();
+}
+
+void RetouchTab::onEraseFinished() {
+    markEdited(); // schedule one coalesced undo step for the whole drag
 }
 
 // ---- Local adjustment masks ------------------------------------------------

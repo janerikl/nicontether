@@ -57,6 +57,8 @@ public:
     void setZoomMode(bool on); // zoom tool: marquee-drag + Ctrl+wheel zoom
     void setHealBrush(int radiusDisplayPx);
     void clearHeals();
+    void setEraseMode(bool on);
+    void setEraseBrush(int radiusDisplayPx);
 
     // Local adjustment masks.
     void setMaskMode(bool on);              // enter/leave mask editing on the canvas
@@ -134,6 +136,8 @@ private slots:
     void onColorRangeDragged(int dxPixels);
     void onColorRangeReleased();
     void onHealAt(const QPoint &imgPoint);
+    void onEraseAt(const QPointF &ptNorm);
+    void onEraseFinished();
     void onRenderDone(const QImage &result, const QImage &maskSnapshot);
     void onMaskRadial(const QPointF &centerNorm, double radiusNorm);
     void onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm);
@@ -162,6 +166,7 @@ private:
     int m_activeMask = -1; // index into m_adj.masks, or -1
     bool m_dirty = false; // unsaved changes since last save/load
     int m_healRadiusDisplay = 20; // brush radius in display pixels
+    int m_eraseRadiusDisplay = 20; // erase brush radius in display pixels
     int m_crIndex = -1;      // colorRanges entry being dragged, or -1
     int m_crBaseAmount = 0;  // that entry's amount at drag start
     QRect m_pendingCrop; // in oriented-image coords, awaiting Apply
