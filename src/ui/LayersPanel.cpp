@@ -133,39 +133,29 @@ public:
         layout->addWidget(floatBtn);
         layout->addWidget(closeBtn);
 
-        // Without this, a collapsed dock (whose hidden content contributes
-        // no width) shrinks to this bar's own minimal sizeHint instead of
-        // filling the panel, dragging the float/close buttons in next to
-        // the label instead of the right edge.
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-
-        // QDockWidget doesn't reliably stretch a custom titleBarWidget() to
-        // the dock's actual width — it can leave it at its own sizeHint
-        // width, which is exactly the "buttons stuck next to the label"
-        // symptom this fixes. Track the dock's width directly instead of
-        // relying on that.
-        m_dock->installEventFilter(this);
 
         setExpanded(false); // apply the initial collapsed state to the dock
     }
 
-protected:
-    bool eventFilter(QObject *obj, QEvent *ev) override {
-        if (obj == m_dock && ev->type() == QEvent::Resize)
-            resize(m_dock->width(), height());
-        return QWidget::eventFilter(obj, ev);
-    }
-
 private:
+    // Collapsing hides the content by squashing its height to zero rather
+    // than calling setVisible(false) on it: a genuinely hidden widget
+    // contributes no width to its dock's sizeHint, which is what was
+    // shrinking collapsed rows down to this bar's own minimal width (and
+    // dragging the float/close buttons in next to the label). Keeping the
+    // content "visible" but zero-height preserves its width contribution —
+    // matching the expanded row's width, where this already worked — while
+    // still showing nothing.
     void setExpanded(bool expanded) {
         m_chevron->setIcon(drawChevronIcon(expanded));
-        if (m_dock->widget()) m_dock->widget()->setVisible(expanded);
+        if (QWidget *content = m_dock->widget())
+            content->setMaximumHeight(expanded ? QWIDGETSIZE_MAX : 0);
         if (expanded) {
             m_dock->setMaximumHeight(QWIDGETSIZE_MAX);
         } else {
             m_dock->setMaximumHeight(sizeHint().height());
         }
-        resize(m_dock->width(), height());
     }
 
     QDockWidget *m_dock;
@@ -238,7 +228,9 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                           QDockWidget::DockWidgetFloatable |
                           QDockWidget::DockWidgetMovable);
         dock->setWidget(content);
-        content->setVisible(false); // collapsed by default
+        // Collapsed by default; SectionTitleBar's ctor applies this via
+        // setExpanded(false), which squashes content's height rather than
+        // hiding it (see SectionTitleBar::setExpanded for why).
         dock->setTitleBarWidget(new SectionTitleBar(title, dock));
         dock->setSizePolicy(QSizePolicy::Expanding, dock->sizePolicy().verticalPolicy());
         m_inner->addDockWidget(Qt::TopDockWidgetArea, dock);
