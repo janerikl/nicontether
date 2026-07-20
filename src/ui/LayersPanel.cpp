@@ -132,6 +132,12 @@ public:
         layout->addWidget(floatBtn);
         layout->addWidget(closeBtn);
 
+        // Without this, a collapsed dock (whose hidden content contributes
+        // no width) shrinks to this bar's own minimal sizeHint instead of
+        // filling the panel, dragging the float/close buttons in next to
+        // the label instead of the right edge.
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
         setExpanded(false); // apply the initial collapsed state to the dock
     }
 
@@ -218,6 +224,7 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
         dock->setWidget(content);
         content->setVisible(false); // collapsed by default
         dock->setTitleBarWidget(new SectionTitleBar(title, dock));
+        dock->setSizePolicy(QSizePolicy::Expanding, dock->sizePolicy().verticalPolicy());
         m_inner->addDockWidget(Qt::TopDockWidgetArea, dock);
         return dock;
     };
