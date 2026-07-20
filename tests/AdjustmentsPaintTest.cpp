@@ -190,6 +190,52 @@ int main() {
         assert(!loaded.masks[0].sourceImageLockRatio);
     }
 
+    // Erase strokes persist through the sidecar format.
+    {
+        QTemporaryDir dir;
+        assert(dir.isValid());
+        const QString path = dir.filePath("photo.nef");
+
+        Adjustments adj;
+        Mask layer;
+        layer.type = MaskType::None;
+        layer.sourceImagePath = path;
+        layer.eraseStrokes.append(ErasePoint{QPointF(0.3, 0.4), 0.1});
+        layer.eraseStrokes.append(ErasePoint{QPointF(0.6, 0.7), 0.05});
+        adj.masks.append(layer);
+
+        assert(EditSidecar::save(path, adj));
+
+        Adjustments loaded;
+        assert(EditSidecar::load(path, loaded));
+        assert(loaded.masks.size() == 1);
+        assert(loaded.masks[0].eraseStrokes.size() == 2);
+        assert(loaded.masks[0].eraseStrokes[0].pt == QPointF(0.3, 0.4));
+        assert(std::abs(loaded.masks[0].eraseStrokes[0].radius - 0.1) < 1e-9);
+        assert(loaded.masks[0].eraseStrokes[1].pt == QPointF(0.6, 0.7));
+        assert(std::abs(loaded.masks[0].eraseStrokes[1].radius - 0.05) < 1e-9);
+    }
+
+    // A sidecar written before eraseStrokes existed loads an empty list
+    // instead of failing.
+    {
+        QTemporaryDir dir;
+        assert(dir.isValid());
+        const QString path = dir.filePath("photo.nef");
+
+        Adjustments adj;
+        Mask layer;
+        layer.type = MaskType::None;
+        layer.sourceImagePath = path;
+        adj.masks.append(layer);
+        assert(EditSidecar::save(path, adj));
+
+        Adjustments loaded;
+        assert(EditSidecar::load(path, loaded));
+        assert(loaded.masks.size() == 1);
+        assert(loaded.masks[0].eraseStrokes.isEmpty());
+    }
+
     // Canvas background color persists through the sidecar format.
     {
         QTemporaryDir dir;

@@ -153,6 +153,10 @@ bool save(const QString &imagePath, const Adjustments &a) {
             for (const BrushStrokePoint &sp : m.stroke)
                 stroke.append(QJsonArray{sp.pt.x(), sp.pt.y(), sp.erase});
             j["stroke"] = stroke;
+            QJsonArray erases;
+            for (const ErasePoint &ep : m.eraseStrokes)
+                erases.append(QJsonArray{ep.pt.x(), ep.pt.y(), ep.radius});
+            j["eraseStrokes"] = erases;
             QJsonObject ad;
             ad["brightness"] = m.adj.brightness;
             ad["contrast"] = m.adj.contrast;
@@ -271,6 +275,12 @@ bool load(const QString &imagePath, Adjustments &out) {
                 m.stroke.append(BrushStrokePoint{
                     QPointF(p[0].toDouble(), p[1].toDouble()),
                     p.size() >= 3 && p[2].toBool()});
+        }
+        for (const QJsonValue &ev : j["eraseStrokes"].toArray()) {
+            QJsonArray p = ev.toArray();
+            if (p.size() >= 3)
+                m.eraseStrokes.append(ErasePoint{
+                    QPointF(p[0].toDouble(), p[1].toDouble()), p[2].toDouble()});
         }
         QJsonObject ad = j["adj"].toObject();
         m.adj.brightness = ad["brightness"].toInt();
