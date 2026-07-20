@@ -159,6 +159,7 @@ private:
     LayersPanel *m_layersPanel = nullptr;
     void buildLayersDock();
     void refreshMaskPanel(); // refreshes the Layers panel (all sections) from the active tab
+    void wireTabSignals(RetouchTab *tab);
     // Local-mask subtool selected via the tool's Photoshop-style flyout; a plain
     // click on the mask tool creates a mask of this type.
     MaskType m_activeMaskSubtool = MaskType::Radial;

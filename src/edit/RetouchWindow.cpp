@@ -1543,6 +1543,7 @@ void RetouchWindow::createUntitledTab(const QSize &size) {
     refreshMaskPanel();
     updateEditClipboardActions();
     m_statusLabel->setText(QString("Untitled-%1 ready").arg(m_untitledCounter));
+    wireTabSignals(tab);
 }
 
 void RetouchWindow::openPhoto(const QString &path) {
@@ -1572,6 +1573,10 @@ void RetouchWindow::openPhoto(const QString &path) {
                                       : "Failed to decode " + QFileInfo(tab->path()).fileName());
         }
     });
+    wireTabSignals(tab);
+}
+
+void RetouchWindow::wireTabSignals(RetouchTab *tab) {
     connect(tab, &RetouchTab::cropPending, this, [this, tab](bool has) {
         if (tab == currentTab()) m_cropApply->setEnabled(has);
     });
