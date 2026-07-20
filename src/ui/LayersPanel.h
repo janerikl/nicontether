@@ -37,7 +37,7 @@ class LayersPanel : public QWidget {
 public:
     explicit LayersPanel(QWidget *parent = nullptr);
 
-    void setMasks(const QVector<Mask> &masks, int activeIndex);
+    void setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground);
     void clear();
 
     // Pushes a rendered preview into the selected layer's Levels histogram
@@ -89,6 +89,7 @@ private:
 
     QVector<Mask> m_masks;
     int m_active = -1;
+    bool m_hasBackground = false;
     bool m_syncing = false;
     MaskAdjust m_curAdjust; // last-loaded active layer's adjustment, patched per-section
 

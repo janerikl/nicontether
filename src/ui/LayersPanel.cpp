@@ -307,20 +307,24 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     connect(m_delete, &QPushButton::clicked, this,
             [this] { emit deleteMaskRequested(); });
     connect(m_maskList, &QListWidget::currentRowChanged, this, [this](int i) {
-        if (!m_syncing) emit selectMaskRequested(i);
+        if (!m_syncing) emit selectMaskRequested(m_hasBackground ? i - 1 : i);
     });
     connect(m_maskList, &QListWidget::itemChanged, this,
             [this](QListWidgetItem *item) {
                 if (m_syncing) return;
                 int i = m_maskList->row(item);
-                emit maskVisibleChanged(i, item->checkState() == Qt::Checked);
+                if (m_hasBackground && i == 0) return; // Background has no visibility toggle
+                emit maskVisibleChanged(m_hasBackground ? i - 1 : i,
+                                        item->checkState() == Qt::Checked);
             });
     connect(m_maskList->model(), &QAbstractItemModel::rowsMoved, this,
             [this](const QModelIndex &, int start, int, const QModelIndex &,
                    int destRow) {
                 if (m_syncing) return;
+                if (m_hasBackground && (start == 0 || destRow == 0)) return; // can't move Background
                 int to = destRow > start ? destRow - 1 : destRow;
-                emit maskReorderRequested(start, to);
+                int off = m_hasBackground ? 1 : 0;
+                emit maskReorderRequested(start - off, to - off);
             });
     connect(m_name, &QLineEdit::editingFinished, this,
             [this] { if (!m_syncing) emit maskNameChanged(m_name->text()); });
@@ -390,9 +394,10 @@ void LayersPanel::clear() {
     setEnabled(false);
 }
 
-void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex) {
+void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground) {
     m_masks = masks;
     m_active = activeIndex;
+    m_hasBackground = hasBackground;
     setEnabled(true);
     rebuildList();
     loadActive();
@@ -427,6 +432,11 @@ void LayersPanel::resetSections() {
 void LayersPanel::rebuildList() {
     m_syncing = true;
     m_maskList->clear();
+    if (m_hasBackground) {
+        auto *bg = new QListWidgetItem(QStringLiteral("Background \xF0\x9F\x94\x92")); // trailing lock emoji
+        bg->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled); // no drag, no checkbox
+        m_maskList->addItem(bg);
+    }
     for (int i = 0; i < m_masks.size(); ++i) {
         const Mask &m = m_masks[i];
         QString label = m.name.isEmpty()
@@ -441,17 +451,22 @@ void LayersPanel::rebuildList() {
         item->setCheckState(m.visible ? Qt::Checked : Qt::Unchecked);
         m_maskList->addItem(item);
     }
-    if (m_active >= 0 && m_active < m_masks.size())
-        m_maskList->setCurrentRow(m_active);
+    const int row = m_hasBackground ? m_active + 1 : m_active;
+    if (row >= 0 && row < m_maskList->count())
+        m_maskList->setCurrentRow(row);
+    else if (m_hasBackground && m_active == -1)
+        m_maskList->setCurrentRow(0);
     m_syncing = false;
 }
 
 void LayersPanel::loadActive() {
     const bool has = m_active >= 0 && m_active < m_masks.size();
+    const bool isBackground = m_hasBackground && m_active == -1;
     m_syncing = true;
     for (QWidget *w : std::initializer_list<QWidget *>{
-             m_name, m_opacity, m_blend, m_duplicate, m_delete, m_levelsPanel})
+             m_name, m_opacity, m_blend, m_delete, m_levelsPanel})
         w->setEnabled(has);
+    m_duplicate->setEnabled(has || isBackground);
     if (has) {
         const Mask &m = m_masks[m_active];
         m_name->setText(m.name);
