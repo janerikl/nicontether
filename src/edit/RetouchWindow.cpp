@@ -1771,8 +1771,12 @@ void RetouchWindow::onTabChanged(int) {
 void RetouchWindow::onTabCloseRequested(int index) {
     auto *tab = qobject_cast<RetouchTab *>(m_tabs->widget(index));
     if (!tab) return;
-    if (tab->isReady() && tab->isDirty()) tab->saveEdits();
-    m_openTabs.remove(tab->path());
+    if (tab->isReady() && tab->isDirty() && !tab->path().isEmpty()) tab->saveEdits();
+    QString key;
+    for (auto it = m_openTabs.begin(); it != m_openTabs.end(); ++it) {
+        if (it.value() == tab) { key = it.key(); break; }
+    }
+    if (!key.isEmpty()) m_openTabs.remove(key);
     m_tabs->removeTab(index);
     tab->deleteLater();
 }
@@ -1973,7 +1977,10 @@ void RetouchWindow::onSave() {
         if (path.isEmpty()) return; // user cancelled
         // Write the current base canvas to disk so the path has real image
         // content, then re-key the tab exactly like any file-backed tab.
-        tab->renderFullRes().save(path, "PNG");
+        if (!tab->renderFullRes().save(path, "PNG")) {
+            QMessageBox::warning(this, "Save Failed", "Could not write image to " + path);
+            return;
+        }
         QString oldKey;
         for (auto it = m_openTabs.begin(); it != m_openTabs.end(); ++it) {
             if (it.value() == tab) { oldKey = it.key(); break; }
