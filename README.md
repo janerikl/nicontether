@@ -35,6 +35,8 @@ cmake --build build
    `~/Pictures/Tether/<date>_<session>/` and its embedded preview appears in the
    filmstrip and the large preview window.
 6. **New Session…** starts a fresh dated folder.
+7. In the retouch canvas, right-click the empty border area to switch the
+   background between white, gray shades, and black.
 
 ### If Connect fails with a USB claim error
 

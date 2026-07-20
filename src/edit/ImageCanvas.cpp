@@ -5,11 +5,15 @@
 #include <QWheelEvent>
 #include <QKeyEvent>
 #include <QCursor>
+#include <QMenu>
+#include <QActionGroup>
+#include <QContextMenuEvent>
 #include <QPixmap>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDropEvent>
 #include <QMimeData>
+#include <QSettings>
 #include <cmath>
 #include <algorithm>
 
@@ -60,7 +64,10 @@ ImageCanvas::ImageCanvas(QWidget *parent) : QWidget(parent) {
     setFocusPolicy(Qt::StrongFocus);
     setAcceptDrops(true);
     QPalette pal = palette();
-    pal.setColor(QPalette::Window, QColor(30, 30, 30));
+    QSettings settings;
+    m_backgroundColor = settings.value("edit/canvasBackgroundColor",
+                                       QColor(30, 30, 30)).value<QColor>();
+    pal.setColor(QPalette::Window, m_backgroundColor);
     setPalette(pal);
 }
 
@@ -282,7 +289,7 @@ QRect ImageCanvas::selectionInImage() const {
 
 void ImageCanvas::paintEvent(QPaintEvent *) {
     QPainter p(this);
-    p.fillRect(rect(), QColor(30, 30, 30));
+    p.fillRect(rect(), m_backgroundColor);
     if (m_img.isNull()) {
         p.setPen(Qt::lightGray);
         p.drawText(rect(), Qt::AlignCenter, m_placeholder);
@@ -761,4 +768,40 @@ void ImageCanvas::dropEvent(QDropEvent *ev) {
             return; // one layer per drop
         }
     }
+}
+
+void ImageCanvas::contextMenuEvent(QContextMenuEvent *ev) {
+    QRect tr = targetRect();
+    if (tr.contains(ev->pos())) {
+        ev->ignore();
+        return;
+    }
+
+    QMenu menu(this);
+    auto *group = new QActionGroup(&menu);
+    group->setExclusive(true);
+    struct Item { const char *label; QColor color; };
+    const Item items[] = {
+        {"White", QColor(255, 255, 255)},
+        {"Light Gray", QColor(200, 200, 200)},
+        {"Gray", QColor(128, 128, 128)},
+        {"Dark Gray", QColor(64, 64, 64)},
+        {"Black", QColor(0, 0, 0)},
+    };
+    for (const auto &it : items) {
+        QAction *a = menu.addAction(it.label);
+        a->setCheckable(true);
+        a->setChecked(m_backgroundColor == it.color);
+        group->addAction(a);
+        QColor c = it.color;
+        connect(a, &QAction::triggered, this, [this, c]() {
+            m_backgroundColor = c;
+            QPalette pal = palette();
+            pal.setColor(QPalette::Window, m_backgroundColor);
+            setPalette(pal);
+            QSettings().setValue("edit/canvasBackgroundColor", m_backgroundColor);
+            update();
+        });
+    }
+    menu.exec(ev->globalPos());
 }

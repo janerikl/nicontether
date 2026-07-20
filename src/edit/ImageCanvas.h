@@ -5,12 +5,14 @@
 #include <QRect>
 #include <QPoint>
 #include <QPointF>
+#include <QColor>
 
 #include "edit/Adjustments.h"
 
 class QDragEnterEvent;
 class QDragLeaveEvent;
 class QDropEvent;
+class QContextMenuEvent;
 
 // Displays an image with zoom + pan, and supports crop rubber-band selection and
 // a white-balance eyedropper. Zoom: Ctrl+wheel (anchored to the cursor),
@@ -85,6 +87,7 @@ protected:
     void dragEnterEvent(QDragEnterEvent *) override;
     void dragLeaveEvent(QDragLeaveEvent *) override;
     void dropEvent(QDropEvent *) override;
+    void contextMenuEvent(QContextMenuEvent *) override;
 
 private:
     enum class Drag { None, Creating, Moving, Resizing };
@@ -144,4 +147,5 @@ private:
     bool m_spaceDown = false;
 
     bool m_dragHighlight = false; // a valid image drag is hovering the canvas
+    QColor m_backgroundColor = QColor(30, 30, 30);
 };
