@@ -78,23 +78,11 @@ QIcon drawCloseIcon() {
     return QIcon(pm);
 }
 
-QIcon drawFloatIcon() {
-    QPixmap pm(kSectionIconPx, kSectionIconPx);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(QPen(kSectionIconColor, 1.2));
-    p.setBrush(Qt::NoBrush);
-    p.drawRect(QRectF(2, 5, 7, 7));
-    p.drawRect(QRectF(5, 2, 7, 7));
-    return QIcon(pm);
-}
-
 // Custom title bar for a per-section dock: a chevron that collapses the
 // dock down to just this bar (hides the content widget without closing the
-// dock), a title label, a float button, and a close button. Replacing
-// QDockWidget's default title bar this way means the native float/close
-// buttons are gone, so this widget draws its own equivalents.
+// dock), a title label, and a close button. Replacing QDockWidget's default
+// title bar this way means the native close button is gone, so this widget
+// draws its own equivalent.
 class SectionTitleBar : public QWidget {
 public:
     SectionTitleBar(const QString &title, QDockWidget *dock, QWidget *parent = nullptr)
@@ -112,15 +100,6 @@ public:
 
         auto *label = new QLabel("<b>" + title + "</b>");
 
-        auto *floatBtn = new QToolButton;
-        floatBtn->setAutoRaise(true);
-        floatBtn->setIcon(drawFloatIcon());
-        floatBtn->setIconSize(QSize(kSectionIconPx, kSectionIconPx));
-        floatBtn->setToolTip("Float this section");
-        connect(floatBtn, &QToolButton::clicked, this, [this] {
-            m_dock->setFloating(!m_dock->isFloating());
-        });
-
         auto *closeBtn = new QToolButton;
         closeBtn->setAutoRaise(true);
         closeBtn->setIcon(drawCloseIcon());
@@ -130,7 +109,6 @@ public:
 
         layout->addWidget(m_chevron);
         layout->addWidget(label, 1);
-        layout->addWidget(floatBtn);
         layout->addWidget(closeBtn);
 
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -224,9 +202,7 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                           QWidget *content) {
         auto *dock = new QDockWidget(title);
         dock->setObjectName(objName);
-        dock->setFeatures(QDockWidget::DockWidgetClosable |
-                          QDockWidget::DockWidgetFloatable |
-                          QDockWidget::DockWidgetMovable);
+        dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable);
         dock->setWidget(content);
         // Collapsed by default; SectionTitleBar's ctor applies this via
         // setExpanded(false), which squashes content's height rather than

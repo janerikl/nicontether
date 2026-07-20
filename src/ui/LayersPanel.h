@@ -26,8 +26,8 @@ class MaskPanel;
 // opacity, blend mode, and the *complete* tone/colour/curve/levels/detail/mask
 // editing surface. Each section (Tone, Colour, Tone Curve, Levels, Detail &
 // Effects, Masks) is its own QDockWidget nested inside a small inner
-// QMainWindow — so each has a real title bar with collapse/float/close
-// controls, while the whole assembly still docks/floats as one "Layers"
+// QMainWindow — so each has a real title bar with collapse/close controls,
+// while the whole assembly still docks/floats as one "Layers"
 // panel from RetouchWindow's point of view. Purely a view — it emits intent
 // signals and is refreshed via setMasks(); RetouchWindow routes to the tab.
 class LayersPanel : public QWidget {
