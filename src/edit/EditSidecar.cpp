@@ -87,6 +87,7 @@ bool save(const QString &imagePath, const Adjustments &a) {
     o["wbR"] = a.wbR;
     o["wbG"] = a.wbG;
     o["wbB"] = a.wbB;
+    o["denoise"] = a.denoise;
     o["clarity"] = a.clarity;
     o["sharpen"] = a.sharpen;
     o["vignette"] = a.vignette;
@@ -128,6 +129,7 @@ bool save(const QString &imagePath, const Adjustments &a) {
             j["brushRadius"] = m.brushRadius;
             j["hardness"] = m.hardness;
             j["autoMask"] = m.autoMask;
+            j["paintColor"] = m.paintColor.name(QColor::HexArgb);
             QJsonArray stroke;
             for (const BrushStrokePoint &sp : m.stroke)
                 stroke.append(QJsonArray{sp.pt.x(), sp.pt.y(), sp.erase});
@@ -144,6 +146,7 @@ bool save(const QString &imagePath, const Adjustments &a) {
             ad["wbR"] = m.adj.wbR;
             ad["wbG"] = m.adj.wbG;
             ad["wbB"] = m.adj.wbB;
+            ad["denoise"] = m.adj.denoise;
             ad["clarity"] = m.adj.clarity;
             ad["sharpen"] = m.adj.sharpen;
             ad["vignette"] = m.adj.vignette;
@@ -191,6 +194,7 @@ bool load(const QString &imagePath, Adjustments &out) {
     a.wbR = o["wbR"].toDouble(1.0);
     a.wbG = o["wbG"].toDouble(1.0);
     a.wbB = o["wbB"].toDouble(1.0);
+    a.denoise = o["denoise"].toInt();
     a.clarity = o["clarity"].toInt();
     a.sharpen = o["sharpen"].toInt();
     a.vignette = o["vignette"].toInt();
@@ -224,6 +228,7 @@ bool load(const QString &imagePath, Adjustments &out) {
         m.brushRadius = j["brushRadius"].toDouble(0.06);
         m.hardness = j["hardness"].toDouble(0.5);
         m.autoMask = j["autoMask"].toBool(false);
+        m.paintColor = QColor(j["paintColor"].toString(QStringLiteral("#ff000000")));
         for (const QJsonValue &sv : j["stroke"].toArray()) {
             QJsonArray p = sv.toArray();
             if (p.size() >= 2)
@@ -243,6 +248,7 @@ bool load(const QString &imagePath, Adjustments &out) {
         m.adj.wbR = ad["wbR"].toDouble(1.0);
         m.adj.wbG = ad["wbG"].toDouble(1.0);
         m.adj.wbB = ad["wbB"].toDouble(1.0);
+        m.adj.denoise = ad["denoise"].toInt();
         m.adj.clarity = ad["clarity"].toInt();
         m.adj.sharpen = ad["sharpen"].toInt();
         m.adj.vignette = ad["vignette"].toInt();

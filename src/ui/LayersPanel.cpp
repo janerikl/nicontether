@@ -196,6 +196,10 @@ void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex) {
     loadActive();
 }
 
+void LayersPanel::setLevelsPreviewImage(const QImage &img) {
+    if (m_active >= 0 && m_active < m_masks.size()) m_levels->setImage(img);
+}
+
 void LayersPanel::rebuildList() {
     m_syncing = true;
     m_maskList->clear();

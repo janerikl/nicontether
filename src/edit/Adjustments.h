@@ -8,6 +8,7 @@
 #include <QColor>
 #include <QMetaType>
 #include <cmath>
+#include <vector>
 
 // One channel of a Photoshop-style Levels adjustment: input black/white points
 // clip and stretch the tonal range, gamma remaps the midtones, and the output
@@ -68,6 +69,7 @@ struct MaskAdjust {
 
     // Detail / effects — same meaning as the global fields, applied within
     // this layer only (see applyLayerContent in Adjustments.cpp).
+    int denoise = 0;
     int clarity = 0;
     int sharpen = 0;
     int vignette = 0;
@@ -86,8 +88,8 @@ struct MaskAdjust {
         return !brightness && !contrast && !highlights && !shadows &&
                !saturation && !vibrance && !temperature && !tint &&
                std::abs(wbR - 1.0) < 1e-4 && std::abs(wbG - 1.0) < 1e-4 &&
-               std::abs(wbB - 1.0) < 1e-4 && !clarity && !sharpen && !vignette &&
-               !hasCurve() && levels.isIdentity();
+               std::abs(wbB - 1.0) < 1e-4 && !denoise && !clarity && !sharpen &&
+               !vignette && !hasCurve() && levels.isIdentity();
     }
     bool operator==(const MaskAdjust &o) const {
         return brightness == o.brightness && contrast == o.contrast &&
@@ -95,8 +97,9 @@ struct MaskAdjust {
                saturation == o.saturation && vibrance == o.vibrance &&
                temperature == o.temperature && tint == o.tint &&
                wbR == o.wbR && wbG == o.wbG && wbB == o.wbB &&
-               clarity == o.clarity && sharpen == o.sharpen &&
-               vignette == o.vignette && curve == o.curve && levels == o.levels;
+               denoise == o.denoise && clarity == o.clarity &&
+               sharpen == o.sharpen && vignette == o.vignette &&
+               curve == o.curve && levels == o.levels;
     }
     bool operator!=(const MaskAdjust &o) const { return !(*this == o); }
 };
@@ -190,6 +193,27 @@ struct Mask {
     bool operator!=(const Mask &o) const { return !(*this == o); }
 };
 
+// Incremental-rasterization cache for one brush/paint mask's stroke coverage.
+// Repainting a stroke re-sends the *whole* point list every time, so without
+// this a live drag would re-rasterize all points from scratch on every move
+// (O(n^2) over a stroke). Callers that render repeatedly for the same
+// mask/resolution across a drag (RenderWorker, ImageCanvas) keep one of
+// these around and pass it in; only newly-appended points get rasterized,
+// and the sentinel fields detect when the cache no longer applies (stroke
+// shrank, brush params changed, different resolution) and fall back to a
+// full rebuild. Deliberately not part of Mask/Adjustments so it is never
+// copied along with undo snapshots or render-queue copies.
+struct BrushRasterCache {
+    std::vector<uchar> cov;
+    int w = 0, h = 0;
+    int pointCount = 0;
+    double brushRadius = -1;
+    double hardness = -1;
+    bool autoMask = false;
+    BrushStrokePoint lastPoint;
+    bool valid = false;
+};
+
 // A single spot-heal: a circular region (in oriented-image coordinates, i.e.
 // after rotation/flip but before crop) that gets replaced with a nearby patch.
 struct HealOp {
@@ -220,6 +244,7 @@ struct Adjustments {
     double wbB = 1.0;
 
     // Detail / effects
+    int denoise = 0;         // 0..100 chroma-noise smoothing, weighted to shadows
     int clarity = 0;         // midtone local contrast
     int sharpen = 0;         // 0..100 unsharp amount
     int vignette = 0;        // darken (-) / lighten (+) the corners
@@ -253,8 +278,9 @@ struct Adjustments {
                saturation == o.saturation && vibrance == o.vibrance &&
                temperature == o.temperature && tint == o.tint &&
                wbR == o.wbR && wbG == o.wbG && wbB == o.wbB &&
-               clarity == o.clarity && sharpen == o.sharpen &&
-               vignette == o.vignette && curve == o.curve && levels == o.levels &&
+               denoise == o.denoise && clarity == o.clarity &&
+               sharpen == o.sharpen && vignette == o.vignette &&
+               curve == o.curve && levels == o.levels &&
                masks == o.masks && heals == o.heals &&
                rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
                flipV == o.flipV && cropRect == o.cropRect;
@@ -267,10 +293,21 @@ struct Adjustments {
 bool hasToneEdits(const Adjustments &adj);
 
 // Apply `adj` to `base`, returning a new image. Order: orientation → crop →
-// white balance/tone/colour (per-pixel) → clarity/sharpen (convolution) →
-// vignette. Pure and side-effect free: safe to unit-test and to run on a
+// white balance/tone/colour (per-pixel) → denoise/clarity/sharpen
+// (convolution) → vignette. Pure and side-effect free: safe to unit-test and
+// to run on a
 // full-res base (export) or a display-scaled copy (interactive).
-QImage applyAdjustments(const QImage &base, const Adjustments &adj);
+// `brushCache`, if given, is used/updated for incremental mask-stroke
+// rasterization (see BrushRasterCache); pass nullptr for a one-shot exact
+// render (export, tests).
+// `maskSnapshotIndex`/`maskSnapshotOut`: if `maskSnapshotIndex >= 0`, writes
+// the cumulative composite through and including `adj.masks[maskSnapshotIndex]`
+// into `*maskSnapshotOut` (used to feed the per-layer Levels histogram — see
+// LayersPanel/RetouchTab). Zero extra cost when `maskSnapshotIndex < 0`.
+QImage applyAdjustments(const QImage &base, const Adjustments &adj,
+                        QVector<BrushRasterCache> *brushCache = nullptr,
+                        int maskSnapshotIndex = -1,
+                        QImage *maskSnapshotOut = nullptr);
 
 // Build a tinted, semi-transparent overlay (ARGB, alpha = mask weight × maxAlpha)
 // visualizing a single mask's coverage, for live "see the mask" feedback while
@@ -278,7 +315,8 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj);
 // `source` is the (already-adjusted) preview image, used to sample colours for
 // Auto Mask edge detection; pass a null QImage if the mask has autoMask off.
 QImage maskCoverageOverlay(const Mask &m, int w, int h, const QColor &tint,
-                           int maxAlpha = 140, const QImage &source = QImage());
+                           int maxAlpha = 140, const QImage &source = QImage(),
+                           BrushRasterCache *cache = nullptr);
 
 // Human-readable name of what changed between two committed snapshots. Returns
 // the primary changed field's label (e.g. "Brightness", "Crop", "Spot Heal").

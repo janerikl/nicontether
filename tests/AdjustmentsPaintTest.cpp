@@ -69,6 +69,50 @@ int main() {
         assert(r > 90 && r < 110); // ~100, halfway between 0 and 200
     }
 
+    // Incremental brush-rasterization cache: rendering a growing stroke one
+    // point at a time through a shared BrushRasterCache (as RenderWorker does
+    // during a live drag) must match a from-scratch render of the same
+    // stroke at every step, including after a simulated undo (stroke
+    // shrinks, forcing the cache to rebuild) and across erase dabs.
+    {
+        QImage base(20, 20, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask brush;
+        brush.type = MaskType::Brush;
+        brush.brushRadius = 0.15;
+        brush.hardness = 0.6;
+        brush.adj.brightness = 40; // gives the masked region visible content to compare
+
+        Adjustments adj;
+        adj.masks.append(brush);
+
+        QVector<BrushRasterCache> cache;
+        QVector<QPointF> pts = {{0.2, 0.2}, {0.3, 0.25}, {0.4, 0.3}, {0.5, 0.35},
+                                {0.6, 0.4}, {0.5, 0.5}, {0.4, 0.6}};
+        for (int i = 0; i < pts.size(); ++i) {
+            bool erase = (i == 5); // one erase dab partway through
+            adj.masks[0].stroke.append(BrushStrokePoint{pts[i], erase});
+
+            QImage incremental = applyAdjustments(base, adj, &cache);
+            QImage fromScratch = applyAdjustments(base, adj, nullptr);
+            assert(incremental == fromScratch);
+        }
+
+        // Simulate an undo: stroke shrinks. The cache must detect this and
+        // rebuild rather than silently reusing stale coverage.
+        adj.masks[0].stroke.resize(3);
+        QImage afterUndoIncremental = applyAdjustments(base, adj, &cache);
+        QImage afterUndoFromScratch = applyAdjustments(base, adj, nullptr);
+        assert(afterUndoIncremental == afterUndoFromScratch);
+
+        // Resume painting after the undo — cache must extend correctly again.
+        adj.masks[0].stroke.append(BrushStrokePoint{{0.55, 0.45}, false});
+        QImage resumedIncremental = applyAdjustments(base, adj, &cache);
+        QImage resumedFromScratch = applyAdjustments(base, adj, nullptr);
+        assert(resumedIncremental == resumedFromScratch);
+    }
+
     std::printf("AdjustmentsPaintTest: all assertions passed\n");
     return 0;
 }

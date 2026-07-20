@@ -907,6 +907,7 @@ void RetouchWindow::buildDock() {
     outer->addSpacing(6);
     outer->addWidget(new QLabel("<b>Detail &amp; Effects</b>"));
     auto *fxForm = new QFormLayout;
+    m_denoise = makeSlider(fxForm, "Denoise", 0, 100);
     m_clarity = makeSlider(fxForm, "Clarity");
     m_sharpen = makeSlider(fxForm, "Sharpen", 0, 100);
     m_vignette = makeSlider(fxForm, "Vignette");
@@ -1040,6 +1041,11 @@ void RetouchWindow::buildLayersDock() {
     addDockWidget(Qt::RightDockWidgetArea, dock);
     if (m_adjustmentsDock) tabifyDockWidget(m_adjustmentsDock, dock);
     dock->hide(); // shown only while the Mask tool is active
+
+    connect(dock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->setMaskPreviewEnabled(visible);
+    });
 
     connect(m_layersPanel, &LayersPanel::selectMaskRequested, this, [this](int i) {
         RetouchTab *tab = currentTab();
@@ -1180,6 +1186,7 @@ void RetouchWindow::mergePortable(const Adjustments &src, Adjustments &dst) {
     dst.wbR = src.wbR;
     dst.wbG = src.wbG;
     dst.wbB = src.wbB;
+    dst.denoise = src.denoise;
     dst.clarity = src.clarity;
     dst.sharpen = src.sharpen;
     dst.vignette = src.vignette;
@@ -1291,6 +1298,8 @@ void RetouchWindow::openPhoto(const QString &path) {
             syncDockFromTab();
             refreshHistoryPanel();
             refreshLevels();
+            refreshMaskPanel();
+            tab->setMaskPreviewEnabled(m_layersDock && m_layersDock->isVisible());
             updateEditClipboardActions();
             m_statusLabel->setText(ok ? "Ready: " + QFileInfo(tab->path()).fileName()
                                       : "Failed to decode " + QFileInfo(tab->path()).fileName());
@@ -1352,6 +1361,10 @@ void RetouchWindow::openPhoto(const QString &path) {
     connect(tab, &RetouchTab::masksChanged, this, [this, tab] {
         if (tab == currentTab()) refreshMaskPanel();
     });
+    connect(tab, &RetouchTab::maskPreviewUpdated, this, [this, tab] {
+        if (tab == currentTab() && m_layersPanel)
+            m_layersPanel->setLevelsPreviewImage(tab->maskPreviewImage());
+    });
     connect(tab, &RetouchTab::editStateChanged, this,
             [this, tab](bool dirty, bool hasEdits) {
                 FilmstripWidget::Badge b = dirty ? FilmstripWidget::Unsaved
@@ -1379,6 +1392,9 @@ void RetouchWindow::setMode(Mode mode) {
 }
 
 void RetouchWindow::closeEvent(QCloseEvent *event) {
+    for (RetouchTab *tab : m_openTabs) {
+        if (tab && tab->isReady() && tab->isDirty()) tab->saveEdits();
+    }
     QSettings settings;
     settings.setValue("window/geometry", saveGeometry());
     settings.setValue("window/state", saveState());
@@ -1455,6 +1471,7 @@ void RetouchWindow::onTabChanged(int) {
     refreshHistoryPanel();
     refreshLevels();
     refreshMaskPanel();
+    if (tab) tab->setMaskPreviewEnabled(m_layersDock && m_layersDock->isVisible());
     updateEditClipboardActions();
     if (ready) {
         QSignalBlocker b(m_zoomSlider);
@@ -1470,6 +1487,7 @@ void RetouchWindow::onTabChanged(int) {
 void RetouchWindow::onTabCloseRequested(int index) {
     auto *tab = qobject_cast<RetouchTab *>(m_tabs->widget(index));
     if (!tab) return;
+    if (tab->isReady() && tab->isDirty()) tab->saveEdits();
     m_openTabs.remove(tab->path());
     m_tabs->removeTab(index);
     tab->deleteLater();
@@ -1531,6 +1549,7 @@ void RetouchWindow::syncDockFromTab() {
     set(m_vibrance, a.vibrance);
     set(m_temperature, a.temperature);
     set(m_tint, a.tint);
+    set(m_denoise, a.denoise);
     set(m_clarity, a.clarity);
     set(m_sharpen, a.sharpen);
     set(m_vignette, a.vignette);
@@ -1551,6 +1570,7 @@ void RetouchWindow::onToneChanged() {
     a.vibrance = m_vibrance->value();
     a.temperature = m_temperature->value();
     a.tint = m_tint->value();
+    a.denoise = m_denoise->value();
     a.clarity = m_clarity->value();
     a.sharpen = m_sharpen->value();
     a.vignette = m_vignette->value();
@@ -1560,7 +1580,7 @@ void RetouchWindow::onToneChanged() {
 void RetouchWindow::setDockEnabled(bool enabled) {
     const QList<QWidget *> widgets = {
         m_brightness, m_contrast, m_highlights, m_shadows, m_saturation,
-        m_vibrance, m_temperature, m_tint, m_clarity, m_sharpen, m_vignette,
+        m_vibrance, m_temperature, m_tint, m_denoise, m_clarity, m_sharpen, m_vignette,
         m_curve, m_wbPick, m_beforeAfter,
         m_zoomSlider, m_zoomFit, m_toolZoom,
         m_rotLeft, m_rotRight, m_flipH, m_flipV,

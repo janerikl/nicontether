@@ -17,9 +17,18 @@ template <typename T> class QFutureWatcher;
 class RenderWorker : public QObject {
     Q_OBJECT
 public slots:
-    void render(const QImage &src, const Adjustments &adj);
+    // `maskSnapshotIndex >= 0` additionally requests the cumulative composite
+    // through that mask index, returned as `maskSnapshot` in `done` (used to
+    // feed the per-layer Levels histogram; see RetouchTab::maskPreviewImage).
+    void render(const QImage &src, const Adjustments &adj, int maskSnapshotIndex);
 signals:
-    void done(const QImage &result);
+    void done(const QImage &result, const QImage &maskSnapshot);
+
+private:
+    // Persists across calls (this worker's queued slot invocations run
+    // serially on one thread) so brush/paint mask coverage only needs to be
+    // rasterized incrementally as a stroke grows; see BrushRasterCache.
+    QVector<BrushRasterCache> m_brushCache;
 };
 
 // One open photo in the retouch window. Decodes its RAW asynchronously, then
@@ -91,6 +100,12 @@ public:
     // Latest toned preview render (display-scaled). Empty until first render.
     QImage previewImage() const { return m_lastEdited; }
 
+    // Per-layer Levels histogram feed: while enabled (Layers dock visible),
+    // the render pipeline additionally produces the cumulative composite
+    // through the active mask, pushed to whoever wants to draw its histogram.
+    void setMaskPreviewEnabled(bool on);
+    QImage maskPreviewImage() const { return m_maskPreviewImage; }
+
 signals:
     void decoded(bool ok);
     void cropPending(bool hasSelection);
@@ -104,6 +119,7 @@ signals:
     void adjustmentsReplaced(); // undo/redo swapped the whole adjustment set
     void healBrushChanged(int radiusDisplayPx); // ctrl+wheel resized the brush
     void previewUpdated(); // a new toned preview render is available
+    void maskPreviewUpdated(); // a new per-layer histogram source image is available
     void masksChanged();   // mask list or active-mask geometry changed
     void maskBrushChanged(double radiusNorm); // ctrl+wheel resized the mask brush
 
@@ -112,7 +128,7 @@ private slots:
     void onCanvasCrop(const QRect &r);
     void onColorPicked(const QColor &c);
     void onHealAt(const QPoint &imgPoint);
-    void onRenderDone(const QImage &result);
+    void onRenderDone(const QImage &result, const QImage &maskSnapshot);
     void onMaskRadial(const QPointF &centerNorm, double radiusNorm);
     void onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm);
     void onMaskBrushPoint(const QPointF &ptNorm, bool erase);
@@ -122,7 +138,8 @@ private:
     void rebuildGeom();  // recompute oriented(+crop) full image + display base
     void retone();       // fast preview (defers clarity/sharpen while dragging)
     void retoneFull();   // full preview incl. clarity/sharpen (after idle)
-    void requestRender(const QImage &src, const Adjustments &adj); // coalesced, async
+    void requestRender(const QImage &src, const Adjustments &adj, int maskSnapshotIndex = -1); // coalesced, async
+    int maskPreviewIndex() const { return m_maskPreviewEnabled ? m_activeMask : -1; }
     void markEdited(); // set dirty + emit editStateChanged
     void commitHistory();     // snapshot current adjustments (coalesced)
     void applyHistoryState(); // apply m_history[m_histIndex]
@@ -158,7 +175,11 @@ private:
     bool m_hasPending = false;  // a newer request arrived while rendering
     QImage m_pendingSrc;
     Adjustments m_pendingAdj;
+    int m_pendingMaskIdx = -1;
 
     QImage m_lastEdited;          // most recent edited render (for before/after)
     bool m_showingOriginal = false;
+
+    bool m_maskPreviewEnabled = false; // Layers dock visible -> compute per-layer histogram source
+    QImage m_maskPreviewImage;
 };

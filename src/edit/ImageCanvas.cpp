@@ -121,7 +121,8 @@ void ImageCanvas::setActiveMask(bool has, const Mask &m) {
     // immediately, even before any adjustment slider has been touched.
     if (has && m.type == MaskType::Brush && !m.stroke.isEmpty() && !m_img.isNull())
         m_maskOverlay = maskCoverageOverlay(m, m_img.width(), m_img.height(),
-                                            QColor(120, 200, 255), 140, m_img);
+                                            QColor(120, 200, 255), 140, m_img,
+                                            &m_maskOverlayCache);
     else
         m_maskOverlay = QImage();
     update();

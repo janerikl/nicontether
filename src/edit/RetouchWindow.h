@@ -122,6 +122,7 @@ private:
     QSlider *m_vibrance = nullptr;
     QSlider *m_temperature = nullptr;
     QSlider *m_tint = nullptr;
+    QSlider *m_denoise = nullptr;
     QSlider *m_clarity = nullptr;
     QSlider *m_sharpen = nullptr;
     QSlider *m_vignette = nullptr;

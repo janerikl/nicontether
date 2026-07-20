@@ -12,8 +12,11 @@
 #include <QtConcurrent>
 #include <algorithm>
 
-void RenderWorker::render(const QImage &src, const Adjustments &adj) {
-    emit done(applyAdjustments(src, adj));
+void RenderWorker::render(const QImage &src, const Adjustments &adj, int maskSnapshotIndex) {
+    QImage maskSnapshot;
+    QImage result = applyAdjustments(src, adj, &m_brushCache, maskSnapshotIndex,
+                                     maskSnapshotIndex >= 0 ? &maskSnapshot : nullptr);
+    emit done(result, maskSnapshot);
 }
 
 namespace {
@@ -260,41 +263,51 @@ void RetouchTab::retone() {
     // Fast interactive path: skip the clarity/sharpen blur convolutions (the
     // expensive part) while the user is dragging, then schedule a full render.
     Adjustments t = toneOnly(m_adj);
-    bool heavy = (t.clarity != 0 || t.sharpen != 0);
-    if (heavy) { t.clarity = 0; t.sharpen = 0; }
-    requestRender(m_scaled, t);
+    bool heavy = (t.denoise != 0 || t.clarity != 0 || t.sharpen != 0);
+    if (heavy) { t.denoise = 0; t.clarity = 0; t.sharpen = 0; }
+    requestRender(m_scaled, t, maskPreviewIndex());
     if (heavy) m_fullRenderTimer->start();
     else m_fullRenderTimer->stop();
 }
 
 void RetouchTab::retoneFull() {
     if (m_scaled.isNull()) return;
-    requestRender(m_scaled, toneOnly(m_adj));
+    requestRender(m_scaled, toneOnly(m_adj), maskPreviewIndex());
 }
 
 // Coalesced async render: at most one job in flight; newer requests overwrite
 // the pending one so intermediate drag frames are dropped, not queued.
-void RetouchTab::requestRender(const QImage &src, const Adjustments &adj) {
+void RetouchTab::requestRender(const QImage &src, const Adjustments &adj, int maskSnapshotIndex) {
     if (m_rendering) {
         m_pendingSrc = src;
         m_pendingAdj = adj;
+        m_pendingMaskIdx = maskSnapshotIndex;
         m_hasPending = true;
         return;
     }
     m_rendering = true;
     QMetaObject::invokeMethod(m_renderWorker, "render", Qt::QueuedConnection,
-                              Q_ARG(QImage, src), Q_ARG(Adjustments, adj));
+                              Q_ARG(QImage, src), Q_ARG(Adjustments, adj),
+                              Q_ARG(int, maskSnapshotIndex));
 }
 
-void RetouchTab::onRenderDone(const QImage &result) {
+void RetouchTab::onRenderDone(const QImage &result, const QImage &maskSnapshot) {
     m_lastEdited = result;
+    if (!maskSnapshot.isNull()) m_maskPreviewImage = maskSnapshot;
     if (!m_showingOriginal) m_canvas->setImage(result);
     emit previewUpdated();
+    if (m_maskPreviewEnabled) emit maskPreviewUpdated();
     m_rendering = false;
     if (m_hasPending) {
         m_hasPending = false;
-        requestRender(m_pendingSrc, m_pendingAdj);
+        requestRender(m_pendingSrc, m_pendingAdj, m_pendingMaskIdx);
     }
+}
+
+void RetouchTab::setMaskPreviewEnabled(bool on) {
+    if (m_maskPreviewEnabled == on) return;
+    m_maskPreviewEnabled = on;
+    if (on) retone(); // populate the snapshot for the currently active layer
 }
 
 // Press-and-hold before/after. "Original" is the framed base without tone/
@@ -313,7 +326,18 @@ void RetouchTab::showOriginal(bool on) {
 
 void RetouchTab::setAdjustments(const Adjustments &a) {
     bool geom = geometryDiffers(a, m_adj);
-    m_adj = a;
+    Adjustments merged = a;
+    // Preserve the runtime-only image-layer decode cache: callers snapshot
+    // adjustments(), mutate one field, and write the whole struct back, which
+    // would otherwise silently revert a cache populated by an in-flight
+    // kickoffImageLayerDecode() and permanently disable that layer.
+    for (int i = 0; i < merged.masks.size() && i < m_adj.masks.size(); ++i) {
+        if (merged.masks[i].sourceImagePath == m_adj.masks[i].sourceImagePath) {
+            merged.masks[i].sourceImageCache = m_adj.masks[i].sourceImageCache;
+            merged.masks[i].sourceMissing = m_adj.masks[i].sourceMissing;
+        }
+    }
+    m_adj = merged;
     if (geom) rebuildGeom();
     else retone();
     markEdited();
@@ -408,6 +432,7 @@ int RetouchTab::addMask(MaskType type) {
     m_maskMode = (type != MaskType::None);
     m_canvas->setMaskMode(type, m_maskMode);
     pushMaskGizmo();
+    if (m_maskPreviewEnabled) retone();
     markEdited();
     emit masksChanged();
     return m_activeMask;
@@ -423,6 +448,7 @@ int RetouchTab::addImageLayer(const QString &path) {
     m_maskMode = false;
     m_canvas->setMaskMode(MaskType::None, false);
     pushMaskGizmo();
+    if (m_maskPreviewEnabled) retone();
     markEdited();
     emit masksChanged();
     kickoffImageLayerDecode(path);
@@ -471,6 +497,7 @@ void RetouchTab::selectMask(int index) {
     if (index < -1 || index >= m_adj.masks.size()) return;
     m_activeMask = index;
     pushMaskGizmo();
+    if (m_maskPreviewEnabled) retone();
     emit masksChanged();
 }
 

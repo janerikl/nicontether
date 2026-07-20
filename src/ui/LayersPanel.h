@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QImage>
 #include <QVector>
 #include <QWidget>
 
@@ -29,6 +30,11 @@ public:
 
     void setMasks(const QVector<Mask> &masks, int activeIndex);
     void clear();
+
+    // Pushes a rendered preview into the selected layer's Levels histogram
+    // (no-op if no layer is selected). RetouchWindow calls this whenever
+    // RetouchTab::maskPreviewUpdated fires.
+    void setLevelsPreviewImage(const QImage &img);
 
 signals:
     void addMaskRequested();

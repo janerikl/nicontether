@@ -115,6 +115,7 @@ private:
     bool m_hasActiveMask = false;
     Mask m_activeMask;
     QImage m_maskOverlay; // cached brush-coverage preview for m_activeMask        // geometry to draw as a gizmo
+    BrushRasterCache m_maskOverlayCache; // incremental rasterization cache for m_maskOverlay
     bool m_maskDragging = false;
     bool m_maskErasing = false; // Alt held while brush-masking: erase instead of paint
     QPointF m_maskCenterNorm; // radial centre / linear p0 captured at press

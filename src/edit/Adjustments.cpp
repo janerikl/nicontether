@@ -213,15 +213,36 @@ constexpr double kAutoMaskTolerance = 45.0;
 // Alt-painted (erase) dabs subtract from it, so painting after erasing (or
 // vice versa) behaves like Lightroom's brush eraser. `ref`, if non-null and
 // matching (w,h), enables Auto Mask edge-aware limiting.
+//
+// `cache`, if given, lets repeated calls for the same mask/resolution during
+// a drag only rasterize the newly-appended stroke points instead of redoing
+// the whole stroke; see BrushRasterCache. Falls back to a full rebuild
+// whenever the cache doesn't (or can no longer) apply.
 void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
-                    const QImage *ref = nullptr) {
-    cov.assign(size_t(w) * h, 0);
+                    const QImage *ref = nullptr, BrushRasterCache *cache = nullptr) {
+    const bool canReuse = cache && cache->valid && cache->w == w && cache->h == h &&
+                          cache->brushRadius == m.brushRadius &&
+                          cache->hardness == m.hardness &&
+                          cache->autoMask == m.autoMask &&
+                          cache->pointCount <= m.stroke.size() &&
+                          (cache->pointCount == 0 ||
+                           cache->lastPoint == m.stroke[cache->pointCount - 1]);
+
+    int startIdx = 0;
+    if (canReuse) {
+        cov = cache->cov;
+        startIdx = cache->pointCount;
+    } else {
+        cov.assign(size_t(w) * h, 0);
+    }
+
     const double W = w;
     const double rad = std::max(1.0, m.brushRadius * W);
     const double inner = clampd(m.hardness, 0.0, 1.0) * rad;
     const double band = std::max(1e-6, rad - inner);
     const bool autoMask = m.autoMask && ref && ref->width() == w && ref->height() == h;
-    for (const BrushStrokePoint &sp : m.stroke) {
+    for (int i = startIdx; i < m.stroke.size(); ++i) {
+        const BrushStrokePoint &sp = m.stroke[i];
         const double px = sp.pt.x() * W, py = sp.pt.y() * W;
         const int x0 = std::max(0, int(px - rad));
         const int x1 = std::min(w - 1, int(px + rad));
@@ -251,6 +272,18 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
             }
         }
     }
+
+    if (cache) {
+        cache->cov = cov;
+        cache->w = w;
+        cache->h = h;
+        cache->pointCount = m.stroke.size();
+        cache->brushRadius = m.brushRadius;
+        cache->hardness = m.hardness;
+        cache->autoMask = m.autoMask;
+        cache->lastPoint = m.stroke.isEmpty() ? BrushStrokePoint{} : m.stroke.last();
+        cache->valid = true;
+    }
 }
 
 QImage applyLayerContent(const QImage &src, const MaskAdjust &a); // fwd decl
@@ -277,19 +310,35 @@ QImage coverFit(const QImage &src, int w, int h) {
 // LayersPanel list shows index 0 at the top row), but compositing must apply
 // the bottom-most layer first so a higher layer paints over a lower one —
 // hence the reverse loop.
-void applyMasks(QImage &img, const QVector<Mask> &masks) {
+void applyMasks(QImage &img, const QVector<Mask> &masks,
+               QVector<BrushRasterCache> *brushCache = nullptr,
+               int snapshotAfterIndex = -1, QImage *snapshotOut = nullptr) {
     const int w = img.width(), h = img.height();
     if (w == 0 || h == 0) return;
     const double W = w;
     std::vector<uchar> cov;
+    if (brushCache && brushCache->size() != masks.size())
+        brushCache->resize(masks.size());
     for (int mi = masks.size() - 1; mi >= 0; --mi) {
         const Mask &m = masks[mi];
-        if (!m.visible || m.opacity <= 0.0) continue;
+        if (!m.visible || m.opacity <= 0.0) {
+            if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
+            continue;
+        }
         const bool imageLayer = m.isImageLayer();
-        if (imageLayer && (m.sourceMissing || m.sourceImageCache.isNull())) continue;
+        if (imageLayer && (m.sourceMissing || m.sourceImageCache.isNull())) {
+            if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
+            continue;
+        }
         const bool paintLayer = m.type == MaskType::Paint;
-        if (!imageLayer && !paintLayer && m.adj.isZero()) continue;
-        if ((m.type == MaskType::Brush || paintLayer) && m.stroke.isEmpty()) continue;
+        if (!imageLayer && !paintLayer && m.adj.isZero()) {
+            if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
+            continue;
+        }
+        if ((m.type == MaskType::Brush || paintLayer) && m.stroke.isEmpty()) {
+            if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
+            continue;
+        }
         QImage loc;
         if (imageLayer) {
             loc = applyLayerContent(coverFit(m.sourceImageCache, w, h), m.adj);
@@ -299,7 +348,9 @@ void applyMasks(QImage &img, const QVector<Mask> &masks) {
         } else {
             loc = applyLayerContent(img, m.adj);
         }
-        if (m.type == MaskType::Brush || paintLayer) rasterizeBrush(m, cov, w, h, &img);
+        if (m.type == MaskType::Brush || paintLayer)
+            rasterizeBrush(m, cov, w, h, &img,
+                           brushCache ? &(*brushCache)[mi] : nullptr);
         const double op = clampd(m.opacity, 0.0, 1.0);
         for (int y = 0; y < h; ++y) {
             QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
@@ -329,6 +380,7 @@ void applyMasks(QImage &img, const QVector<Mask> &masks) {
                     qAlpha(src));
             }
         }
+        if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
     }
 }
 
@@ -380,6 +432,40 @@ QImage boxBlur(const QImage &src, int radius) {
         }
     }
     return dst;
+}
+
+// Chroma-only noise reduction, weighted toward shadows: blurs a copy of the
+// image, then for each pixel blends its chroma (colour, independent of luma)
+// toward the blurred chroma, leaving luma untouched so edges/detail survive.
+// The blend strength falls off as (1 - luma)^2, the same shape used for the
+// `shadows` slider in applyTone, so near-black speckle gets smoothed heavily
+// while midtones/highlights are barely touched.
+void applyDenoise(QImage &img, int denoise) {
+    if (denoise <= 0) return;
+    const int w = img.width(), h = img.height();
+    int radius = std::max(2, std::min(w, h) / 150);
+    QImage blur = boxBlur(img, radius);
+    double amt = denoise / 100.0;
+    for (int y = 0; y < h; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        const QRgb *bl = reinterpret_cast<const QRgb *>(blur.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            QRgb p = line[x], q = bl[x];
+            double r = qRed(p), g = qGreen(p), b = qBlue(p);
+            double br = qRed(q), bg = qGreen(q), bb = qBlue(q);
+            double luma = 0.299 * r + 0.587 * g + 0.114 * b;
+            double blLuma = 0.299 * br + 0.587 * bg + 0.114 * bb;
+            double shadowWeight = 1.0 - clampd(luma / 255.0, 0.0, 1.0);
+            shadowWeight *= shadowWeight;
+            double k = amt * shadowWeight;
+            double cr = (r - luma) + k * ((br - blLuma) - (r - luma));
+            double cg = (g - luma) + k * ((bg - blLuma) - (g - luma));
+            double cb = (b - luma) + k * ((bb - blLuma) - (b - luma));
+            line[x] = qRgba(clamp8(int(std::lround(luma + cr))),
+                            clamp8(int(std::lround(luma + cg))),
+                            clamp8(int(std::lround(luma + cb))), qAlpha(p));
+        }
+    }
 }
 
 // Midtone local-contrast boost (large-radius blur, mixed in by midtone weight).
@@ -459,6 +545,7 @@ QImage applyLayerContent(const QImage &src, const MaskAdjust &a) {
         QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
         for (int x = 0; x < w; ++x) line[x] = applyTone(line[x], tp);
     }
+    applyDenoise(img, a.denoise);
     applyClarity(img, a.clarity);
     applySharpen(img, a.sharpen);
     applyVignette(img, a.vignette);
@@ -488,7 +575,8 @@ static bool hasMaskEdits(const Adjustments &adj) {
 }
 
 QImage maskCoverageOverlay(const Mask &m, int w, int h, const QColor &tint,
-                           int maxAlpha, const QImage &source) {
+                           int maxAlpha, const QImage &source,
+                           BrushRasterCache *cache) {
     if (w <= 0 || h <= 0) return QImage();
     // Compute at a reduced resolution so live painting stays responsive; the
     // caller scales it up to the display rect.
@@ -510,7 +598,7 @@ QImage maskCoverageOverlay(const Mask &m, int w, int h, const QColor &tint,
                                       Qt::SmoothTransformation);
             refPtr = &ref;
         }
-        rasterizeBrush(m, cov, ow, oh, refPtr);
+        rasterizeBrush(m, cov, ow, oh, refPtr, cache);
     }
     const int tr = tint.red(), tg = tint.green(), tb = tint.blue();
     for (int y = 0; y < oh; ++y) {
@@ -542,13 +630,15 @@ bool Adjustments::hasCurve() const {
 bool hasToneEdits(const Adjustments &adj) {
     return adj.brightness || adj.contrast || adj.highlights || adj.shadows ||
            adj.saturation || adj.vibrance || adj.temperature || adj.tint ||
-           adj.clarity || adj.sharpen || adj.vignette ||
+           adj.denoise || adj.clarity || adj.sharpen || adj.vignette ||
            std::abs(adj.wbR - 1.0) > 1e-4 || std::abs(adj.wbG - 1.0) > 1e-4 ||
            std::abs(adj.wbB - 1.0) > 1e-4 || adj.hasCurve() ||
            !adj.levels.isIdentity() || hasMaskEdits(adj);
 }
 
-QImage applyAdjustments(const QImage &base, const Adjustments &adj) {
+QImage applyAdjustments(const QImage &base, const Adjustments &adj,
+                        QVector<BrushRasterCache> *brushCache,
+                        int maskSnapshotIndex, QImage *maskSnapshotOut) {
     if (base.isNull()) return base;
 
     QImage img = orient(base, adj);
@@ -559,7 +649,10 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj) {
             img = img.copy(r);
     }
 
-    if (!hasToneEdits(adj)) return img;
+    if (!hasToneEdits(adj)) {
+        if (maskSnapshotOut && maskSnapshotIndex >= 0) *maskSnapshotOut = img;
+        return img;
+    }
 
     img = img.convertToFormat(QImage::Format_ARGB32);
     const int w = img.width(), h = img.height();
@@ -576,9 +669,11 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj) {
     }
 
     // --- Additional layers (blend per-layer full content by weight) ---
-    if (!adj.masks.isEmpty()) applyMasks(img, adj.masks);
+    if (!adj.masks.isEmpty())
+        applyMasks(img, adj.masks, brushCache, maskSnapshotIndex, maskSnapshotOut);
 
-    // --- Clarity / sharpen / vignette (base layer only; layers have their own) ---
+    // --- Denoise / clarity / sharpen / vignette (base layer only; layers have their own) ---
+    applyDenoise(img, adj.denoise);
     applyClarity(img, adj.clarity);
     applySharpen(img, adj.sharpen);
     applyVignette(img, adj.vignette);
@@ -598,6 +693,7 @@ QString historyStepLabel(const Adjustments &prev, const Adjustments &curr) {
     if (curr.tint != prev.tint)               return QStringLiteral("Tint");
     if (curr.wbR != prev.wbR || curr.wbG != prev.wbG || curr.wbB != prev.wbB)
         return QStringLiteral("White Balance");
+    if (curr.denoise != prev.denoise)         return QStringLiteral("Denoise");
     if (curr.clarity != prev.clarity)         return QStringLiteral("Clarity");
     if (curr.sharpen != prev.sharpen)         return QStringLiteral("Sharpen");
     if (curr.vignette != prev.vignette)       return QStringLiteral("Vignette");
