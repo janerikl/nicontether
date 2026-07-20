@@ -515,39 +515,27 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
     if (m_hasActiveImageLayer) {
         QRectF frImg = imageLayerFrameRect();
         if (!frImg.isEmpty()) {
-            QRectF fr = QRectF(m_topLeft + QPointF(frImg.left() * m_scale, frImg.top() * m_scale),
-                               QSizeF(frImg.width() * m_scale, frImg.height() * m_scale));
-            p.setRenderHint(QPainter::Antialiasing, true);
-            p.fillRect(fr, QColor(255, 200, 80, 26));
-            p.setPen(QPen(QColor(0, 0, 0, 160), 6, Qt::SolidLine));
+            QRect fr = QRectF(m_topLeft + QPointF(frImg.left() * m_scale, frImg.top() * m_scale),
+                              QSizeF(frImg.width() * m_scale, frImg.height() * m_scale))
+                          .toRect();
+            // Same look as the crop tool's selection gizmo: a dashed outline
+            // plus L-shaped corner brackets and edge midpoint ticks, sized
+            // proportionally to the frame (capped at 18px) instead of fixed
+            // filled squares — no separate handle geometry to keep in sync.
+            p.setPen(QPen(Qt::white, 1, Qt::DashLine));
             p.drawRect(fr);
-            p.setPen(QPen(QColor(255, 240, 170), 3, Qt::DashLine));
-            p.setBrush(Qt::NoBrush);
-            p.drawRect(fr);
-            p.setPen(QPen(QColor(18, 18, 18, 220), 1));
-            p.drawText(fr.adjusted(8, 8, -8, -8), Qt::AlignLeft | Qt::AlignTop,
-                       QStringLiteral("Image layer: drag to move, handles to resize"));
-            const QRectF hs[8] = {
-                QRectF(fr.left() - 8, fr.top() - 8, 16, 16),
-                QRectF(fr.center().x() - 8, fr.top() - 8, 16, 16),
-                QRectF(fr.right() - 8, fr.top() - 8, 16, 16),
-                QRectF(fr.right() - 8, fr.center().y() - 8, 16, 16),
-                QRectF(fr.right() - 8, fr.bottom() - 8, 16, 16),
-                QRectF(fr.center().x() - 8, fr.bottom() - 8, 16, 16),
-                QRectF(fr.left() - 8, fr.bottom() - 8, 16, 16),
-                QRectF(fr.left() - 8, fr.center().y() - 8, 16, 16),
-            };
-            p.setPen(QPen(QColor(55, 25, 0, 220), 2));
-            p.setBrush(QColor(255, 240, 170));
-            for (const QRectF &h : hs) p.drawRect(h);
-            p.setPen(QPen(QColor(55, 25, 0, 220), 2));
-            for (const QRectF &h : hs) {
-                p.drawLine(h.left() + 3, h.center().y(), h.right() - 3, h.center().y());
-                p.drawLine(h.center().x(), h.top() + 3, h.center().x(), h.bottom() - 3);
-            }
-            p.setBrush(QColor(60, 120, 255, 90));
-            p.setPen(QPen(QColor(60, 120, 255, 220), 2));
-            p.drawEllipse(fr.center(), 8, 8);
+            const int leg = std::min(18, std::min(fr.width(), fr.height()) / 3);
+            p.setPen(QPen(Qt::white, 2));
+            const int l = fr.left(), t = fr.top(), r = fr.right(), b = fr.bottom();
+            p.drawLine(l, t, l + leg, t); p.drawLine(l, t, l, t + leg);
+            p.drawLine(r, t, r - leg, t); p.drawLine(r, t, r, t + leg);
+            p.drawLine(l, b, l + leg, b); p.drawLine(l, b, l, b - leg);
+            p.drawLine(r, b, r - leg, b); p.drawLine(r, b, r, b - leg);
+            int mx = (l + r) / 2, my = (t + b) / 2;
+            p.drawLine(mx - leg / 2, t, mx + leg / 2, t);
+            p.drawLine(mx - leg / 2, b, mx + leg / 2, b);
+            p.drawLine(l, my - leg / 2, l, my + leg / 2);
+            p.drawLine(r, my - leg / 2, r, my + leg / 2);
         }
     }
 
@@ -656,6 +644,7 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
             m_imageFrameAtDragStart = fr;
             m_imageOffsetAtDragStart = m_activeMask.sourceImageOffset;
             m_imageScaleAtDragStart = m_activeMask.sourceImageScale;
+            m_imageDragEmitThrottle.start();
             setCursor((h == Handle::TopLeft || h == Handle::BottomRight) ? Qt::SizeFDiagCursor :
                       (h == Handle::TopRight || h == Handle::BottomLeft) ? Qt::SizeBDiagCursor :
                       (h == Handle::Top || h == Handle::Bottom) ? Qt::SizeVerCursor :
@@ -671,6 +660,7 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
             m_imageFrameAtDragStart = fr;
             m_imageOffsetAtDragStart = m_activeMask.sourceImageOffset;
             m_imageScaleAtDragStart = m_activeMask.sourceImageScale;
+            m_imageDragEmitThrottle.start();
             setCursor(Qt::ClosedHandCursor);
             update();
             return;
@@ -793,13 +783,23 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         const double cw = std::max(1, m_img.width());
         const double ch = std::max(1, m_img.height());
         QRectF fr = m_imageFrameAtDragStart;
+        // Throttle the (expensive, model-triggering) signal to ~60fps; the
+        // frame/handles below are updated on m_activeMask directly on every
+        // move regardless, so the gizmo always tracks the cursor exactly —
+        // only the underlying re-render lags slightly behind on fast drags.
+        const bool emitNow = !m_imageDragEmitThrottle.isValid() ||
+                             m_imageDragEmitThrottle.elapsed() >= 16;
         if (m_imageActiveHandle == Handle::None) {
             fr.translate(delta);
             QPointF center = fr.center();
             QPointF offset(std::clamp((center.x() / cw - 0.5) * 2.0, -1.0, 1.0),
                            std::clamp((center.y() / ch - 0.5) * 2.0, -1.0, 1.0));
-            emit imageLayerTransformChanged(offset, m_imageScaleAtDragStart,
-                                            m_activeMask.sourceImageLockRatio);
+            m_activeMask.sourceImageOffset = offset;
+            if (emitNow) {
+                emit imageLayerTransformChanged(offset, m_imageScaleAtDragStart,
+                                                m_activeMask.sourceImageLockRatio);
+                m_imageDragEmitThrottle.restart();
+            }
         } else {
             double L = fr.left(), T = fr.top(), R = fr.right(), B = fr.bottom();
             auto clampX = [&](double x) { return std::clamp(x, 0.0, double(cw)); };
@@ -836,7 +836,12 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
             QPointF center = nr.center();
             QPointF offset(std::clamp((center.x() / cw - 0.5) * 2.0, -1.0, 1.0),
                            std::clamp((center.y() / ch - 0.5) * 2.0, -1.0, 1.0));
-            emit imageLayerTransformChanged(offset, scale, lock);
+            m_activeMask.sourceImageOffset = offset;
+            m_activeMask.sourceImageScale = scale;
+            if (emitNow) {
+                emit imageLayerTransformChanged(offset, scale, lock);
+                m_imageDragEmitThrottle.restart();
+            }
         }
         update();
     } else if (m_panning) {
@@ -908,6 +913,16 @@ void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
         m_imageDragging = false;
         m_imageActiveHandle = Handle::None;
         setCursor(Qt::ArrowCursor);
+        // Commit the final position/size if the drag actually moved anything
+        // and the last move's emit was throttled away, so the model always
+        // ends up matching the gizmo (a plain click with no movement must
+        // not mark the document dirty).
+        if (m_activeMask.sourceImageOffset != m_imageOffsetAtDragStart ||
+            m_activeMask.sourceImageScale != m_imageScaleAtDragStart) {
+            emit imageLayerTransformChanged(m_activeMask.sourceImageOffset,
+                                            m_activeMask.sourceImageScale,
+                                            m_activeMask.sourceImageLockRatio);
+        }
         update();
         return;
     }

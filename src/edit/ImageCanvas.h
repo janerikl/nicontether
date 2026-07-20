@@ -7,6 +7,7 @@
 #include <QPoint>
 #include <QPointF>
 #include <QColor>
+#include <QElapsedTimer>
 
 #include "edit/Adjustments.h"
 
@@ -170,6 +171,11 @@ private:
     QRectF m_imageFrameAtDragStart;
     QPointF m_imageOffsetAtDragStart;
     QPointF m_imageScaleAtDragStart;
+    // Throttles imageLayerTransformChanged emissions during a drag so the
+    // (expensive) model re-render isn't requested faster than ~60fps; the
+    // frame/handles themselves still update every move via m_activeMask,
+    // which is written locally and doesn't wait on that round trip.
+    QElapsedTimer m_imageDragEmitThrottle;
 
     // Zoom / pan.
     double m_scale = 1.0;   // widget px per image px
