@@ -1,5 +1,12 @@
 #include "ui/LayersPanel.h"
 
+#include "ui/ColorPanel.h"
+#include "ui/DetailEffectsPanel.h"
+#include "ui/LevelsPanel.h"
+#include "ui/MaskPanel.h"
+#include "ui/ToneCurvePanel.h"
+#include "ui/TonePanel.h"
+
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QComboBox>
@@ -12,6 +19,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSlider>
 #include <QVBoxLayout>
 #include <cmath>
@@ -52,7 +60,17 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     selRow->addLayout(listButtons);
     root->addLayout(selRow, 1);
 
-    // Name / opacity / blend mode for the selected layer.
+    // Everything below is the full editing surface for the selected layer —
+    // scrollable, since it carries the same weight as the main Adjustments dock.
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    auto *editArea = new QWidget;
+    auto *edit = new QVBoxLayout(editArea);
+    edit->setContentsMargins(0, 0, 0, 0);
+    edit->setSpacing(6);
+
+    // Name / opacity / blend mode.
     auto *props = new QFormLayout;
     m_name = new QLineEdit;
     props->addRow("Name:", m_name);
@@ -67,7 +85,36 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     m_blend->addItem("Overlay", int(BlendMode::Overlay));
     m_blend->addItem("Soft Light", int(BlendMode::SoftLight));
     props->addRow("Blend:", m_blend);
-    root->addLayout(props);
+    edit->addLayout(props);
+
+    edit->addWidget(new QLabel("<b>Tone</b>"));
+    m_tonePanel = new TonePanel;
+    edit->addWidget(m_tonePanel);
+
+    edit->addWidget(new QLabel("<b>Colour</b>"));
+    m_colorPanel = new ColorPanel;
+    edit->addWidget(m_colorPanel);
+
+    edit->addWidget(new QLabel("<b>Tone Curve</b>"));
+    m_toneCurvePanel = new ToneCurvePanel;
+    edit->addWidget(m_toneCurvePanel);
+
+    edit->addWidget(new QLabel("<b>Levels</b>"));
+    m_levelsPanel = new LevelsPanel;
+    edit->addWidget(m_levelsPanel);
+
+    edit->addWidget(new QLabel("<b>Detail &amp; Effects</b>"));
+    m_detailEffectsPanel = new DetailEffectsPanel;
+    edit->addWidget(m_detailEffectsPanel);
+
+    edit->addWidget(new QLabel("<b>Mask</b>"));
+    m_maskPanel = new MaskPanel;
+    edit->addWidget(m_maskPanel);
+
+    edit->addStretch(1);
+
+    scroll->setWidget(editArea);
+    root->addWidget(scroll, 2);
 
     auto *addMenu = new QMenu(m_add);
     QAction *addLayerAction = addMenu->addAction("Add Layer");
@@ -113,6 +160,42 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 emit maskBlendChanged(BlendMode(m_blend->currentData().toInt()));
             });
 
+    connect(m_tonePanel, &TonePanel::adjustChanged, this,
+            [this](int brightness, int contrast, int highlights, int shadows) {
+                m_curAdjust.brightness = brightness;
+                m_curAdjust.contrast = contrast;
+                m_curAdjust.highlights = highlights;
+                m_curAdjust.shadows = shadows;
+                emitAdjust();
+            });
+    connect(m_colorPanel, &ColorPanel::adjustChanged, this,
+            [this](int saturation, int vibrance, int temperature, int tint) {
+                m_curAdjust.saturation = saturation;
+                m_curAdjust.vibrance = vibrance;
+                m_curAdjust.temperature = temperature;
+                m_curAdjust.tint = tint;
+                emitAdjust();
+            });
+    connect(m_toneCurvePanel, &ToneCurvePanel::curveChanged, this,
+            [this](const QVector<QPointF> &curve) {
+                m_curAdjust.curve = curve;
+                emitAdjust();
+            });
+    connect(m_levelsPanel, &LevelsPanel::levelsChanged, this,
+            [this](const Levels &lv) {
+                m_curAdjust.levels = lv;
+                emitAdjust();
+            });
+    connect(m_detailEffectsPanel, &DetailEffectsPanel::adjustChanged, this,
+            [this](int clarity, int sharpen, int vignette) {
+                m_curAdjust.clarity = clarity;
+                m_curAdjust.sharpen = sharpen;
+                m_curAdjust.vignette = vignette;
+                emitAdjust();
+            });
+    connect(m_maskPanel, &MaskPanel::maskTypeChanged, this, &LayersPanel::maskTypeChanged);
+    connect(m_maskPanel, &MaskPanel::maskShapeChanged, this, &LayersPanel::maskShapeChanged);
+
     clear();
 }
 
@@ -131,6 +214,14 @@ void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex) {
     setEnabled(true);
     rebuildList();
     loadActive();
+}
+
+void LayersPanel::setLevelsPreviewImage(const QImage &img) {
+    if (m_active >= 0 && m_active < m_masks.size()) m_levelsPanel->setImage(img);
+}
+
+void LayersPanel::setMaskBrushRadius(double radiusNorm) {
+    if (m_maskPanel) m_maskPanel->setBrushRadius(radiusNorm);
 }
 
 void LayersPanel::rebuildList() {
@@ -159,7 +250,7 @@ void LayersPanel::loadActive() {
     const bool has = m_active >= 0 && m_active < m_masks.size();
     m_syncing = true;
     for (QWidget *w : std::initializer_list<QWidget *>{
-             m_name, m_opacity, m_blend, m_duplicate, m_delete})
+             m_name, m_opacity, m_blend, m_duplicate, m_delete, m_levelsPanel})
         w->setEnabled(has);
     if (has) {
         const Mask &m = m_masks[m_active];
@@ -167,6 +258,29 @@ void LayersPanel::loadActive() {
         m_opacity->setValue(int(std::lround(m.opacity * 100)));
         int blendIdx = m_blend->findData(int(m.blend));
         m_blend->setCurrentIndex(blendIdx >= 0 ? blendIdx : 0);
+        m_curAdjust = m.adj;
+        m_tonePanel->setAdjustments(m_curAdjust.brightness, m_curAdjust.contrast,
+                                     m_curAdjust.highlights, m_curAdjust.shadows);
+        m_colorPanel->setAdjustments(m_curAdjust.saturation, m_curAdjust.vibrance,
+                                      m_curAdjust.temperature, m_curAdjust.tint);
+        m_toneCurvePanel->setCurve(m_curAdjust.curve);
+        m_levelsPanel->setLevels(m_curAdjust.levels);
+        m_detailEffectsPanel->setAdjustments(m_curAdjust.clarity, m_curAdjust.sharpen,
+                                              m_curAdjust.vignette);
+        m_maskPanel->setMask(m, true);
+    } else {
+        m_curAdjust = MaskAdjust();
+        m_tonePanel->clear();
+        m_colorPanel->clear();
+        m_toneCurvePanel->clear();
+        m_levelsPanel->clear();
+        m_detailEffectsPanel->clear();
+        m_maskPanel->clear();
     }
     m_syncing = false;
+}
+
+void LayersPanel::emitAdjust() {
+    if (m_syncing) return;
+    emit maskAdjustChanged(m_curAdjust);
 }
