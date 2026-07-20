@@ -301,6 +301,11 @@ struct Adjustments {
     bool flipV = false;
     QRect cropRect;            // oriented-image coords; null = no crop
 
+    // Canvas background color (view-only — never affects the rendered/exported
+    // image, only what ImageCanvas paints behind the photo). Persisted per-image
+    // in the sidecar like everything else here, so it's just carried along.
+    QColor backgroundColor = QColor(30, 30, 30);
+
     bool hasCurve() const;     // true if curve is set and not the identity
 
     bool operator==(const Adjustments &o) const {
@@ -315,7 +320,8 @@ struct Adjustments {
                colorRanges == o.colorRanges &&
                masks == o.masks && heals == o.heals &&
                rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
-               flipV == o.flipV && cropRect == o.cropRect;
+               flipV == o.flipV && cropRect == o.cropRect &&
+               backgroundColor == o.backgroundColor;
     }
     bool operator!=(const Adjustments &o) const { return !(*this == o); }
 };

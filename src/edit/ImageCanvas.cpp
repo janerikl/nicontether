@@ -10,6 +10,9 @@
 #include <QDragLeaveEvent>
 #include <QDropEvent>
 #include <QMimeData>
+#include <QContextMenuEvent>
+#include <QMenu>
+#include <QColorDialog>
 #include <cmath>
 #include <algorithm>
 
@@ -337,7 +340,7 @@ QRect ImageCanvas::selectionInImage() const {
 
 void ImageCanvas::paintEvent(QPaintEvent *) {
     QPainter p(this);
-    p.fillRect(rect(), QColor(30, 30, 30));
+    p.fillRect(rect(), m_backgroundColor);
     if (m_img.isNull()) {
         p.setPen(Qt::lightGray);
         p.drawText(rect(), Qt::AlignCenter, m_placeholder);
@@ -1031,5 +1034,37 @@ void ImageCanvas::dropEvent(QDropEvent *ev) {
             emit imageLayerDropped(u.toLocalFile());
             return; // one layer per drop
         }
+    }
+}
+
+void ImageCanvas::setBackgroundColor(const QColor &color) {
+    if (!color.isValid() || color == m_backgroundColor) return;
+    m_backgroundColor = color;
+    update();
+    emit backgroundColorChanged(m_backgroundColor);
+}
+
+void ImageCanvas::contextMenuEvent(QContextMenuEvent *ev) {
+    static const QColor kDefaultBackground(30, 30, 30);
+    QMenu menu(this);
+    QAction *black = menu.addAction(tr("Black"));
+    QAction *white = menu.addAction(tr("White"));
+    QAction *gray = menu.addAction(tr("Gray"));
+    menu.addSeparator();
+    QAction *custom = menu.addAction(tr("Custom..."));
+    QAction *reset = menu.addAction(tr("Reset to Default"));
+
+    QAction *chosen = menu.exec(ev->globalPos());
+    if (chosen == black) {
+        setBackgroundColor(Qt::black);
+    } else if (chosen == white) {
+        setBackgroundColor(Qt::white);
+    } else if (chosen == gray) {
+        setBackgroundColor(QColor(0x80, 0x80, 0x80));
+    } else if (chosen == custom) {
+        QColor c = QColorDialog::getColor(m_backgroundColor, this, tr("Canvas Background Color"));
+        if (c.isValid()) setBackgroundColor(c);
+    } else if (chosen == reset) {
+        setBackgroundColor(kDefaultBackground);
     }
 }

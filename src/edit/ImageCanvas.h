@@ -64,7 +64,12 @@ public:
     void setZoomPercent(double percent); // anchored to the view centre
     double zoomPercent() const { return m_scale * 100.0; }
 
+    // Canvas background (right-click the canvas background to change it).
+    void setBackgroundColor(const QColor &color);
+    QColor backgroundColor() const { return m_backgroundColor; }
+
 signals:
+    void backgroundColorChanged(const QColor &color);
     void cropSelected(const QRect &imageRect);
     void commitCropRequested();
     void colorPicked(const QColor &color);

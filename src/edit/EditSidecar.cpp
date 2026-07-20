@@ -75,7 +75,7 @@ bool exists(const QString &imagePath) {
 
 bool save(const QString &imagePath, const Adjustments &a) {
     QJsonObject o;
-    o["version"] = 5;
+    o["version"] = 6;
     o["brightness"] = a.brightness;
     o["contrast"] = a.contrast;
     o["highlights"] = a.highlights;
@@ -94,6 +94,7 @@ bool save(const QString &imagePath, const Adjustments &a) {
     o["rotationQuadrants"] = a.rotationQuadrants;
     o["flipH"] = a.flipH;
     o["flipV"] = a.flipV;
+    o["backgroundColor"] = a.backgroundColor.name(QColor::HexRgb);
     if (!a.cropRect.isNull()) {
         QJsonObject c;
         c["x"] = a.cropRect.x();
@@ -219,6 +220,8 @@ bool load(const QString &imagePath, Adjustments &out) {
     a.rotationQuadrants = o["rotationQuadrants"].toInt();
     a.flipH = o["flipH"].toBool();
     a.flipV = o["flipV"].toBool();
+    a.backgroundColor = QColor(o["backgroundColor"].toString(QStringLiteral("#1e1e1e")));
+    if (!a.backgroundColor.isValid()) a.backgroundColor = QColor(30, 30, 30);
     if (o.contains("crop")) {
         QJsonObject c = o["crop"].toObject();
         a.cropRect = QRect(c["x"].toInt(), c["y"].toInt(),

@@ -88,7 +88,14 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
                 retone();
                 markEdited();
             });
+    connect(m_canvas, &ImageCanvas::backgroundColorChanged, this,
+            [this](const QColor &color) {
+                if (m_adj.backgroundColor == color) return;
+                m_adj.backgroundColor = color;
+                markEdited();
+            });
 
+    m_canvas->setBackgroundColor(m_adj.backgroundColor); // restored from sidecar, if any
     m_canvas->setPlaceholder("Decoding RAW…");
 
     // After dragging stops, upgrade the preview with the expensive convolutions.
@@ -182,6 +189,7 @@ void RetouchTab::commitHistory() {
 void RetouchTab::applyHistoryState() {
     m_adj = m_history[m_histIndex];
     rebuildGeom();
+    m_canvas->setBackgroundColor(m_adj.backgroundColor);
     // Keep the active-mask index valid after undo/redo changes the mask list.
     if (m_activeMask >= m_adj.masks.size())
         m_activeMask = m_adj.masks.isEmpty() ? -1 : m_adj.masks.size() - 1;

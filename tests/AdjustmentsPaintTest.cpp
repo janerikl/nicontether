@@ -3,6 +3,7 @@
 
 #include <QImage>
 #include <QTemporaryDir>
+#include <QFile>
 #include <cassert>
 #include <cstdio>
 
@@ -126,6 +127,38 @@ int main() {
         assert(loaded.masks[0].sourceImageOffset == QPointF(0.25, -0.5));
         assert(loaded.masks[0].sourceImageScale == QPointF(0.75, 0.5));
         assert(!loaded.masks[0].sourceImageLockRatio);
+    }
+
+    // Canvas background color persists through the sidecar format.
+    {
+        QTemporaryDir dir;
+        assert(dir.isValid());
+        const QString path = dir.filePath("photo.nef");
+
+        Adjustments adj;
+        adj.backgroundColor = QColor(0x11, 0x22, 0x33);
+        assert(EditSidecar::save(path, adj));
+
+        Adjustments loaded;
+        assert(EditSidecar::load(path, loaded));
+        assert(loaded.backgroundColor == QColor(0x11, 0x22, 0x33));
+    }
+
+    // A sidecar written before the background-color field existed (or one
+    // simply missing it) loads the default instead of an invalid color.
+    {
+        QTemporaryDir dir;
+        assert(dir.isValid());
+        const QString path = dir.filePath("photo.nef");
+
+        QFile f(EditSidecar::pathFor(path));
+        assert(f.open(QIODevice::WriteOnly));
+        f.write("{\"version\":5,\"brightness\":0}");
+        f.close();
+
+        Adjustments loaded;
+        assert(EditSidecar::load(path, loaded));
+        assert(loaded.backgroundColor == QColor(30, 30, 30));
     }
 
     // Incremental brush-rasterization cache: rendering a growing stroke one
