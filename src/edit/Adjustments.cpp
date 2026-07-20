@@ -414,6 +414,37 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             p.setRenderHint(QPainter::SmoothPixmapTransform, true);
             p.drawImage(frame.topLeft(), fitted);
             p.end();
+            if (!m.eraseStrokes.isEmpty()) {
+                std::vector<double> cov(size_t(w) * h, 0.0);
+                for (const ErasePoint &ep : m.eraseStrokes) {
+                    const double px = ep.pt.x() * W, py = ep.pt.y() * W;
+                    const double rad = std::max(1.0, ep.radius * W);
+                    const int x0 = std::max(0, int(px - rad));
+                    const int x1 = std::min(w - 1, int(px + rad));
+                    const int y0 = std::max(0, int(py - rad));
+                    const int y1 = std::min(h - 1, int(py + rad));
+                    for (int y = y0; y <= y1; ++y) {
+                        for (int x = x0; x <= x1; ++x) {
+                            double dx = x - px, dy = y - py;
+                            double dist = std::sqrt(dx * dx + dy * dy);
+                            double v = dist >= rad ? 0.0
+                                                    : smoothstep01((rad - dist) / rad);
+                            double &c = cov[size_t(y) * w + x];
+                            if (v > c) c = v;
+                        }
+                    }
+                }
+                for (int y = 0; y < h; ++y) {
+                    QRgb *line = reinterpret_cast<QRgb *>(loc.scanLine(y));
+                    for (int x = 0; x < w; ++x) {
+                        double c = cov[size_t(y) * w + x];
+                        if (c <= 0.0) continue;
+                        QRgb px = line[x];
+                        int newAlpha = int(std::lround(qAlpha(px) * (1.0 - c)));
+                        line[x] = qRgba(qRed(px), qGreen(px), qBlue(px), newAlpha);
+                    }
+                }
+            }
             loc = applyLayerContent(loc, m.adj);
         } else if (paintLayer) {
             loc = QImage(w, h, QImage::Format_RGBA64);

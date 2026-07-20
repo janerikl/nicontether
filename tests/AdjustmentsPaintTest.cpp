@@ -104,6 +104,67 @@ int main() {
         assert(qRed(resized.pixel(0, 0)) == 0);
     }
 
+    // Erasing an image layer punches transparency through to the base below.
+    {
+        QImage base(8, 8, QImage::Format_ARGB32);
+        base.fill(QColor(0, 0, 255)); // blue base, should show through the hole
+
+        QImage src(8, 8, QImage::Format_ARGB32);
+        src.fill(QColor(255, 0, 0)); // red layer, fully covering the frame
+
+        Mask layer;
+        layer.type = MaskType::None;
+        layer.sourceImagePath = "layer.png";
+        layer.sourceImageCache = src;
+        layer.opacity = 1.0;
+        // Erase dab dead centre with a radius covering roughly the middle third.
+        layer.eraseStrokes.append(ErasePoint{QPointF(0.5, 0.5), 0.2});
+
+        Adjustments adj;
+        adj.masks.append(layer);
+
+        QImage out = applyAdjustments(base, adj);
+        // Centre pixel: fully erased -> blue base shows through.
+        assert(qRed(out.pixel(4, 4)) < 20 && qBlue(out.pixel(4, 4)) > 200);
+        // Corner pixel: untouched by the erase dab -> still red.
+        assert(qRed(out.pixel(0, 0)) > 200 && qBlue(out.pixel(0, 0)) < 20);
+    }
+
+    // Erase coverage is max-combined across overlapping dabs, not compounded
+    // (two overlapping partial-feather dabs shouldn't erase more than a
+    // single full-strength dab would at the same point).
+    {
+        QImage base(8, 8, QImage::Format_ARGB32);
+        base.fill(QColor(0, 0, 255));
+
+        QImage src(8, 8, QImage::Format_ARGB32);
+        src.fill(QColor(255, 0, 0));
+
+        Mask single;
+        single.type = MaskType::None;
+        single.sourceImagePath = "layer.png";
+        single.sourceImageCache = src;
+        single.opacity = 1.0;
+        single.eraseStrokes.append(ErasePoint{QPointF(0.5, 0.5), 0.2});
+
+        Mask doubled;
+        doubled.type = MaskType::None;
+        doubled.sourceImagePath = "layer.png";
+        doubled.sourceImageCache = src;
+        doubled.opacity = 1.0;
+        doubled.eraseStrokes.append(ErasePoint{QPointF(0.5, 0.5), 0.2});
+        doubled.eraseStrokes.append(ErasePoint{QPointF(0.5, 0.5), 0.2}); // same spot again
+
+        Adjustments adjSingle;
+        adjSingle.masks.append(single);
+        Adjustments adjDoubled;
+        adjDoubled.masks.append(doubled);
+
+        QImage outSingle = applyAdjustments(base, adjSingle);
+        QImage outDoubled = applyAdjustments(base, adjDoubled);
+        assert(outSingle.pixel(4, 4) == outDoubled.pixel(4, 4));
+    }
+
     // Image-layer position persists through the sidecar format.
     {
         QTemporaryDir dir;
