@@ -20,6 +20,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QCheckBox>
 #include <QMainWindow>
 #include <QMenu>
 #include <QPainter>
@@ -28,6 +29,7 @@
 #include <QSlider>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QSignalBlocker>
 #include <cmath>
 
 namespace {
@@ -188,6 +190,54 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     props->addRow("Blend:", m_blend);
     root->addLayout(props);
 
+    auto *imageHeader = new QLabel("<b>Image Layer</b>");
+    root->addWidget(imageHeader);
+    auto *imageForm = new QFormLayout;
+    auto mkPos = [&](const QString &label) {
+        auto *s = new QSlider(Qt::Horizontal);
+        s->setRange(-100, 100);
+        imageForm->addRow(label + ":", s);
+        connect(s, &QSlider::valueChanged, this, [this] { emitImageTransform(); });
+        return s;
+    };
+    auto mkScale = [&](const QString &label) {
+        auto *s = new QSlider(Qt::Horizontal);
+        s->setRange(10, 300);
+        imageForm->addRow(label + ":", s);
+        connect(s, &QSlider::valueChanged, this, [this](int v) {
+            if (m_syncing) return;
+            if (m_imageLockRatio && m_imageLockRatio->isChecked()) {
+                if (this->sender() == m_imageScaleX && m_imageScaleY) {
+                    QSignalBlocker b(m_imageScaleY);
+                    m_imageScaleY->setValue(v);
+                } else if (this->sender() == m_imageScaleY && m_imageScaleX) {
+                    QSignalBlocker b(m_imageScaleX);
+                    m_imageScaleX->setValue(v);
+                }
+            }
+            emitImageTransform();
+        });
+        return s;
+    };
+    m_imagePosX = mkPos("Position X");
+    m_imagePosY = mkPos("Position Y");
+    m_imageScaleX = mkScale("Scale W");
+    m_imageScaleY = mkScale("Scale H");
+    m_imageLockRatio = new QCheckBox("Lock ratio");
+    imageForm->addRow("", m_imageLockRatio);
+    connect(m_imageLockRatio, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_syncing) return;
+        if (on && m_imageScaleX && m_imageScaleY) {
+            QSignalBlocker bx(m_imageScaleX);
+            QSignalBlocker by(m_imageScaleY);
+            const int v = std::max(m_imageScaleX->value(), m_imageScaleY->value());
+            m_imageScaleX->setValue(v);
+            m_imageScaleY->setValue(v);
+        }
+        emitImageTransform();
+    });
+    root->addLayout(imageForm);
+
     // Each editing section is its own QDockWidget nested inside a small
     // inner QMainWindow, so it gets a real collapse/float/close title bar
     // while the whole thing still docks/floats as one "Layers" panel.
@@ -324,6 +374,15 @@ void LayersPanel::clear() {
     m_active = -1;
     m_syncing = true;
     m_maskList->clear();
+    m_imagePosX->setValue(0);
+    m_imagePosY->setValue(0);
+    m_imageScaleX->setValue(100);
+    m_imageScaleY->setValue(100);
+    m_imagePosX->setEnabled(false);
+    m_imagePosY->setEnabled(false);
+    m_imageScaleX->setEnabled(false);
+    m_imageScaleY->setEnabled(false);
+    m_imageLockRatio->setEnabled(false);
     m_syncing = false;
     setEnabled(false);
 }
@@ -406,6 +465,17 @@ void LayersPanel::loadActive() {
         m_detailEffectsPanel->setAdjustments(m_curAdjust.clarity, m_curAdjust.sharpen,
                                               m_curAdjust.vignette);
         m_maskPanel->setMask(m, true);
+        const bool imageLayer = m.isImageLayer();
+        m_imagePosX->setEnabled(imageLayer);
+        m_imagePosY->setEnabled(imageLayer);
+        m_imageScaleX->setEnabled(imageLayer);
+        m_imageScaleY->setEnabled(imageLayer);
+        m_imageLockRatio->setEnabled(imageLayer);
+        m_imagePosX->setValue(imageLayer ? int(std::lround(m.sourceImageOffset.x() * 100.0)) : 0);
+        m_imagePosY->setValue(imageLayer ? int(std::lround(m.sourceImageOffset.y() * 100.0)) : 0);
+        m_imageScaleX->setValue(imageLayer ? int(std::lround(m.sourceImageScale.x() * 100.0)) : 100);
+        m_imageScaleY->setValue(imageLayer ? int(std::lround(m.sourceImageScale.y() * 100.0)) : 100);
+        m_imageLockRatio->setChecked(imageLayer ? m.sourceImageLockRatio : true);
     } else {
         m_curAdjust = MaskAdjust();
         m_tonePanel->clear();
@@ -414,6 +484,15 @@ void LayersPanel::loadActive() {
         m_levelsPanel->clear();
         m_detailEffectsPanel->clear();
         m_maskPanel->clear();
+        m_imagePosX->setEnabled(false);
+        m_imagePosY->setEnabled(false);
+        m_imageScaleX->setEnabled(false);
+        m_imageScaleY->setEnabled(false);
+        m_imageLockRatio->setEnabled(false);
+        m_imagePosX->setValue(0);
+        m_imagePosY->setValue(0);
+        m_imageScaleX->setValue(100);
+        m_imageScaleY->setValue(100);
     }
     m_syncing = false;
 }
@@ -421,4 +500,15 @@ void LayersPanel::loadActive() {
 void LayersPanel::emitAdjust() {
     if (m_syncing) return;
     emit maskAdjustChanged(m_curAdjust);
+}
+
+void LayersPanel::emitImageTransform() {
+    if (m_syncing) return;
+    if (m_active < 0 || m_active >= m_masks.size() || !m_masks[m_active].isImageLayer())
+        return;
+    emit maskImageTransformChanged(m_imagePosX->value() / 100.0,
+                                   m_imagePosY->value() / 100.0,
+                                   m_imageScaleX->value() / 100.0,
+                                   m_imageScaleY->value() / 100.0,
+                                   m_imageLockRatio->isChecked());
 }

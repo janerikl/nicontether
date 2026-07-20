@@ -1076,6 +1076,13 @@ void RetouchWindow::buildLayersDock() {
                 RetouchTab *tab = currentTab();
                 if (tab) tab->setActiveMaskAdjust(a);
             });
+    connect(m_layersPanel, &LayersPanel::maskImageTransformChanged, this,
+            [this](double offsetX, double offsetY, double scaleX, double scaleY,
+                   bool lockRatio) {
+                RetouchTab *tab = currentTab();
+                if (tab) tab->setActiveMaskImageTransform(offsetX, offsetY, scaleX,
+                                                         scaleY, lockRatio);
+            });
     connect(m_layersPanel, &LayersPanel::maskTypeChanged, this, [this](MaskType t) {
         RetouchTab *tab = currentTab();
         if (tab) { tab->setActiveMaskType(t); refreshMaskPanel(); }

@@ -1,5 +1,7 @@
 #include "edit/Adjustments.h"
 
+#include <QPainter>
+#include <QRectF>
 #include <QTransform>
 #include <algorithm>
 #include <cmath>
@@ -288,17 +290,28 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
 
 QImage applyLayerContent(const QImage &src, const MaskAdjust &a); // fwd decl
 
-// Scale `src` to cover a w×h target (aspect-fill) and center-crop to exactly
-// that size — classic CSS `background-size: cover`. Used to fit a dropped
-// image layer's source photo to whatever resolution is currently rendering
-// (preview-scaled or full-res export).
-QImage coverFit(const QImage &src, int w, int h) {
+// Scale `src` to cover a w×h target (aspect-fill) and crop to exactly that
+// size. `offset` pans the crop window, with (-1,-1) = top-left, (0,0) =
+// centered, (+1,+1) = bottom-right.
+QImage coverFit(const QImage &src, int w, int h, const QPointF &offset) {
     if (src.isNull() || w <= 0 || h <= 0) return QImage();
     QImage scaled = src.scaled(w, h, Qt::KeepAspectRatioByExpanding,
                                Qt::SmoothTransformation);
-    const int x = (scaled.width() - w) / 2;
-    const int y = (scaled.height() - h) / 2;
+    const int maxX = std::max(0, scaled.width() - w);
+    const int maxY = std::max(0, scaled.height() - h);
+    const double ox = clampd(offset.x(), -1.0, 1.0);
+    const double oy = clampd(offset.y(), -1.0, 1.0);
+    const int x = std::clamp(int(std::lround(maxX / 2.0 + ox * maxX / 2.0)), 0, maxX);
+    const int y = std::clamp(int(std::lround(maxY / 2.0 + oy * maxY / 2.0)), 0, maxY);
     return scaled.copy(x, y, w, h);
+}
+
+QRectF imageLayerFrame(int canvasW, int canvasH, const Mask &m) {
+    const double w = std::max(1, int(std::lround(canvasW * std::max(0.01, m.sourceImageScale.x()))));
+    const double h = std::max(1, int(std::lround(canvasH * std::max(0.01, m.sourceImageScale.y()))));
+    const double cx = canvasW * (0.5 + 0.5 * clampd(m.sourceImageOffset.x(), -1.0, 1.0));
+    const double cy = canvasH * (0.5 + 0.5 * clampd(m.sourceImageOffset.y(), -1.0, 1.0));
+    return QRectF(cx - w / 2.0, cy - h / 2.0, w, h);
 }
 
 // Apply all layers, blending each layer's full tone/colour/detail content
@@ -341,7 +354,17 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         }
         QImage loc;
         if (imageLayer) {
-            loc = applyLayerContent(coverFit(m.sourceImageCache, w, h), m.adj);
+            QRectF frame = imageLayerFrame(w, h, m);
+            QImage fitted = coverFit(m.sourceImageCache, std::max(1, int(std::lround(frame.width()))),
+                                     std::max(1, int(std::lround(frame.height()))),
+                                     QPointF());
+            loc = QImage(w, h, QImage::Format_ARGB32);
+            loc.fill(Qt::transparent);
+            QPainter p(&loc);
+            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            p.drawImage(frame.topLeft(), fitted);
+            p.end();
+            loc = applyLayerContent(loc, m.adj);
         } else if (paintLayer) {
             loc = QImage(w, h, QImage::Format_ARGB32);
             loc.fill(m.paintColor);
@@ -365,6 +388,8 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                     wgt = linearWeight(m, x / W, y / W);
                 else
                     wgt = cov[size_t(y) * w + x] / 255.0;
+                if (imageLayer)
+                    wgt *= qAlpha(locLine[x]) / 255.0;
                 wgt *= op;
                 if (wgt <= 0.0) continue;
                 QRgb src = line[x];

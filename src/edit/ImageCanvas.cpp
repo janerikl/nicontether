@@ -30,6 +30,8 @@ constexpr int kHealBrushMax = 80;
 constexpr double kMaskBrushMin = 0.01;
 constexpr double kMaskBrushMax = 0.40;
 constexpr double kMaskBrushStep = 0.01;
+constexpr double kImageLayerScaleMin = 0.10;
+constexpr double kImageLayerScaleMax = 3.00;
 
 // A magnifying-glass cursor, drawn once and cached. Hotspot sits at the centre
 // of the lens so it lines up with the point being zoomed.
@@ -116,6 +118,11 @@ void ImageCanvas::setMaskMode(MaskType kind, bool on) {
 void ImageCanvas::setActiveMask(bool has, const Mask &m) {
     m_hasActiveMask = has;
     m_activeMask = m;
+    m_hasActiveImageLayer = has && m.isImageLayer();
+    if (!m_hasActiveImageLayer) {
+        m_imageDragging = false;
+        m_imageActiveHandle = Handle::None;
+    }
     if (has) m_maskKind = m.type;
     // Recompute the live brush-coverage preview so the painted area is visible
     // immediately, even before any adjustment slider has been touched.
@@ -215,6 +222,38 @@ QRect ImageCanvas::targetRect() const {
     if (m_img.isNull()) return QRect();
     return QRectF(m_topLeft, QSizeF(m_img.width() * m_scale,
                                     m_img.height() * m_scale)).toRect();
+}
+
+QRectF ImageCanvas::imageLayerFrameRect() const {
+    if (!m_hasActiveImageLayer || m_img.isNull()) return QRectF();
+    const double w = m_img.width() * std::max(0.01, m_activeMask.sourceImageScale.x());
+    const double h = m_img.height() * std::max(0.01, m_activeMask.sourceImageScale.y());
+    const double cx = m_img.width() * (0.5 + 0.5 * std::clamp(m_activeMask.sourceImageOffset.x(), -1.0, 1.0));
+    const double cy = m_img.height() * (0.5 + 0.5 * std::clamp(m_activeMask.sourceImageOffset.y(), -1.0, 1.0));
+    return QRectF(cx - w / 2.0, cy - h / 2.0, w, h);
+}
+
+ImageCanvas::Handle ImageCanvas::imageLayerHandleAt(const QPoint &pos) const {
+    QRectF r = imageLayerFrameRect();
+    if (r.isEmpty()) return Handle::None;
+    QPointF imgPos = (QPointF(pos) - m_topLeft) / m_scale;
+    const double t = 10.0 / std::max(0.01, m_scale);
+    auto near = [&](double a, double b) { return std::abs(a - b) <= t; };
+    bool onLeft   = near(imgPos.x(), r.left());
+    bool onRight  = near(imgPos.x(), r.right());
+    bool onTop    = near(imgPos.y(), r.top());
+    bool onBottom = near(imgPos.y(), r.bottom());
+    bool inX = imgPos.x() >= r.left() - t && imgPos.x() <= r.right() + t;
+    bool inY = imgPos.y() >= r.top() - t && imgPos.y() <= r.bottom() + t;
+    if (onTop && onLeft)       return Handle::TopLeft;
+    if (onTop && onRight)      return Handle::TopRight;
+    if (onBottom && onLeft)    return Handle::BottomLeft;
+    if (onBottom && onRight)   return Handle::BottomRight;
+    if (onTop && inX)          return Handle::Top;
+    if (onBottom && inX)       return Handle::Bottom;
+    if (onLeft && inY)         return Handle::Left;
+    if (onRight && inY)        return Handle::Right;
+    return Handle::None;
 }
 
 // ---- Crop mapping ----------------------------------------------------------
@@ -418,6 +457,45 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         }
     }
 
+    if (m_hasActiveImageLayer) {
+        QRectF frImg = imageLayerFrameRect();
+        if (!frImg.isEmpty()) {
+            QRectF fr = QRectF(m_topLeft + QPointF(frImg.left() * m_scale, frImg.top() * m_scale),
+                               QSizeF(frImg.width() * m_scale, frImg.height() * m_scale));
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.fillRect(fr, QColor(255, 200, 80, 26));
+            p.setPen(QPen(QColor(0, 0, 0, 160), 6, Qt::SolidLine));
+            p.drawRect(fr);
+            p.setPen(QPen(QColor(255, 240, 170), 3, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(fr);
+            p.setPen(QPen(QColor(18, 18, 18, 220), 1));
+            p.drawText(fr.adjusted(8, 8, -8, -8), Qt::AlignLeft | Qt::AlignTop,
+                       QStringLiteral("Image layer: drag to move, handles to resize"));
+            const QRectF hs[8] = {
+                QRectF(fr.left() - 8, fr.top() - 8, 16, 16),
+                QRectF(fr.center().x() - 8, fr.top() - 8, 16, 16),
+                QRectF(fr.right() - 8, fr.top() - 8, 16, 16),
+                QRectF(fr.right() - 8, fr.center().y() - 8, 16, 16),
+                QRectF(fr.right() - 8, fr.bottom() - 8, 16, 16),
+                QRectF(fr.center().x() - 8, fr.bottom() - 8, 16, 16),
+                QRectF(fr.left() - 8, fr.bottom() - 8, 16, 16),
+                QRectF(fr.left() - 8, fr.center().y() - 8, 16, 16),
+            };
+            p.setPen(QPen(QColor(55, 25, 0, 220), 2));
+            p.setBrush(QColor(255, 240, 170));
+            for (const QRectF &h : hs) p.drawRect(h);
+            p.setPen(QPen(QColor(55, 25, 0, 220), 2));
+            for (const QRectF &h : hs) {
+                p.drawLine(h.left() + 3, h.center().y(), h.right() - 3, h.center().y());
+                p.drawLine(h.center().x(), h.top() + 3, h.center().x(), h.bottom() - 3);
+            }
+            p.setBrush(QColor(60, 120, 255, 90));
+            p.setPen(QPen(QColor(60, 120, 255, 220), 2));
+            p.drawEllipse(fr.center(), 8, 8);
+        }
+    }
+
     if (m_dragHighlight) {
         p.setPen(QPen(QColor(120, 200, 255), 3, Qt::DashLine));
         p.drawRect(rect().adjusted(2, 2, -2, -2));
@@ -490,6 +568,39 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         }
         update();
         return;
+    }
+
+    if (m_hasActiveImageLayer && ev->button() == Qt::LeftButton &&
+        !m_zoomMode && !m_spaceDown) {
+        Handle h = imageLayerHandleAt(ev->pos());
+        QRectF fr = imageLayerFrameRect();
+        QPointF imgPos = (QPointF(ev->pos()) - m_topLeft) / m_scale;
+        if (h != Handle::None) {
+            m_imageDragging = true;
+            m_imageActiveHandle = h;
+            m_imageMoveStart = ev->pos();
+            m_imageFrameAtDragStart = fr;
+            m_imageOffsetAtDragStart = m_activeMask.sourceImageOffset;
+            m_imageScaleAtDragStart = m_activeMask.sourceImageScale;
+            setCursor((h == Handle::TopLeft || h == Handle::BottomRight) ? Qt::SizeFDiagCursor :
+                      (h == Handle::TopRight || h == Handle::BottomLeft) ? Qt::SizeBDiagCursor :
+                      (h == Handle::Top || h == Handle::Bottom) ? Qt::SizeVerCursor :
+                      (h == Handle::Left || h == Handle::Right) ? Qt::SizeHorCursor :
+                      Qt::SizeAllCursor);
+            update();
+            return;
+        }
+        if (fr.contains(imgPos)) {
+            m_imageDragging = true;
+            m_imageActiveHandle = Handle::None;
+            m_imageMoveStart = ev->pos();
+            m_imageFrameAtDragStart = fr;
+            m_imageOffsetAtDragStart = m_activeMask.sourceImageOffset;
+            m_imageScaleAtDragStart = m_activeMask.sourceImageScale;
+            setCursor(Qt::ClosedHandCursor);
+            update();
+            return;
+        }
     }
 
     // Normal mode: Space+drag always pans; plain drag draws a zoom marquee
@@ -598,6 +709,57 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         m_p0 = nr.topLeft();
         m_p1 = nr.bottomRight();
         update();
+    } else if (m_imageDragging) {
+        QPointF delta = (QPointF(ev->pos()) - m_imageMoveStart) / m_scale;
+        const double cw = std::max(1, m_img.width());
+        const double ch = std::max(1, m_img.height());
+        QRectF fr = m_imageFrameAtDragStart;
+        if (m_imageActiveHandle == Handle::None) {
+            fr.translate(delta);
+            QPointF center = fr.center();
+            QPointF offset(std::clamp((center.x() / cw - 0.5) * 2.0, -1.0, 1.0),
+                           std::clamp((center.y() / ch - 0.5) * 2.0, -1.0, 1.0));
+            emit imageLayerTransformChanged(offset, m_imageScaleAtDragStart,
+                                            m_activeMask.sourceImageLockRatio);
+        } else {
+            double L = fr.left(), T = fr.top(), R = fr.right(), B = fr.bottom();
+            auto clampX = [&](double x) { return std::clamp(x, 0.0, double(cw)); };
+            auto clampY = [&](double y) { return std::clamp(y, 0.0, double(ch)); };
+            switch (m_imageActiveHandle) {
+            case Handle::Left:        L = clampX(L + delta.x()); break;
+            case Handle::Right:       R = clampX(R + delta.x()); break;
+            case Handle::Top:         T = clampY(T + delta.y()); break;
+            case Handle::Bottom:      B = clampY(B + delta.y()); break;
+            case Handle::TopLeft:     L = clampX(L + delta.x()); T = clampY(T + delta.y()); break;
+            case Handle::TopRight:    R = clampX(R + delta.x()); T = clampY(T + delta.y()); break;
+            case Handle::BottomLeft:  L = clampX(L + delta.x()); B = clampY(B + delta.y()); break;
+            case Handle::BottomRight: R = clampX(R + delta.x()); B = clampY(B + delta.y()); break;
+            case Handle::None: break;
+            }
+            QRectF nr(QPointF(L, T), QPointF(R, B));
+            if (nr.width() < 8.0 || nr.height() < 8.0) return;
+            const bool lock = m_activeMask.sourceImageLockRatio;
+            QPointF scale(std::clamp(nr.width() / cw, kImageLayerScaleMin, kImageLayerScaleMax),
+                          std::clamp(nr.height() / ch, kImageLayerScaleMin, kImageLayerScaleMax));
+            if (lock) {
+                double s = scale.x();
+                if (m_imageActiveHandle == Handle::Top || m_imageActiveHandle == Handle::Bottom)
+                    s = scale.y();
+                else if (m_imageActiveHandle == Handle::Left || m_imageActiveHandle == Handle::Right)
+                    s = scale.x();
+                else
+                    s = std::max(scale.x(), scale.y());
+                s = std::clamp(s, kImageLayerScaleMin, kImageLayerScaleMax);
+                scale = QPointF(s, s);
+                nr = QRectF(nr.center() - QPointF(cw * s / 2.0, ch * s / 2.0),
+                            QSizeF(cw * s, ch * s));
+            }
+            QPointF center = nr.center();
+            QPointF offset(std::clamp((center.x() / cw - 0.5) * 2.0, -1.0, 1.0),
+                           std::clamp((center.y() / ch - 0.5) * 2.0, -1.0, 1.0));
+            emit imageLayerTransformChanged(offset, scale, lock);
+        }
+        update();
     } else if (m_panning) {
         m_topLeft += QPointF(ev->pos() - m_panLast);
         m_panLast = ev->pos();
@@ -627,6 +789,25 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
     } else if (m_healMode) {
         m_mousePos = ev->pos();
         update(); // move the brush-size circle
+    } else if (m_hasActiveImageLayer) {
+        Handle h = imageLayerHandleAt(ev->pos());
+        Qt::CursorShape c = Qt::ArrowCursor;
+        switch (h) {
+        case Handle::TopLeft:
+        case Handle::BottomRight: c = Qt::SizeFDiagCursor; break;
+        case Handle::TopRight:
+        case Handle::BottomLeft:  c = Qt::SizeBDiagCursor; break;
+        case Handle::Top:
+        case Handle::Bottom:      c = Qt::SizeVerCursor; break;
+        case Handle::Left:
+        case Handle::Right:       c = Qt::SizeHorCursor; break;
+        case Handle::None:
+            c = imageLayerFrameRect().contains((QPointF(ev->pos()) - m_topLeft) / m_scale)
+                    ? Qt::SizeAllCursor
+                    : Qt::ArrowCursor;
+            break;
+        }
+        setCursor(c);
     }
 }
 
@@ -634,6 +815,13 @@ void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
     if (m_maskDragging && ev->button() == Qt::LeftButton) {
         m_maskDragging = false;
         emit maskEditFinished();
+        update();
+        return;
+    }
+    if (m_imageDragging && ev->button() == Qt::LeftButton) {
+        m_imageDragging = false;
+        m_imageActiveHandle = Handle::None;
+        setCursor(Qt::ArrowCursor);
         update();
         return;
     }

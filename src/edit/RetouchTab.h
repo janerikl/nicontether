@@ -66,6 +66,8 @@ public:
     void deleteActiveMask();
     void setActiveMaskType(MaskType type);  // add/remove/change the layer's mask
     void setActiveMaskAdjust(const MaskAdjust &a);
+    void setActiveMaskImageTransform(double offsetX, double offsetY, double scaleX,
+                                     double scaleY, bool lockRatio);
     void setActiveMaskShape(bool inverted, double feather, double hardness,
                             double brushRadius, bool autoMask);
     void setPaintColor(const QColor &color); // no-op unless the active layer is MaskType::Paint

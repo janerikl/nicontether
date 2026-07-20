@@ -3,6 +3,7 @@
 #include <QWidget>
 #include <QImage>
 #include <QRect>
+#include <QRectF>
 #include <QPoint>
 #include <QPointF>
 
@@ -64,6 +65,8 @@ signals:
     void zoomChanged(double percent);
     void healBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while healing
     void maskBrushRadiusChanged(double radiusNorm); // ctrl+wheel resize while brush-masking
+    void imageLayerTransformChanged(const QPointF &offsetNorm, const QPointF &scaleNorm,
+                                    bool lockRatio);
 
     // Mask geometry edits (all points width-normalized).
     void maskRadialDragged(const QPointF &centerNorm, double radiusNorm);
@@ -92,6 +95,8 @@ private:
                         BottomRight, Bottom, BottomLeft, Left };
 
     QRect targetRect() const;          // where the image is painted (zoom+pan)
+    QRectF imageLayerFrameRect() const;
+    Handle imageLayerHandleAt(const QPoint &pos) const;
     QRect selectionRect() const;       // current rubber band in widget coords
     QRect selectionInImage() const;    // current rubber band mapped to image coords
     QPoint constrainedCorner(const QPoint &pos) const; // apply aspect + bounds
@@ -114,6 +119,7 @@ private:
     MaskType m_maskKind = MaskType::Radial;
     bool m_hasActiveMask = false;
     Mask m_activeMask;
+    bool m_hasActiveImageLayer = false;
     QImage m_maskOverlay; // cached brush-coverage preview for m_activeMask        // geometry to draw as a gizmo
     BrushRasterCache m_maskOverlayCache; // incremental rasterization cache for m_maskOverlay
     bool m_maskDragging = false;
@@ -130,6 +136,13 @@ private:
     QRect m_rectAtMoveStart;
     Handle m_activeHandle = Handle::None;
     QRect m_rectAtDragStart; // selection rect (widget coords) captured at press
+
+    bool m_imageDragging = false;
+    Handle m_imageActiveHandle = Handle::None;
+    QPoint m_imageMoveStart;
+    QRectF m_imageFrameAtDragStart;
+    QPointF m_imageOffsetAtDragStart;
+    QPointF m_imageScaleAtDragStart;
 
     // Zoom / pan.
     double m_scale = 1.0;   // widget px per image px
