@@ -7,8 +7,10 @@ namespace RawLoader {
 QImage load(const QString &rawPath) {
     LibRaw raw;
 
-    // 8-bit sRGB output with camera white balance — a natural-looking base.
-    raw.imgdata.params.output_bps = 8;
+    // 16-bit sRGB output with camera white balance — a natural-looking base.
+    // 16-bit preserves shadow tonal resolution that 8-bit throws away, which
+    // otherwise reappears as banding when shadows/brightness are pushed later.
+    raw.imgdata.params.output_bps = 16;
     raw.imgdata.params.output_color = 1; // sRGB
     raw.imgdata.params.use_camera_wb = 1;
     raw.imgdata.params.no_auto_bright = 0;
@@ -25,14 +27,24 @@ QImage load(const QString &rawPath) {
     if (!out) return QImage();
 
     QImage result;
-    if (out->type == LIBRAW_IMAGE_BITMAP && out->colors == 3 && out->bits == 8) {
-        // Copy interleaved RGB into a QImage (which owns its own buffer).
-        QImage img(out->width, out->height, QImage::Format_RGB888);
-        const int rowBytes = out->width * 3;
-        for (int y = 0; y < out->height; ++y)
-            memcpy(img.scanLine(y), out->data + y * rowBytes, rowBytes);
-        // Keep the base as RGB888 (3 bytes/px) to save memory with many open
-        // tabs; the editing pipeline converts to ARGB32 where it needs to.
+    if (out->type == LIBRAW_IMAGE_BITMAP && out->colors == 3 && out->bits == 16) {
+        // LibRaw's mem image is native-endian, interleaved RGB (no alpha),
+        // scaled to the full 16-bit range. QImage has no packed-3x16 format,
+        // so expand into RGBA64 (alpha forced opaque) — 8 bytes/px, twice
+        // RGB888's footprint, accepted in exchange for eliminating 8-bit
+        // shadow banding through the whole editing pipeline.
+        QImage img(out->width, out->height, QImage::Format_RGBA64);
+        const auto *src = reinterpret_cast<const quint16 *>(out->data);
+        for (int y = 0; y < out->height; ++y) {
+            auto *dst = reinterpret_cast<QRgba64 *>(img.scanLine(y));
+            const quint16 *row = src + static_cast<size_t>(y) * out->width * 3;
+            for (int x = 0; x < out->width; ++x) {
+                const quint16 r = row[x * 3 + 0];
+                const quint16 g = row[x * 3 + 1];
+                const quint16 b = row[x * 3 + 2];
+                dst[x] = qRgba64(r, g, b, 0xFFFF);
+            }
+        }
         result = img.copy(); // detach from the loop-local buffer lifetime
     }
 
@@ -44,7 +56,10 @@ QImage load(const QString &rawPath) {
 QImage loadAny(const QString &path) {
     QImage img = load(path);
     if (!img.isNull()) return img;
-    return QImage(path);
+    // Qt's JPEG/PNG decoders only ever yield 8-bit data, but upconvert to
+    // RGBA64 so every image reaching the Adjustments pipeline is uniformly
+    // 16-bit — callers never need to branch on source bit depth.
+    return QImage(path).convertToFormat(QImage::Format_RGBA64);
 }
 
 } // namespace RawLoader

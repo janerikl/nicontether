@@ -279,7 +279,7 @@ bool saveThumbnail(const QString &imagePath, const QImage &image) {
     QImage scaled = image.width() > 320
                         ? image.scaledToWidth(320, Qt::SmoothTransformation)
                         : image;
-    return scaled.save(thumbnailPathFor(imagePath), "JPEG", 85);
+    return ditherTo8Bit(scaled).save(thumbnailPathFor(imagePath), "JPEG", 85);
 }
 
 QImage loadThumbnail(const QString &imagePath) {

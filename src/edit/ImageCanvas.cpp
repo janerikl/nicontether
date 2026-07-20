@@ -66,7 +66,10 @@ ImageCanvas::ImageCanvas(QWidget *parent) : QWidget(parent) {
 
 void ImageCanvas::setImage(const QImage &img) {
     bool sizeChanged = (img.size() != m_img.size());
-    m_img = img;
+    // The editing pipeline works in 16-bit; the screen is 8-bit, so dither
+    // down here rather than letting Qt's paint engine silently truncate
+    // (which would reintroduce banding on-screen).
+    m_img = ditherTo8Bit(img);
     if (m_fit || sizeChanged) {
         m_fit = true;
         relayoutFit();

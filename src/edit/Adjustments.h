@@ -12,8 +12,9 @@
 
 // One channel of a Photoshop-style Levels adjustment: input black/white points
 // clip and stretch the tonal range, gamma remaps the midtones, and the output
-// range compresses the result. Implemented as a 256-entry LUT (see
-// buildLevelsLut) — a constrained tone curve, applied composite-then-per-channel.
+// range compresses the result. Black/white points are stored in legacy 0-255
+// units (rescaled internally to the 16-bit working range) — see
+// buildLevelsLut — a constrained tone curve, applied composite-then-per-channel.
 struct LevelsChannel {
     int inBlack = 0;     // 0..255 — input shadow clip
     int inWhite = 255;   // 0..255 — input highlight clip
@@ -250,7 +251,7 @@ struct Adjustments {
     int vignette = 0;        // darken (-) / lighten (+) the corners
 
     // Tone curve: control points in [0,1]×[0,1], monotonic in x. Empty/identity
-    // means no curve. Applied to all channels via a 256-entry LUT.
+    // means no curve. Applied to all channels via a 65536-entry LUT.
     QVector<QPointF> curve;
 
     // Photoshop-style Levels (composite + per-channel). Applied after the curve.
@@ -322,5 +323,15 @@ QImage maskCoverageOverlay(const Mask &m, int w, int h, const QColor &tint,
 // the primary changed field's label (e.g. "Brightness", "Crop", "Spot Heal").
 // "No change" if equal; "Adjust" if something differs but isn't recognized.
 QString historyStepLabel(const Adjustments &prev, const Adjustments &curr);
+
+// Quantize a 16-bit-per-channel image (applyAdjustments' output) down to 8-bit
+// ARGB32 with a per-pixel ordered (Bayer) dither, instead of bare truncation.
+// The editing pipeline keeps full 16-bit precision through every adjustment so
+// shadow/brightness pushes don't re-expose 8-bit quantization steps, but the
+// screen and PNG/JPEG/thumbnail outputs are inherently 8-bit — dithering at
+// this final step turns any remaining quantization into imperceptible noise
+// instead of visible banding. No-op passthrough (via convertToFormat) if
+// `img` isn't 16-bit per channel.
+QImage ditherTo8Bit(const QImage &img);
 
 Q_DECLARE_METATYPE(Adjustments)

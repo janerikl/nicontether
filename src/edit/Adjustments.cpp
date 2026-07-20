@@ -7,7 +7,7 @@
 
 namespace {
 
-inline int clamp8(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+inline int clamp16(int v) { return v < 0 ? 0 : (v > 65535 ? 65535 : v); }
 inline double clampd(double v, double lo, double hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
@@ -24,16 +24,22 @@ QImage orient(const QImage &img, const Adjustments &adj) {
     return out;
 }
 
-// Build a 256-entry LUT from monotonic control points (x,y in [0,1]) via linear
-// interpolation. Returns identity if fewer than two points.
-void buildCurveLut(const QVector<QPointF> &pts, int lut[256]) {
-    for (int i = 0; i < 256; ++i) lut[i] = i;
+// Levels/Curve control points are stored normalized to [0,1] (or 0-255 for
+// the historical Levels black/white points, rescaled below), independent of
+// the pipeline's working bit depth.
+constexpr int kLutSize = 65536; // one entry per 16-bit level
+
+// Build a 65536-entry LUT from monotonic control points (x,y in [0,1]) via
+// linear interpolation. Returns identity if fewer than two points.
+void buildCurveLut(const QVector<QPointF> &pts, std::vector<int> &lut) {
+    lut.resize(kLutSize);
+    for (int i = 0; i < kLutSize; ++i) lut[i] = i;
     if (pts.size() < 2) return;
     QVector<QPointF> p = pts;
     std::sort(p.begin(), p.end(),
               [](const QPointF &a, const QPointF &b) { return a.x() < b.x(); });
-    for (int i = 0; i < 256; ++i) {
-        double x = i / 255.0;
+    for (int i = 0; i < kLutSize; ++i) {
+        double x = i / double(kLutSize - 1);
         double y;
         if (x <= p.first().x()) y = p.first().y();
         else if (x >= p.last().x()) y = p.last().y();
@@ -45,24 +51,28 @@ void buildCurveLut(const QVector<QPointF> &pts, int lut[256]) {
             double t = (x - a.x()) / std::max(1e-6, b.x() - a.x());
             y = a.y() + t * (b.y() - a.y());
         }
-        lut[i] = clamp8(int(std::lround(y * 255.0)));
+        lut[i] = clamp16(int(std::lround(y * (kLutSize - 1))));
     }
 }
 
-// Build a 256-entry LUT for one Levels channel: clip to [inBlack,inWhite],
-// apply the midtone gamma, then map into the [outBlack,outWhite] output range.
-void buildLevelsLut(const LevelsChannel &c, int lut[256]) {
-    const double inB = c.inBlack;
-    const double inW = c.inWhite;
+// Build a 65536-entry LUT for one Levels channel: clip to [inBlack,inWhite],
+// apply the midtone gamma, then map into the [outBlack,outWhite] output
+// range. `c`'s black/white points are stored in legacy 0-255 units, so scale
+// by 257 (== 65535/255 exactly) into the working 16-bit range.
+void buildLevelsLut(const LevelsChannel &c, std::vector<int> &lut) {
+    lut.resize(kLutSize);
+    constexpr double k8to16 = 257.0;
+    const double inB = c.inBlack * k8to16;
+    const double inW = c.inWhite * k8to16;
     const double span = std::max(1.0, inW - inB); // guard divide-by-zero
     const double invGamma = 1.0 / std::clamp(c.gamma, 0.01, 9.99);
-    const double outB = c.outBlack;
-    const double outSpan = c.outWhite - c.outBlack;
-    for (int i = 0; i < 256; ++i) {
+    const double outB = c.outBlack * k8to16;
+    const double outSpan = (c.outWhite - c.outBlack) * k8to16;
+    for (int i = 0; i < kLutSize; ++i) {
         double v = (i - inB) / span;
         v = clampd(v, 0.0, 1.0);
         v = std::pow(v, invGamma);
-        lut[i] = clamp8(int(std::lround(outB + v * outSpan)));
+        lut[i] = clamp16(int(std::lround(outB + v * outSpan)));
     }
 }
 
@@ -73,8 +83,8 @@ struct ToneParams {
     double contrastFactor, brightness;
     double wbR, wbG, wbB;
     double hiAmt, shAmt, satScale, vibAmt;
-    int curveLut[256];
-    int lvlRgb[256], lvlR[256], lvlG[256], lvlB[256];
+    std::vector<int> curveLut;
+    std::vector<int> lvlRgb, lvlR, lvlG, lvlB;
 };
 
 ToneParams makeToneParams(int contrast, int brightness, int highlights,
@@ -84,8 +94,12 @@ ToneParams makeToneParams(int contrast, int brightness, int highlights,
                           const Levels &levels) {
     ToneParams p;
     const double c = contrast;
+    // Classic Photoshop contrast formula: a dimensionless ratio, scale-
+    // invariant with respect to the working pixel bit depth.
     p.contrastFactor = (259.0 * (c + 255.0)) / (255.0 * (259.0 - c));
-    p.brightness = brightness;
+    // `brightness` is an 8-bit-scale slider value (-100..100); rescale to the
+    // 16-bit working range by the exact 65535/255 ratio.
+    p.brightness = brightness * 257.0;
     const double tempF = temperature / 100.0;
     const double tintF = tint / 100.0;
     p.wbR = wbR * (1.0 + 0.4 * tempF);
@@ -103,26 +117,26 @@ ToneParams makeToneParams(int contrast, int brightness, int highlights,
     return p;
 }
 
-QRgb applyTone(QRgb px, const ToneParams &p) {
-    double r = qRed(px), g = qGreen(px), b = qBlue(px);
+QRgba64 applyTone(QRgba64 px, const ToneParams &p) {
+    double r = px.red(), g = px.green(), b = px.blue();
     r *= p.wbR; g *= p.wbG; b *= p.wbB;
-    r = p.curveLut[clamp8(int(r))];
-    g = p.curveLut[clamp8(int(g))];
-    b = p.curveLut[clamp8(int(b))];
-    r = p.lvlR[p.lvlRgb[clamp8(int(r))]];
-    g = p.lvlG[p.lvlRgb[clamp8(int(g))]];
-    b = p.lvlB[p.lvlRgb[clamp8(int(b))]];
-    r = p.contrastFactor * (r - 128) + 128 + p.brightness;
-    g = p.contrastFactor * (g - 128) + 128 + p.brightness;
-    b = p.contrastFactor * (b - 128) + 128 + p.brightness;
+    r = p.curveLut[clamp16(int(r))];
+    g = p.curveLut[clamp16(int(g))];
+    b = p.curveLut[clamp16(int(b))];
+    r = p.lvlR[p.lvlRgb[clamp16(int(r))]];
+    g = p.lvlG[p.lvlRgb[clamp16(int(g))]];
+    b = p.lvlB[p.lvlRgb[clamp16(int(b))]];
+    r = p.contrastFactor * (r - 32768.0) + 32768.0 + p.brightness;
+    g = p.contrastFactor * (g - 32768.0) + 32768.0 + p.brightness;
+    b = p.contrastFactor * (b - 32768.0) + 32768.0 + p.brightness;
     double luma = 0.299 * r + 0.587 * g + 0.114 * b;
-    double ln = clampd(luma / 255.0, 0.0, 1.0);
+    double ln = clampd(luma / 65535.0, 0.0, 1.0);
     if (p.hiAmt != 0.0) {
-        double d = p.hiAmt * 60.0 * ln * ln;
+        double d = p.hiAmt * 15420.0 * ln * ln;
         r += d; g += d; b += d;
     }
     if (p.shAmt != 0.0) {
-        double d = p.shAmt * 60.0 * (1.0 - ln) * (1.0 - ln);
+        double d = p.shAmt * 15420.0 * (1.0 - ln) * (1.0 - ln);
         r += d; g += d; b += d;
     }
     luma = 0.299 * r + 0.587 * g + 0.114 * b;
@@ -132,8 +146,8 @@ QRgb applyTone(QRgb px, const ToneParams &p) {
     r = luma + (r - luma) * scale;
     g = luma + (g - luma) * scale;
     b = luma + (b - luma) * scale;
-    return qRgba(clamp8(int(std::lround(r))), clamp8(int(std::lround(g))),
-                 clamp8(int(std::lround(b))), qAlpha(px));
+    return qRgba64(clamp16(int(std::lround(r))), clamp16(int(std::lround(g))),
+                   clamp16(int(std::lround(b))), px.alpha());
 }
 
 inline double smoothstep01(double t) {
@@ -145,21 +159,22 @@ inline double smoothstep01(double t) {
 // channel below it ("dst"), per standard Photoshop-style formulas in
 // non-linear (sRGB) space.
 inline double blendChannel(BlendMode mode, double dst, double src) {
+    constexpr double kMax = 65535.0;
     switch (mode) {
     case BlendMode::Multiply:
-        return dst * src / 255.0;
+        return dst * src / kMax;
     case BlendMode::Screen:
-        return 255.0 - (255.0 - dst) * (255.0 - src) / 255.0;
+        return kMax - (kMax - dst) * (kMax - src) / kMax;
     case BlendMode::Overlay:
-        return dst <= 127.5 ? (2.0 * dst * src) / 255.0
-                            : 255.0 - 2.0 * (255.0 - dst) * (255.0 - src) / 255.0;
+        return dst <= kMax / 2.0 ? (2.0 * dst * src) / kMax
+                                 : kMax - 2.0 * (kMax - dst) * (kMax - src) / kMax;
     case BlendMode::SoftLight: {
-        double a = dst / 255.0, b = src / 255.0;
+        double a = dst / kMax, b = src / kMax;
         double d = a <= 0.25 ? ((16.0 * a - 12.0) * a + 4.0) * a
                               : std::sqrt(a);
         double r = b <= 0.5 ? a - (1.0 - 2.0 * b) * a * (1.0 - a)
                             : a + (2.0 * b - 1.0) * (d - a);
-        return r * 255.0;
+        return r * kMax;
     }
     case BlendMode::Normal:
     default:
@@ -343,7 +358,7 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         if (imageLayer) {
             loc = applyLayerContent(coverFit(m.sourceImageCache, w, h), m.adj);
         } else if (paintLayer) {
-            loc = QImage(w, h, QImage::Format_ARGB32);
+            loc = QImage(w, h, QImage::Format_RGBA64);
             loc.fill(m.paintColor);
         } else {
             loc = applyLayerContent(img, m.adj);
@@ -353,8 +368,8 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                            brushCache ? &(*brushCache)[mi] : nullptr);
         const double op = clampd(m.opacity, 0.0, 1.0);
         for (int y = 0; y < h; ++y) {
-            QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
-            const QRgb *locLine = reinterpret_cast<const QRgb *>(loc.scanLine(y));
+            QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
+            const QRgba64 *locLine = reinterpret_cast<const QRgba64 *>(loc.scanLine(y));
             for (int x = 0; x < w; ++x) {
                 double wgt;
                 if (m.type == MaskType::None)
@@ -367,17 +382,17 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                     wgt = cov[size_t(y) * w + x] / 255.0;
                 wgt *= op;
                 if (wgt <= 0.0) continue;
-                QRgb src = line[x];
-                QRgb locPx = locLine[x];
-                double br = blendChannel(m.blend, qRed(src), qRed(locPx));
-                double bg = blendChannel(m.blend, qGreen(src), qGreen(locPx));
-                double bb = blendChannel(m.blend, qBlue(src), qBlue(locPx));
+                QRgba64 src = line[x];
+                QRgba64 locPx = locLine[x];
+                double br = blendChannel(m.blend, src.red(), locPx.red());
+                double bg = blendChannel(m.blend, src.green(), locPx.green());
+                double bb = blendChannel(m.blend, src.blue(), locPx.blue());
                 double inv = 1.0 - wgt;
-                line[x] = qRgba(
-                    clamp8(int(std::lround(qRed(src) * inv + br * wgt))),
-                    clamp8(int(std::lround(qGreen(src) * inv + bg * wgt))),
-                    clamp8(int(std::lround(qBlue(src) * inv + bb * wgt))),
-                    qAlpha(src));
+                line[x] = qRgba64(
+                    clamp16(int(std::lround(src.red() * inv + br * wgt))),
+                    clamp16(int(std::lround(src.green() * inv + bg * wgt))),
+                    clamp16(int(std::lround(src.blue() * inv + bb * wgt))),
+                    src.alpha());
             }
         }
         if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
@@ -389,46 +404,46 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
 QImage boxBlur(const QImage &src, int radius) {
     if (radius < 1) return src;
     const int w = src.width(), h = src.height();
-    QImage tmp(w, h, QImage::Format_ARGB32);
-    QImage dst(w, h, QImage::Format_ARGB32);
+    QImage tmp(w, h, QImage::Format_RGBA64);
+    QImage dst(w, h, QImage::Format_RGBA64);
     const int win = radius * 2 + 1;
 
     // Horizontal pass.
     for (int y = 0; y < h; ++y) {
-        const QRgb *s = reinterpret_cast<const QRgb *>(src.scanLine(y));
-        QRgb *t = reinterpret_cast<QRgb *>(tmp.scanLine(y));
+        const QRgba64 *s = reinterpret_cast<const QRgba64 *>(src.scanLine(y));
+        QRgba64 *t = reinterpret_cast<QRgba64 *>(tmp.scanLine(y));
         long sr = 0, sg = 0, sb = 0;
         for (int x = -radius; x <= radius; ++x) {
-            const QRgb p = s[std::clamp(x, 0, w - 1)];
-            sr += qRed(p); sg += qGreen(p); sb += qBlue(p);
+            const QRgba64 p = s[std::clamp(x, 0, w - 1)];
+            sr += p.red(); sg += p.green(); sb += p.blue();
         }
         for (int x = 0; x < w; ++x) {
-            t[x] = qRgb(int(sr / win), int(sg / win), int(sb / win));
-            const QRgb pout = s[std::clamp(x - radius, 0, w - 1)];
-            const QRgb pin = s[std::clamp(x + radius + 1, 0, w - 1)];
-            sr += qRed(pin) - qRed(pout);
-            sg += qGreen(pin) - qGreen(pout);
-            sb += qBlue(pin) - qBlue(pout);
+            t[x] = qRgba64(quint16(sr / win), quint16(sg / win), quint16(sb / win), 0xFFFF);
+            const QRgba64 pout = s[std::clamp(x - radius, 0, w - 1)];
+            const QRgba64 pin = s[std::clamp(x + radius + 1, 0, w - 1)];
+            sr += pin.red() - pout.red();
+            sg += pin.green() - pout.green();
+            sb += pin.blue() - pout.blue();
         }
     }
     // Vertical pass.
     for (int x = 0; x < w; ++x) {
         long sr = 0, sg = 0, sb = 0;
         for (int y = -radius; y <= radius; ++y) {
-            const QRgb p = reinterpret_cast<const QRgb *>(
+            const QRgba64 p = reinterpret_cast<const QRgba64 *>(
                 tmp.scanLine(std::clamp(y, 0, h - 1)))[x];
-            sr += qRed(p); sg += qGreen(p); sb += qBlue(p);
+            sr += p.red(); sg += p.green(); sb += p.blue();
         }
         for (int y = 0; y < h; ++y) {
-            reinterpret_cast<QRgb *>(dst.scanLine(y))[x] =
-                qRgb(int(sr / win), int(sg / win), int(sb / win));
-            const QRgb pout = reinterpret_cast<const QRgb *>(
+            reinterpret_cast<QRgba64 *>(dst.scanLine(y))[x] =
+                qRgba64(quint16(sr / win), quint16(sg / win), quint16(sb / win), 0xFFFF);
+            const QRgba64 pout = reinterpret_cast<const QRgba64 *>(
                 tmp.scanLine(std::clamp(y - radius, 0, h - 1)))[x];
-            const QRgb pin = reinterpret_cast<const QRgb *>(
+            const QRgba64 pin = reinterpret_cast<const QRgba64 *>(
                 tmp.scanLine(std::clamp(y + radius + 1, 0, h - 1)))[x];
-            sr += qRed(pin) - qRed(pout);
-            sg += qGreen(pin) - qGreen(pout);
-            sb += qBlue(pin) - qBlue(pout);
+            sr += pin.red() - pout.red();
+            sg += pin.green() - pout.green();
+            sb += pin.blue() - pout.blue();
         }
     }
     return dst;
@@ -447,23 +462,23 @@ void applyDenoise(QImage &img, int denoise) {
     QImage blur = boxBlur(img, radius);
     double amt = denoise / 100.0;
     for (int y = 0; y < h; ++y) {
-        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
-        const QRgb *bl = reinterpret_cast<const QRgb *>(blur.scanLine(y));
+        QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
+        const QRgba64 *bl = reinterpret_cast<const QRgba64 *>(blur.scanLine(y));
         for (int x = 0; x < w; ++x) {
-            QRgb p = line[x], q = bl[x];
-            double r = qRed(p), g = qGreen(p), b = qBlue(p);
-            double br = qRed(q), bg = qGreen(q), bb = qBlue(q);
+            QRgba64 p = line[x], q = bl[x];
+            double r = p.red(), g = p.green(), b = p.blue();
+            double br = q.red(), bg = q.green(), bb = q.blue();
             double luma = 0.299 * r + 0.587 * g + 0.114 * b;
             double blLuma = 0.299 * br + 0.587 * bg + 0.114 * bb;
-            double shadowWeight = 1.0 - clampd(luma / 255.0, 0.0, 1.0);
+            double shadowWeight = 1.0 - clampd(luma / 65535.0, 0.0, 1.0);
             shadowWeight *= shadowWeight;
             double k = amt * shadowWeight;
             double cr = (r - luma) + k * ((br - blLuma) - (r - luma));
             double cg = (g - luma) + k * ((bg - blLuma) - (g - luma));
             double cb = (b - luma) + k * ((bb - blLuma) - (b - luma));
-            line[x] = qRgba(clamp8(int(std::lround(luma + cr))),
-                            clamp8(int(std::lround(luma + cg))),
-                            clamp8(int(std::lround(luma + cb))), qAlpha(p));
+            line[x] = qRgba64(clamp16(int(std::lround(luma + cr))),
+                              clamp16(int(std::lround(luma + cg))),
+                              clamp16(int(std::lround(luma + cb))), p.alpha());
         }
     }
 }
@@ -476,17 +491,17 @@ void applyClarity(QImage &img, int clarity) {
     QImage blur = boxBlur(img, radius);
     double amt = clarity / 100.0;
     for (int y = 0; y < h; ++y) {
-        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
-        const QRgb *bl = reinterpret_cast<const QRgb *>(blur.scanLine(y));
+        QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
+        const QRgba64 *bl = reinterpret_cast<const QRgba64 *>(blur.scanLine(y));
         for (int x = 0; x < w; ++x) {
-            QRgb p = line[x], q = bl[x];
-            double lz = (0.299 * qRed(p) + 0.587 * qGreen(p) + 0.114 * qBlue(p)) / 255.0;
+            QRgba64 p = line[x], q = bl[x];
+            double lz = (0.299 * p.red() + 0.587 * p.green() + 0.114 * p.blue()) / 65535.0;
             double mid = 1.0 - std::abs(lz - 0.5) * 2.0; // midtone weight
             double k = amt * mid;
-            int r = clamp8(int(qRed(p) + k * (qRed(p) - qRed(q))));
-            int g = clamp8(int(qGreen(p) + k * (qGreen(p) - qGreen(q))));
-            int b = clamp8(int(qBlue(p) + k * (qBlue(p) - qBlue(q))));
-            line[x] = qRgba(r, g, b, qAlpha(p));
+            int r = clamp16(int(p.red() + k * (int(p.red()) - int(q.red()))));
+            int g = clamp16(int(p.green() + k * (int(p.green()) - int(q.green()))));
+            int b = clamp16(int(p.blue() + k * (int(p.blue()) - int(q.blue()))));
+            line[x] = qRgba64(r, g, b, p.alpha());
         }
     }
 }
@@ -498,14 +513,14 @@ void applySharpen(QImage &img, int sharpen) {
     QImage blur = boxBlur(img, 1);
     double amt = sharpen / 100.0 * 1.5;
     for (int y = 0; y < h; ++y) {
-        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
-        const QRgb *bl = reinterpret_cast<const QRgb *>(blur.scanLine(y));
+        QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
+        const QRgba64 *bl = reinterpret_cast<const QRgba64 *>(blur.scanLine(y));
         for (int x = 0; x < w; ++x) {
-            QRgb p = line[x], q = bl[x];
-            int r = clamp8(int(qRed(p) + amt * (qRed(p) - qRed(q))));
-            int g = clamp8(int(qGreen(p) + amt * (qGreen(p) - qGreen(q))));
-            int b = clamp8(int(qBlue(p) + amt * (qBlue(p) - qBlue(q))));
-            line[x] = qRgba(r, g, b, qAlpha(p));
+            QRgba64 p = line[x], q = bl[x];
+            int r = clamp16(int(p.red() + amt * (int(p.red()) - int(q.red()))));
+            int g = clamp16(int(p.green() + amt * (int(p.green()) - int(q.green()))));
+            int b = clamp16(int(p.blue() + amt * (int(p.blue()) - int(q.blue()))));
+            line[x] = qRgba64(r, g, b, p.alpha());
         }
     }
 }
@@ -517,15 +532,15 @@ void applyVignette(QImage &img, int vignette) {
     double cx = w / 2.0, cy = h / 2.0;
     double maxd = std::sqrt(cx * cx + cy * cy);
     for (int y = 0; y < h; ++y) {
-        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
         for (int x = 0; x < w; ++x) {
             double dx = x - cx, dy = y - cy;
             double d = std::sqrt(dx * dx + dy * dy) / maxd; // 0..1
             double f = 1.0 + amt * d * d; // amt<0 darkens corners
-            QRgb p = line[x];
-            line[x] = qRgba(clamp8(int(qRed(p) * f)),
-                            clamp8(int(qGreen(p) * f)),
-                            clamp8(int(qBlue(p) * f)), qAlpha(p));
+            QRgba64 p = line[x];
+            line[x] = qRgba64(clamp16(int(p.red() * f)),
+                              clamp16(int(p.green() * f)),
+                              clamp16(int(p.blue() * f)), p.alpha());
         }
     }
 }
@@ -535,14 +550,14 @@ void applyVignette(QImage &img, int vignette) {
 // (via applyAdjustments) and for each additional layer's MaskAdjust — layers
 // are just as capable as the base, minus geometry (which stays global).
 QImage applyLayerContent(const QImage &src, const MaskAdjust &a) {
-    QImage img = src.convertToFormat(QImage::Format_ARGB32);
+    QImage img = src.convertToFormat(QImage::Format_RGBA64);
     const int w = img.width(), h = img.height();
     ToneParams tp = makeToneParams(a.contrast, a.brightness, a.highlights,
                                    a.shadows, a.saturation, a.vibrance,
                                    a.temperature, a.tint, a.wbR, a.wbG, a.wbB,
                                    a.curve, a.levels);
     for (int y = 0; y < h; ++y) {
-        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
         for (int x = 0; x < w; ++x) line[x] = applyTone(line[x], tp);
     }
     applyDenoise(img, a.denoise);
@@ -620,6 +635,43 @@ QImage maskCoverageOverlay(const Mask &m, int w, int h, const QColor &tint,
     return img;
 }
 
+namespace {
+// Classic 4x4 ordered (Bayer) dither matrix, thresholds spread evenly across
+// one 8-bit quantization step (256 sub-levels of the 65536 range).
+constexpr int kBayer4x4[4][4] = {
+    { 0,  8,  2, 10},
+    {12,  4, 14,  6},
+    { 3, 11,  1,  9},
+    {15,  7, 13,  5},
+};
+inline quint8 dither16to8(quint16 v, int x, int y) {
+    // Bias by a fraction of one output step (256 levels wide in 16-bit terms)
+    // before truncating, so quantization error is spread as noise, not bands.
+    const int bias = (kBayer4x4[y & 3][x & 3] * 256) / 16;
+    return quint8(std::min(255, (v + bias) >> 8));
+}
+} // namespace
+
+QImage ditherTo8Bit(const QImage &img) {
+    if (img.format() != QImage::Format_RGBA64 &&
+        img.format() != QImage::Format_RGBX64 &&
+        img.format() != QImage::Format_RGBA64_Premultiplied)
+        return img.convertToFormat(QImage::Format_ARGB32);
+
+    const int w = img.width(), h = img.height();
+    QImage out(w, h, QImage::Format_ARGB32);
+    for (int y = 0; y < h; ++y) {
+        const QRgba64 *src = reinterpret_cast<const QRgba64 *>(img.scanLine(y));
+        QRgb *dst = reinterpret_cast<QRgb *>(out.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            const QRgba64 p = src[x];
+            dst[x] = qRgba(dither16to8(p.red(), x, y), dither16to8(p.green(), x, y),
+                           dither16to8(p.blue(), x, y), p.alpha() >> 8);
+        }
+    }
+    return out;
+}
+
 bool Adjustments::hasCurve() const {
     if (curve.size() < 2) return false;
     for (const QPointF &p : curve)
@@ -654,7 +706,7 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
         return img;
     }
 
-    img = img.convertToFormat(QImage::Format_ARGB32);
+    img = img.convertToFormat(QImage::Format_RGBA64);
     const int w = img.width(), h = img.height();
 
     // --- Per-pixel: white balance, curve, levels, contrast, brightness,
@@ -664,7 +716,7 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
                                    adj.temperature, adj.tint, adj.wbR, adj.wbG,
                                    adj.wbB, adj.curve, adj.levels);
     for (int y = 0; y < h; ++y) {
-        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
         for (int x = 0; x < w; ++x) line[x] = applyTone(line[x], tp);
     }
 

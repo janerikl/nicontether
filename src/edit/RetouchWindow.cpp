@@ -1692,7 +1692,7 @@ void RetouchWindow::onExport() {
         QMessageBox::warning(this, "Export", "Nothing to export.");
         return;
     }
-    QImage out = applyExportResize(rendered, preset);
+    QImage out = ditherTo8Bit(applyExportResize(rendered, preset));
 
     QFileInfo src(tab->path());
     QDir editedDir(src.absolutePath() + "/edited");
