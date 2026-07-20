@@ -43,6 +43,7 @@ public:
     ~RetouchTab() override;
 
     QString path() const { return m_path; }
+    void assignPath(const QString &path); // File > New's first save: adopt a real backing path
     Adjustments adjustments() const { return m_adj; }
     bool isReady() const { return !m_base.isNull(); }
 

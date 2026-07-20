@@ -1670,7 +1670,8 @@ void RetouchWindow::setMode(Mode mode) {
 
 void RetouchWindow::closeEvent(QCloseEvent *event) {
     for (RetouchTab *tab : m_openTabs) {
-        if (tab && tab->isReady() && tab->isDirty()) tab->saveEdits();
+        if (tab && tab->isReady() && tab->isDirty() && !tab->path().isEmpty())
+            tab->saveEdits();
     }
     QSettings settings;
     settings.setValue("window/geometry", saveGeometry());
@@ -1965,14 +1966,40 @@ void RetouchWindow::onNewDocument() {
 void RetouchWindow::onSave() {
     RetouchTab *tab = currentTab();
     if (!tab || !tab->isReady()) return;
+    if (tab->path().isEmpty()) {
+        const QString path = QFileDialog::getSaveFileName(
+            this, "Save As", QDir(QDir::homePath()).filePath("Pictures/Tether/untitled.png"),
+            "PNG image (*.png)");
+        if (path.isEmpty()) return; // user cancelled
+        // Write the current base canvas to disk so the path has real image
+        // content, then re-key the tab exactly like any file-backed tab.
+        tab->renderFullRes().save(path, "PNG");
+        QString oldKey;
+        for (auto it = m_openTabs.begin(); it != m_openTabs.end(); ++it) {
+            if (it.value() == tab) { oldKey = it.key(); break; }
+        }
+        if (!oldKey.isEmpty()) m_openTabs.remove(oldKey);
+        tab->assignPath(path);
+        m_openTabs.insert(path, tab);
+        int idx = m_tabs->indexOf(tab);
+        if (idx >= 0) m_tabs->setTabText(idx, QFileInfo(path).fileName());
+        // Deliberately NOT calling addToFilmstrip(path) here — per spec,
+        // auto-adding a saved-from-blank-canvas tab to the filmstrip is out
+        // of scope. The user can add it via File > Open Photos later if
+        // they want it in the strip.
+    }
     tab->saveEdits();
+    refreshMaskPanel(); // the tab now has a path -> Background row should appear
     m_statusLabel->setText("Saved edits: " + QFileInfo(tab->path()).fileName());
 }
 
 void RetouchWindow::onSaveAll() {
     int n = 0;
     for (RetouchTab *tab : m_openTabs) {
-        if (tab && tab->isReady() && tab->isDirty()) { tab->saveEdits(); ++n; }
+        if (tab && tab->isReady() && tab->isDirty() && !tab->path().isEmpty()) {
+            tab->saveEdits();
+            ++n;
+        }
     }
     m_statusLabel->setText(QString("Saved edits for %1 photo(s)").arg(n));
 }

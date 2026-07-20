@@ -181,6 +181,10 @@ bool RetouchTab::hasEdits() const {
            m_adj.flipV || !m_adj.cropRect.isNull() || !m_adj.heals.isEmpty();
 }
 
+void RetouchTab::assignPath(const QString &path) {
+    m_path = path;
+}
+
 void RetouchTab::markEdited() {
     m_dirty = true;
     emit editStateChanged(true, hasEdits());
