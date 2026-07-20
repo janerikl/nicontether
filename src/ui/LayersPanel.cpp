@@ -11,6 +11,7 @@
 #include <QAbstractItemView>
 #include <QComboBox>
 #include <QDockWidget>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -138,7 +139,21 @@ public:
         // the label instead of the right edge.
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
+        // QDockWidget doesn't reliably stretch a custom titleBarWidget() to
+        // the dock's actual width — it can leave it at its own sizeHint
+        // width, which is exactly the "buttons stuck next to the label"
+        // symptom this fixes. Track the dock's width directly instead of
+        // relying on that.
+        m_dock->installEventFilter(this);
+
         setExpanded(false); // apply the initial collapsed state to the dock
+    }
+
+protected:
+    bool eventFilter(QObject *obj, QEvent *ev) override {
+        if (obj == m_dock && ev->type() == QEvent::Resize)
+            resize(m_dock->width(), height());
+        return QWidget::eventFilter(obj, ev);
     }
 
 private:
@@ -150,6 +165,7 @@ private:
         } else {
             m_dock->setMaximumHeight(sizeHint().height());
         }
+        resize(m_dock->width(), height());
     }
 
     QDockWidget *m_dock;
