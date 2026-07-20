@@ -185,11 +185,17 @@ struct Mask {
 
     // Image layer: when set, this layer's content is a cover-fit scale/crop of
     // the referenced photo (tone/curve/levels/detail from `adj` still applies
-    // to it) instead of the composite below. `sourceImageCache`/`sourceMissing`
-    // are a transient decode cache populated only by RetouchTab — never
-    // serialized, never compared — so this stays cheap to copy for undo
-    // snapshots and doesn't cause spurious history entries.
+    // to it) instead of the composite below. `sourceImageOffset` pans the
+    // fitted source photo, `sourceImageScale` resizes it relative to the full
+    // frame, and `sourceImageLockRatio` keeps the resize uniform when on.
+    // `sourceImageCache`/`sourceMissing` are a transient decode cache populated
+    // only by RetouchTab — never serialized, never compared — so this stays
+    // cheap to copy for undo snapshots and doesn't cause spurious history
+    // entries.
     QString sourceImagePath;
+    QPointF sourceImageOffset{0.0, 0.0};
+    QPointF sourceImageScale{1.0, 1.0};
+    bool sourceImageLockRatio = true;
     QImage sourceImageCache;
     bool sourceMissing = false;
     bool isImageLayer() const { return !sourceImagePath.isEmpty(); }
@@ -206,6 +212,9 @@ struct Mask {
                std::abs(brushRadius - o.brushRadius) < 1e-9 &&
                std::abs(hardness - o.hardness) < 1e-9 && autoMask == o.autoMask &&
                adj == o.adj && paintColor == o.paintColor &&
+               sourceImageOffset == o.sourceImageOffset &&
+               sourceImageScale == o.sourceImageScale &&
+               sourceImageLockRatio == o.sourceImageLockRatio &&
                sourceImagePath == o.sourceImagePath;
     }
     bool operator!=(const Mask &o) const { return !(*this == o); }

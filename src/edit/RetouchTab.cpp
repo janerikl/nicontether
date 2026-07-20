@@ -77,6 +77,17 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
         markEdited();
         emit maskBrushChanged(r);
     });
+    connect(m_canvas, &ImageCanvas::imageLayerTransformChanged, this,
+            [this](const QPointF &offset, const QPointF &scale, bool lockRatio) {
+                if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+                Mask &m = m_adj.masks[m_activeMask];
+                if (!m.isImageLayer()) return;
+                m.sourceImageOffset = offset;
+                m.sourceImageScale = scale;
+                m.sourceImageLockRatio = lockRatio;
+                retone();
+                markEdited();
+            });
 
     m_canvas->setPlaceholder("Decoding RAW…");
 
@@ -344,6 +355,7 @@ void RetouchTab::setAdjustments(const Adjustments &a) {
         }
     }
     m_adj = merged;
+    pushMaskGizmo();
     if (geom) rebuildGeom();
     else retone();
     markEdited();
@@ -501,6 +513,9 @@ int RetouchTab::addImageLayer(const QString &path) {
     m.type = MaskType::None; // covers the full frame; no shape
     m.name = QFileInfo(path).fileName();
     m.sourceImagePath = path;
+    m.sourceImageOffset = QPointF(0.0, 0.0);
+    m.sourceImageScale = QPointF(1.0, 1.0);
+    m.sourceImageLockRatio = true;
     m_adj.masks.append(m);
     m_activeMask = m_adj.masks.size() - 1;
     m_maskMode = false;
@@ -589,6 +604,30 @@ void RetouchTab::setActiveMaskAdjust(const MaskAdjust &a) {
     m_adj.masks[m_activeMask].adj = a;
     retone();
     markEdited();
+}
+
+void RetouchTab::setActiveMaskImageTransform(double offsetX, double offsetY,
+                                            double scaleX, double scaleY,
+                                            bool lockRatio) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    if (!m.isImageLayer()) return;
+    QPointF pos(qBound(-1.0, offsetX, 1.0), qBound(-1.0, offsetY, 1.0));
+    QPointF scale(qBound(0.10, scaleX, 3.0), qBound(0.10, scaleY, 3.0));
+    if (lockRatio) {
+        const double s = std::max(scale.x(), scale.y());
+        scale = QPointF(s, s);
+    }
+    if (m.sourceImageOffset == pos && m.sourceImageScale == scale &&
+        m.sourceImageLockRatio == lockRatio)
+        return;
+    m.sourceImageOffset = pos;
+    m.sourceImageScale = scale;
+    m.sourceImageLockRatio = lockRatio;
+    pushMaskGizmo();
+    retone();
+    markEdited();
+    emit masksChanged();
 }
 
 void RetouchTab::setActiveMaskOpacity(double opacity) {

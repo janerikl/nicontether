@@ -13,6 +13,7 @@ class QPushButton;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QCheckBox;
 class QMainWindow;
 class QDockWidget;
 class TonePanel;
@@ -71,6 +72,8 @@ signals:
     void maskAdjustChanged(const MaskAdjust &a);
     void maskOpacityChanged(double opacity); // 0..1
     void maskBlendChanged(BlendMode mode);
+    void maskImageTransformChanged(double offsetX, double offsetY, double scaleX,
+                                   double scaleY, bool lockRatio);
     void maskVisibleChanged(int index, bool visible);
     void maskNameChanged(const QString &name);
     void maskReorderRequested(int from, int to);
@@ -80,6 +83,7 @@ signals:
 
 private:
     void emitAdjust();
+    void emitImageTransform();
     void loadActive();
     void rebuildList();
 
@@ -96,6 +100,11 @@ private:
     QLineEdit *m_name = nullptr;
     QSlider *m_opacity = nullptr;
     QComboBox *m_blend = nullptr;
+    QSlider *m_imagePosX = nullptr;
+    QSlider *m_imagePosY = nullptr;
+    QSlider *m_imageScaleX = nullptr;
+    QSlider *m_imageScaleY = nullptr;
+    QCheckBox *m_imageLockRatio = nullptr;
 
     QMainWindow *m_inner = nullptr; // hosts the six per-section docks
 

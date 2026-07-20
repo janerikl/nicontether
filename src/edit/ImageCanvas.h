@@ -3,14 +3,17 @@
 #include <QWidget>
 #include <QImage>
 #include <QRect>
+#include <QRectF>
 #include <QPoint>
 #include <QPointF>
+#include <QColor>
 
 #include "edit/Adjustments.h"
 
 class QDragEnterEvent;
 class QDragLeaveEvent;
 class QDropEvent;
+class QContextMenuEvent;
 
 // Displays an image with zoom + pan, and supports crop rubber-band selection and
 // a white-balance eyedropper. Zoom: Ctrl+wheel (anchored to the cursor),
@@ -75,6 +78,8 @@ signals:
     void zoomChanged(double percent);
     void healBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while healing
     void maskBrushRadiusChanged(double radiusNorm); // ctrl+wheel resize while brush-masking
+    void imageLayerTransformChanged(const QPointF &offsetNorm, const QPointF &scaleNorm,
+                                    bool lockRatio);
 
     // Mask geometry edits (all points width-normalized).
     void maskRadialDragged(const QPointF &centerNorm, double radiusNorm);
@@ -96,6 +101,7 @@ protected:
     void dragEnterEvent(QDragEnterEvent *) override;
     void dragLeaveEvent(QDragLeaveEvent *) override;
     void dropEvent(QDropEvent *) override;
+    void contextMenuEvent(QContextMenuEvent *) override;
 
 private:
     enum class Drag { None, Creating, Moving, Resizing };
@@ -103,6 +109,8 @@ private:
                         BottomRight, Bottom, BottomLeft, Left };
 
     QRect targetRect() const;          // where the image is painted (zoom+pan)
+    QRectF imageLayerFrameRect() const;
+    Handle imageLayerHandleAt(const QPoint &pos) const;
     QRect selectionRect() const;       // current rubber band in widget coords
     QRect selectionInImage() const;    // current rubber band mapped to image coords
     QPoint constrainedCorner(const QPoint &pos) const; // apply aspect + bounds
@@ -133,6 +141,7 @@ private:
     MaskType m_maskKind = MaskType::Radial;
     bool m_hasActiveMask = false;
     Mask m_activeMask;
+    bool m_hasActiveImageLayer = false;
     QImage m_maskOverlay; // cached brush-coverage preview for m_activeMask        // geometry to draw as a gizmo
     BrushRasterCache m_maskOverlayCache; // incremental rasterization cache for m_maskOverlay
     bool m_maskDragging = false;
@@ -150,6 +159,13 @@ private:
     Handle m_activeHandle = Handle::None;
     QRect m_rectAtDragStart; // selection rect (widget coords) captured at press
 
+    bool m_imageDragging = false;
+    Handle m_imageActiveHandle = Handle::None;
+    QPoint m_imageMoveStart;
+    QRectF m_imageFrameAtDragStart;
+    QPointF m_imageOffsetAtDragStart;
+    QPointF m_imageScaleAtDragStart;
+
     // Zoom / pan.
     double m_scale = 1.0;   // widget px per image px
     QPointF m_topLeft;      // widget coords of image (0,0)
@@ -163,4 +179,5 @@ private:
     bool m_spaceDown = false;
 
     bool m_dragHighlight = false; // a valid image drag is hovering the canvas
+    QColor m_backgroundColor = QColor(30, 30, 30);
 };

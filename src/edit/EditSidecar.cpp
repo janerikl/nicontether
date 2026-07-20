@@ -75,7 +75,7 @@ bool exists(const QString &imagePath) {
 
 bool save(const QString &imagePath, const Adjustments &a) {
     QJsonObject o;
-    o["version"] = 3;
+    o["version"] = 5;
     o["brightness"] = a.brightness;
     o["contrast"] = a.contrast;
     o["highlights"] = a.highlights;
@@ -127,6 +127,11 @@ bool save(const QString &imagePath, const Adjustments &a) {
             j["opacity"] = m.opacity;
             j["blend"] = int(m.blend);
             j["sourceImagePath"] = m.sourceImagePath;
+            j["sourceImageOffsetX"] = m.sourceImageOffset.x();
+            j["sourceImageOffsetY"] = m.sourceImageOffset.y();
+            j["sourceImageScaleX"] = m.sourceImageScale.x();
+            j["sourceImageScaleY"] = m.sourceImageScale.y();
+            j["sourceImageLockRatio"] = m.sourceImageLockRatio;
             j["type"] = int(m.type);
             j["inverted"] = m.inverted;
             j["feather"] = m.feather;
@@ -239,6 +244,11 @@ bool load(const QString &imagePath, Adjustments &out) {
         m.opacity = j["opacity"].toDouble(1.0);
         m.blend = static_cast<BlendMode>(j["blend"].toInt(0));
         m.sourceImagePath = j["sourceImagePath"].toString();
+        m.sourceImageOffset = QPointF(j["sourceImageOffsetX"].toDouble(0.0),
+                                      j["sourceImageOffsetY"].toDouble(0.0));
+        m.sourceImageScale = QPointF(j["sourceImageScaleX"].toDouble(1.0),
+                                     j["sourceImageScaleY"].toDouble(1.0));
+        m.sourceImageLockRatio = j["sourceImageLockRatio"].toBool(true);
         m.type = static_cast<MaskType>(j["type"].toInt(0));
         m.inverted = j["inverted"].toBool();
         m.feather = j["feather"].toDouble(0.5);
