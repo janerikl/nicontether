@@ -456,6 +456,11 @@ void RetouchWindow::buildViewMenu() {
     if (m_historyDock) viewMenu->addAction(m_historyDock->toggleViewAction());
     if (m_levelsDock) viewMenu->addAction(m_levelsDock->toggleViewAction());
     if (m_layersDock) viewMenu->addAction(m_layersDock->toggleViewAction());
+    if (m_layersPanel) {
+        auto *sectionsMenu = viewMenu->addMenu("Layers Sections");
+        for (QDockWidget *d : m_layersPanel->sectionDocks())
+            if (d) sectionsMenu->addAction(d->toggleViewAction());
+    }
 
     auto *filmstripAction = new QAction("Filmstrip", this);
     filmstripAction->setCheckable(true);

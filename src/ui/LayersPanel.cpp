@@ -10,17 +10,22 @@
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
 #include <QComboBox>
+#include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMainWindow>
 #include <QMenu>
+#include <QPainter>
+#include <QPixmap>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QSlider>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <cmath>
 
@@ -35,6 +40,115 @@ QString maskTypeLabel(MaskType t) {
     }
     return "Layer";
 }
+
+// Small programmatically-drawn glyphs for the per-section title bar, in the
+// same spirit as the tool-bar icons in RetouchWindow.cpp (no image assets).
+constexpr int kSectionIconPx = 14;
+const QColor kSectionIconColor(190, 190, 190);
+
+QIcon drawChevronIcon(bool expanded) {
+    QPixmap pm(kSectionIconPx, kSectionIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(kSectionIconColor, 1.6);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(pen);
+    QPolygonF tri;
+    if (expanded) // down-pointing (content visible)
+        tri << QPointF(3, 5) << QPointF(7, 10) << QPointF(11, 5);
+    else // right-pointing (collapsed)
+        tri << QPointF(5, 2) << QPointF(10, 7) << QPointF(5, 12);
+    p.drawPolyline(tri);
+    return QIcon(pm);
+}
+
+QIcon drawCloseIcon() {
+    QPixmap pm(kSectionIconPx, kSectionIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(kSectionIconColor, 1.5);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    p.drawLine(QPointF(3, 3), QPointF(11, 11));
+    p.drawLine(QPointF(11, 3), QPointF(3, 11));
+    return QIcon(pm);
+}
+
+QIcon drawFloatIcon() {
+    QPixmap pm(kSectionIconPx, kSectionIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(kSectionIconColor, 1.2));
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(QRectF(2, 5, 7, 7));
+    p.drawRect(QRectF(5, 2, 7, 7));
+    return QIcon(pm);
+}
+
+// Custom title bar for a per-section dock: a chevron that collapses the
+// dock down to just this bar (hides the content widget without closing the
+// dock), a title label, a float button, and a close button. Replacing
+// QDockWidget's default title bar this way means the native float/close
+// buttons are gone, so this widget draws its own equivalents.
+class SectionTitleBar : public QWidget {
+public:
+    SectionTitleBar(const QString &title, QDockWidget *dock, QWidget *parent = nullptr)
+        : QWidget(parent), m_dock(dock) {
+        auto *layout = new QHBoxLayout(this);
+        layout->setContentsMargins(4, 2, 4, 2);
+        layout->setSpacing(2);
+
+        m_chevron = new QToolButton;
+        m_chevron->setCheckable(true);
+        m_chevron->setChecked(false); // collapsed by default
+        m_chevron->setAutoRaise(true);
+        m_chevron->setIconSize(QSize(kSectionIconPx, kSectionIconPx));
+        connect(m_chevron, &QToolButton::toggled, this, &SectionTitleBar::setExpanded);
+
+        auto *label = new QLabel("<b>" + title + "</b>");
+
+        auto *floatBtn = new QToolButton;
+        floatBtn->setAutoRaise(true);
+        floatBtn->setIcon(drawFloatIcon());
+        floatBtn->setIconSize(QSize(kSectionIconPx, kSectionIconPx));
+        floatBtn->setToolTip("Float this section");
+        connect(floatBtn, &QToolButton::clicked, this, [this] {
+            m_dock->setFloating(!m_dock->isFloating());
+        });
+
+        auto *closeBtn = new QToolButton;
+        closeBtn->setAutoRaise(true);
+        closeBtn->setIcon(drawCloseIcon());
+        closeBtn->setIconSize(QSize(kSectionIconPx, kSectionIconPx));
+        closeBtn->setToolTip("Close this section");
+        connect(closeBtn, &QToolButton::clicked, m_dock, &QDockWidget::close);
+
+        layout->addWidget(m_chevron);
+        layout->addWidget(label, 1);
+        layout->addWidget(floatBtn);
+        layout->addWidget(closeBtn);
+
+        setExpanded(false); // apply the initial collapsed state to the dock
+    }
+
+private:
+    void setExpanded(bool expanded) {
+        m_chevron->setIcon(drawChevronIcon(expanded));
+        if (m_dock->widget()) m_dock->widget()->setVisible(expanded);
+        if (expanded) {
+            m_dock->setMaximumHeight(QWIDGETSIZE_MAX);
+        } else {
+            m_dock->setMaximumHeight(sizeHint().height());
+        }
+    }
+
+    QDockWidget *m_dock;
+    QToolButton *m_chevron = nullptr;
+};
 } // namespace
 
 LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
@@ -60,16 +174,6 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     selRow->addLayout(listButtons);
     root->addLayout(selRow, 1);
 
-    // Everything below is the full editing surface for the selected layer —
-    // scrollable, since it carries the same weight as the main Adjustments dock.
-    auto *scroll = new QScrollArea;
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    auto *editArea = new QWidget;
-    auto *edit = new QVBoxLayout(editArea);
-    edit->setContentsMargins(0, 0, 0, 0);
-    edit->setSpacing(6);
-
     // Name / opacity / blend mode.
     auto *props = new QFormLayout;
     m_name = new QLineEdit;
@@ -85,36 +189,54 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     m_blend->addItem("Overlay", int(BlendMode::Overlay));
     m_blend->addItem("Soft Light", int(BlendMode::SoftLight));
     props->addRow("Blend:", m_blend);
-    edit->addLayout(props);
+    root->addLayout(props);
 
-    edit->addWidget(new QLabel("<b>Tone</b>"));
+    // Each editing section is its own QDockWidget nested inside a small
+    // inner QMainWindow, so it gets a real collapse/float/close title bar
+    // while the whole thing still docks/floats as one "Layers" panel.
+    m_inner = new QMainWindow;
+    m_inner->setWindowFlags(Qt::Widget);
+    m_inner->setDockNestingEnabled(true);
+    auto *placeholder = new QWidget;
+    placeholder->setMaximumHeight(0);
+    m_inner->setCentralWidget(placeholder);
+
+    auto addSection = [&](const QString &objName, const QString &title,
+                          QWidget *content) {
+        auto *dock = new QDockWidget(title);
+        dock->setObjectName(objName);
+        dock->setFeatures(QDockWidget::DockWidgetClosable |
+                          QDockWidget::DockWidgetFloatable |
+                          QDockWidget::DockWidgetMovable);
+        dock->setWidget(content);
+        content->setVisible(false); // collapsed by default
+        dock->setTitleBarWidget(new SectionTitleBar(title, dock));
+        m_inner->addDockWidget(Qt::TopDockWidgetArea, dock);
+        return dock;
+    };
+
     m_tonePanel = new TonePanel;
-    edit->addWidget(m_tonePanel);
-
-    edit->addWidget(new QLabel("<b>Colour</b>"));
+    m_toneSectionDock = addSection("layerSectionTone", "Tone", m_tonePanel);
     m_colorPanel = new ColorPanel;
-    edit->addWidget(m_colorPanel);
-
-    edit->addWidget(new QLabel("<b>Tone Curve</b>"));
+    m_colorSectionDock = addSection("layerSectionColor", "Colour", m_colorPanel);
     m_toneCurvePanel = new ToneCurvePanel;
-    edit->addWidget(m_toneCurvePanel);
-
-    edit->addWidget(new QLabel("<b>Levels</b>"));
+    m_toneCurveSectionDock = addSection("layerSectionToneCurve", "Tone Curve", m_toneCurvePanel);
     m_levelsPanel = new LevelsPanel;
-    edit->addWidget(m_levelsPanel);
-
-    edit->addWidget(new QLabel("<b>Detail &amp; Effects</b>"));
+    m_levelsSectionDock = addSection("layerSectionLevels", "Levels", m_levelsPanel);
     m_detailEffectsPanel = new DetailEffectsPanel;
-    edit->addWidget(m_detailEffectsPanel);
-
-    edit->addWidget(new QLabel("<b>Mask</b>"));
+    m_detailEffectsSectionDock = addSection("layerSectionDetailEffects", "Detail & Effects",
+                                            m_detailEffectsPanel);
     m_maskPanel = new MaskPanel;
-    edit->addWidget(m_maskPanel);
+    m_masksSectionDock = addSection("layerSectionMasks", "Masks", m_maskPanel);
 
-    edit->addStretch(1);
+    // Stack the six sections top-to-bottom.
+    m_inner->splitDockWidget(m_toneSectionDock, m_colorSectionDock, Qt::Vertical);
+    m_inner->splitDockWidget(m_colorSectionDock, m_toneCurveSectionDock, Qt::Vertical);
+    m_inner->splitDockWidget(m_toneCurveSectionDock, m_levelsSectionDock, Qt::Vertical);
+    m_inner->splitDockWidget(m_levelsSectionDock, m_detailEffectsSectionDock, Qt::Vertical);
+    m_inner->splitDockWidget(m_detailEffectsSectionDock, m_masksSectionDock, Qt::Vertical);
 
-    scroll->setWidget(editArea);
-    root->addWidget(scroll, 2);
+    root->addWidget(m_inner, 2);
 
     auto *addMenu = new QMenu(m_add);
     QAction *addLayerAction = addMenu->addAction("Add Layer");
@@ -222,6 +344,11 @@ void LayersPanel::setLevelsPreviewImage(const QImage &img) {
 
 void LayersPanel::setMaskBrushRadius(double radiusNorm) {
     if (m_maskPanel) m_maskPanel->setBrushRadius(radiusNorm);
+}
+
+QVector<QDockWidget *> LayersPanel::sectionDocks() const {
+    return {m_toneSectionDock, m_colorSectionDock, m_toneCurveSectionDock,
+            m_levelsSectionDock, m_detailEffectsSectionDock, m_masksSectionDock};
 }
 
 void LayersPanel::rebuildList() {

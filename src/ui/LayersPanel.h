@@ -12,6 +12,8 @@ class QPushButton;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QMainWindow;
+class QDockWidget;
 class TonePanel;
 class ColorPanel;
 class ToneCurvePanel;
@@ -22,10 +24,11 @@ class MaskPanel;
 // The layer stack: a full-height list (drag to reorder, eye icon to toggle
 // visibility, Add/Duplicate/Delete) plus, for the selected layer, its name,
 // opacity, blend mode, and the *complete* tone/colour/curve/levels/detail/mask
-// editing surface — each section built from its own standalone widget
-// (TonePanel, ColorPanel, ToneCurvePanel, LevelsPanel, DetailEffectsPanel,
-// MaskPanel) but embedded here as one scrollable stack, so the whole thing
-// docks/floats as a single "Layers" panel. Purely a view — it emits intent
+// editing surface. Each section (Tone, Colour, Tone Curve, Levels, Detail &
+// Effects, Masks) is its own QDockWidget nested inside a small inner
+// QMainWindow — so each has a real title bar with collapse/float/close
+// controls, while the whole assembly still docks/floats as one "Layers"
+// panel from RetouchWindow's point of view. Purely a view — it emits intent
 // signals and is refreshed via setMasks(); RetouchWindow routes to the tab.
 class LayersPanel : public QWidget {
     Q_OBJECT
@@ -42,6 +45,10 @@ public:
     // Reflect a brush radius change (e.g. ctrl+wheel on the canvas) without
     // a full resync.
     void setMaskBrushRadius(double radiusNorm);
+
+    // The six per-section dock widgets, for RetouchWindow to expose reopen
+    // actions (toggleViewAction()) in a View menu submenu.
+    QVector<QDockWidget *> sectionDocks() const;
 
 signals:
     void addMaskRequested();
@@ -78,10 +85,19 @@ private:
     QSlider *m_opacity = nullptr;
     QComboBox *m_blend = nullptr;
 
+    QMainWindow *m_inner = nullptr; // hosts the six per-section docks
+
     TonePanel *m_tonePanel = nullptr;
     ColorPanel *m_colorPanel = nullptr;
     ToneCurvePanel *m_toneCurvePanel = nullptr;
     LevelsPanel *m_levelsPanel = nullptr;
     DetailEffectsPanel *m_detailEffectsPanel = nullptr;
     MaskPanel *m_maskPanel = nullptr;
+
+    QDockWidget *m_toneSectionDock = nullptr;
+    QDockWidget *m_colorSectionDock = nullptr;
+    QDockWidget *m_toneCurveSectionDock = nullptr;
+    QDockWidget *m_levelsSectionDock = nullptr;
+    QDockWidget *m_detailEffectsSectionDock = nullptr;
+    QDockWidget *m_masksSectionDock = nullptr;
 };
