@@ -86,6 +86,7 @@ signals:
     void eraseFinished();                // drag released -> commit history
     void zoomChanged(double percent);
     void healBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while healing
+    void eraseBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while erasing
     void maskBrushRadiusChanged(double radiusNorm); // ctrl+wheel resize while brush-masking
     void imageLayerTransformChanged(const QPointF &offsetNorm, const QPointF &scaleNorm,
                                     bool lockRatio);

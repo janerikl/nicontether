@@ -66,6 +66,10 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
         m_healRadiusDisplay = r; // keep in sync so heal ops use the new size
         emit healBrushChanged(r);
     });
+    connect(m_canvas, &ImageCanvas::eraseBrushRadiusChanged, this, [this](int r) {
+        m_eraseRadiusDisplay = r; // keep in sync so erase dabs use the new size
+        emit eraseBrushChanged(r);
+    });
     connect(m_canvas, &ImageCanvas::maskRadialDragged, this, &RetouchTab::onMaskRadial);
     connect(m_canvas, &ImageCanvas::maskLinearDragged, this, &RetouchTab::onMaskLinear);
     connect(m_canvas, &ImageCanvas::maskBrushPoint, this, &RetouchTab::onMaskBrushPoint);

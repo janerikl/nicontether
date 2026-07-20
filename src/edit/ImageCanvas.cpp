@@ -1018,6 +1018,15 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
             ev->accept();
             return;
         }
+        // In erase mode, ctrl+wheel resizes the erase brush the same way.
+        if (m_eraseMode) {
+            int step = ev->angleDelta().y() > 0 ? 2 : -2;
+            m_brushRadius = std::clamp(m_brushRadius + step, kHealBrushMin, kHealBrushMax);
+            emit eraseBrushRadiusChanged(m_brushRadius);
+            update();
+            ev->accept();
+            return;
+        }
         // In brush-mask mode, ctrl+wheel resizes the mask brush the same way.
         if (m_maskMode && (m_maskKind == MaskType::Brush || m_maskKind == MaskType::Paint)) {
             double step = ev->angleDelta().y() > 0 ? kMaskBrushStep : -kMaskBrushStep;

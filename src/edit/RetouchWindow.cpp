@@ -1546,6 +1546,11 @@ void RetouchWindow::openPhoto(const QString &path) {
         QSignalBlocker b(m_healBrush);
         m_healBrush->setValue(radius); // reflect ctrl+wheel resize in the dock
     });
+    connect(tab, &RetouchTab::eraseBrushChanged, this, [this, tab](int radius) {
+        if (tab != currentTab()) return;
+        QSignalBlocker b(m_eraseBrush);
+        m_eraseBrush->setValue(radius); // reflect ctrl+wheel resize in the dock
+    });
     connect(tab, &RetouchTab::maskBrushChanged, this, [this, tab](double radiusNorm) {
         if (tab != currentTab() || !m_layersPanel) return;
         m_layersPanel->setMaskBrushRadius(radiusNorm); // reflect ctrl+wheel resize in the dock

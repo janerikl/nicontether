@@ -123,6 +123,7 @@ signals:
     void historyListChanged(); // history entries or current index changed
     void adjustmentsReplaced(); // undo/redo swapped the whole adjustment set
     void healBrushChanged(int radiusDisplayPx); // ctrl+wheel resized the brush
+    void eraseBrushChanged(int radiusDisplayPx); // ctrl+wheel resized the erase brush
     void previewUpdated(); // a new toned preview render is available
     void maskPreviewUpdated(); // a new per-layer histogram source image is available
     void masksChanged();   // mask list or active-mask geometry changed
