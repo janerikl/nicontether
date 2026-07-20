@@ -120,6 +120,12 @@ void ImageCanvas::setHealMode(bool on) {
     update();
 }
 
+void ImageCanvas::setEraseMode(bool on) {
+    m_eraseMode = on;
+    if (!on) m_eraseDragging = false;
+    update();
+}
+
 void ImageCanvas::setZoomMode(bool on) {
     m_zoomMode = on;
     if (on) setCursor(zoomCursor());
@@ -422,6 +428,14 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         p.drawEllipse(QPointF(m_mousePos), rad, rad);
     }
 
+    if (m_eraseMode && underMouse()) {
+        double rad = m_brushRadius * m_scale;
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(255, 90, 90, 220), 1));
+        p.setBrush(QColor(255, 60, 60, 40));
+        p.drawEllipse(QPointF(m_mousePos), rad, rad);
+    }
+
     // Local-mask gizmo.
     if (m_maskMode && m_hasActiveMask) {
         const double W = m_img.width();
@@ -612,6 +626,17 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         return;
     }
 
+    // Erase brush: only active while an image layer is selected.
+    if (m_eraseMode && m_hasActiveImageLayer && ev->button() == Qt::LeftButton) {
+        QPointF n = normPointAt(ev->pos());
+        m_eraseDragging = true;
+        m_lastEraseNorm = n;
+        m_mousePos = ev->pos();
+        emit eraseAt(n);
+        update();
+        return;
+    }
+
     // Crop mode.
     if (m_cropMode && ev->button() == Qt::LeftButton) {
         Handle h = handleAt(ev->pos());
@@ -713,6 +738,20 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
             }
         } else if (m_maskKind == MaskType::Brush) {
             m_maskErasing = ev->modifiers().testFlag(Qt::AltModifier);
+        }
+        update();
+        return;
+    }
+    if (m_eraseMode) {
+        m_mousePos = ev->pos();
+        if (m_eraseDragging) {
+            QPointF n = normPointAt(ev->pos());
+            double dx = n.x() - m_lastEraseNorm.x();
+            double dy = n.y() - m_lastEraseNorm.y();
+            if (dx * dx + dy * dy > 0.004 * 0.004) { // throttle stroke samples
+                m_lastEraseNorm = n;
+                emit eraseAt(n);
+            }
         }
         update();
         return;
@@ -906,6 +945,12 @@ void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
     if (m_maskDragging && ev->button() == Qt::LeftButton) {
         m_maskDragging = false;
         emit maskEditFinished();
+        update();
+        return;
+    }
+    if (m_eraseDragging && ev->button() == Qt::LeftButton) {
+        m_eraseDragging = false;
+        emit eraseFinished();
         update();
         return;
     }
