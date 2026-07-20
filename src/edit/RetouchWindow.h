@@ -127,7 +127,7 @@ private:
     QSlider *m_vignette = nullptr;
     CurveEditor *m_curve = nullptr;
     QPushButton *m_wbPick = nullptr;
-    QPushButton *m_beforeAfter = nullptr;
+    QToolButton *m_beforeAfter = nullptr; // curtain icon beside the filmstrip: hold to reveal the original
     QSlider *m_zoomSlider = nullptr;
     QPushButton *m_zoomFit = nullptr;
     QLabel *m_zoomLabel = nullptr;

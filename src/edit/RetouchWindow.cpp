@@ -47,6 +47,7 @@
 #include <QDir>
 #include <QSignalBlocker>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QIcon>
 
@@ -221,6 +222,98 @@ QPixmap (*maskGlyph(MaskType t))(const QColor &) {
     }
     return drawMaskRadial;
 }
+
+// Theatre-curtain glyph for the before/after reveal button beside the
+// filmstrip. Drawn at 2x and rendered with a device pixel ratio so it stays
+// crisp at any display scale (no external image/SVG assets in this project).
+// `open` widens the parted gap, giving a little "reveal" animation as the
+// user presses and holds.
+QPixmap drawCurtain(bool open) {
+    constexpr int kPx = 32;
+    constexpr int kSuperSample = 3;
+    QPixmap pm(kPx * kSuperSample, kPx * kSuperSample);
+    pm.setDevicePixelRatio(kSuperSample);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const QColor deep(96, 12, 20);
+    const QColor mid(163, 26, 34);
+    const QColor bright(219, 68, 64);
+    const QColor gold(214, 178, 62);
+    const qreal top = 6.0;
+    const qreal bottom = kPx - 4.0;
+    const qreal gap = open ? 6.5 : 1.6; // half-width of the parted middle gap
+
+    // Valance / pelmet across the top rail.
+    QLinearGradient valGrad(0, top - 4, 0, top + 1);
+    valGrad.setColorAt(0, bright);
+    valGrad.setColorAt(1, deep);
+    p.setPen(Qt::NoPen);
+    p.setBrush(valGrad);
+    p.drawRoundedRect(QRectF(2, top - 4, kPx - 4, 5), 1.5, 1.5);
+
+    auto panel = [&](bool left) {
+        const qreal outerX = left ? 2.5 : kPx - 2.5;
+        const qreal midX = kPx / 2.0;
+        const qreal innerTopX = left ? midX - gap : midX + gap;
+        const qreal innerBottomX = left ? midX - gap - 3.0 : midX + gap + 3.0;
+        const qreal sign = left ? 1.0 : -1.0;
+
+        QPainterPath path;
+        path.moveTo(outerX, top);
+        path.lineTo(innerTopX, top);
+        path.quadTo(midX - sign * 2.0, bottom - 5, innerBottomX, bottom - 9);
+        path.quadTo(outerX + sign * 3.0, bottom - 2, outerX, bottom);
+        path.closeSubpath();
+
+        QLinearGradient shade(left ? outerX : innerTopX, 0, left ? innerTopX : outerX, 0);
+        shade.setColorAt(0.0, left ? deep : bright);
+        shade.setColorAt(0.5, mid);
+        shade.setColorAt(1.0, left ? bright : deep);
+        p.setPen(QPen(deep.darker(130), 0.5));
+        p.setBrush(shade);
+        p.drawPath(path);
+
+        // Vertical fold lines for a velvet, gathered look.
+        p.setPen(QPen(deep.darker(150), 0.7));
+        for (int i = 1; i <= 3; ++i) {
+            qreal t = i / 4.0;
+            qreal fx = outerX + (innerTopX - outerX) * t;
+            QPainterPath fold;
+            fold.moveTo(fx, top + 0.8);
+            fold.quadTo(fx - sign * 1.4, (top + bottom) / 2.0, fx, bottom - 8);
+            p.drawPath(fold);
+        }
+
+        // Gold tie-back rope with a small tassel where the panel is gathered.
+        p.setPen(QPen(gold, 1.1));
+        p.drawLine(QPointF(innerTopX, bottom - 11), QPointF(innerBottomX, bottom - 8));
+        p.setPen(Qt::NoPen);
+        p.setBrush(gold);
+        p.drawEllipse(QPointF(innerBottomX, bottom - 7), 1.2, 1.2);
+    };
+
+    panel(true);
+    panel(false);
+
+    // Warm stage-light glow in the parted gap, hinting at what's revealed.
+    QLinearGradient glow(kPx / 2.0 - gap, 0, kPx / 2.0 + gap, 0);
+    glow.setColorAt(0.0, QColor(255, 255, 255, 0));
+    glow.setColorAt(0.5, QColor(255, 244, 214, open ? 200 : 90));
+    glow.setColorAt(1.0, QColor(255, 255, 255, 0));
+    p.setPen(Qt::NoPen);
+    p.setBrush(glow);
+    p.drawRect(QRectF(kPx / 2.0 - gap, top + 1, gap * 2.0, bottom - top - 2));
+
+    return pm;
+}
+
+QIcon makeCurtainIcon(bool open) {
+    QIcon icon;
+    icon.addPixmap(drawCurtain(open));
+    return icon;
+}
 } // namespace
 
 RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
@@ -334,8 +427,33 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     connect(m_filmstrip, &FilmstripWidget::itemSelectionChanged, this,
             &RetouchWindow::updateEditClipboardActions);
 
+    // Curtain button beside the filmstrip: press-and-hold to compare against
+    // the unedited image.
+    m_beforeAfter = new QToolButton;
+    m_beforeAfter->setFixedSize(40, 40);
+    m_beforeAfter->setIconSize(QSize(32, 32));
+    m_beforeAfter->setAutoRaise(true);
+    m_beforeAfter->setIcon(makeCurtainIcon(false));
+    m_beforeAfter->setToolTip("Hold to reveal the original, unedited photo");
+    connect(m_beforeAfter, &QToolButton::pressed, this, [this] {
+        m_beforeAfter->setIcon(makeCurtainIcon(true));
+        RetouchTab *tab = currentTab();
+        if (tab && tab->isReady()) tab->showOriginal(true);
+    });
+    connect(m_beforeAfter, &QToolButton::released, this, [this] {
+        m_beforeAfter->setIcon(makeCurtainIcon(false));
+        RetouchTab *tab = currentTab();
+        if (tab && tab->isReady()) tab->showOriginal(false);
+    });
+
+    auto *filmstripRow = new QHBoxLayout;
+    filmstripRow->setContentsMargins(0, 0, 0, 0);
+    filmstripRow->setSpacing(6);
+    filmstripRow->addWidget(m_filmstrip, 1);
+    filmstripRow->addWidget(m_beforeAfter, 0, Qt::AlignVCenter);
+
     vbox->addWidget(m_modeStack, 1);
-    vbox->addWidget(m_filmstrip, 0);
+    vbox->addLayout(filmstripRow, 0);
     setCentralWidget(central);
 
     buildToolPanel();
@@ -470,6 +588,7 @@ void RetouchWindow::buildViewMenu() {
     filmstripAction->setChecked(true);
     connect(filmstripAction, &QAction::toggled, this, [this](bool on) {
         if (m_filmstrip) m_filmstrip->setVisible(on);
+        if (m_beforeAfter) m_beforeAfter->setVisible(on);
     });
     viewMenu->addAction(filmstripAction);
 
@@ -854,18 +973,6 @@ void RetouchWindow::buildDock() {
         connect(s, &QSlider::valueChanged, this, &RetouchWindow::onToneChanged);
         return s;
     };
-
-    // Press-and-hold to compare against the unedited image.
-    m_beforeAfter = new QPushButton("Show Original (hold)");
-    outer->addWidget(m_beforeAfter);
-    connect(m_beforeAfter, &QPushButton::pressed, this, [this] {
-        RetouchTab *tab = currentTab();
-        if (tab && tab->isReady()) tab->showOriginal(true);
-    });
-    connect(m_beforeAfter, &QPushButton::released, this, [this] {
-        RetouchTab *tab = currentTab();
-        if (tab && tab->isReady()) tab->showOriginal(false);
-    });
 
     outer->addWidget(new QLabel("<b>Tone</b>"));
     auto *toneForm = new QFormLayout;
