@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QImage>
 #include <QVector>
 #include <QWidget>
@@ -49,6 +50,17 @@ public:
     // The six per-section dock widgets, for RetouchWindow to expose reopen
     // actions (toggleViewAction()) in a View menu submenu.
     QVector<QDockWidget *> sectionDocks() const;
+
+    // The inner QMainWindow's dock layout (which section is closed, its
+    // geometry) isn't covered by RetouchWindow's own saveState()/
+    // restoreState() — that only sees docks added directly to it, not ones
+    // nested inside this widget's inner QMainWindow. RetouchWindow persists
+    // these explicitly via its own QSettings entry, mirroring how it
+    // persists its own window/state.
+    QByteArray innerDockState() const;
+    void restoreInnerDockState(const QByteArray &state);
+    // Show all six sections (used by View > Reset Panels).
+    void resetSections();
 
 signals:
     void addMaskRequested();

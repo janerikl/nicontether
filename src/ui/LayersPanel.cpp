@@ -349,6 +349,19 @@ QVector<QDockWidget *> LayersPanel::sectionDocks() const {
             m_levelsSectionDock, m_detailEffectsSectionDock, m_masksSectionDock};
 }
 
+QByteArray LayersPanel::innerDockState() const {
+    return m_inner->saveState();
+}
+
+void LayersPanel::restoreInnerDockState(const QByteArray &state) {
+    m_inner->restoreState(state);
+}
+
+void LayersPanel::resetSections() {
+    for (QDockWidget *d : sectionDocks())
+        if (d) d->show();
+}
+
 void LayersPanel::rebuildList() {
     m_syncing = true;
     m_maskList->clear();

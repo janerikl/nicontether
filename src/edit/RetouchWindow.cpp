@@ -445,6 +445,9 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     } else {
         applyDefaultDockLayout();
     }
+    if (m_layersPanel && settings.contains("window/layersInnerState"))
+        m_layersPanel->restoreInnerDockState(
+            settings.value("window/layersInnerState").toByteArray());
 }
 
 // View menu: toggle visibility of the Tools bar, Adjustments dock, and the
@@ -475,7 +478,9 @@ void RetouchWindow::buildViewMenu() {
     connect(resetPanelsAction, &QAction::triggered, this, [this] {
         QSettings settings;
         settings.remove("window/state"); // panels only; leave window/geometry
+        settings.remove("window/layersInnerState");
         applyDefaultDockLayout();
+        if (m_layersPanel) m_layersPanel->resetSections();
     });
     viewMenu->addAction(resetPanelsAction);
 }
@@ -1377,6 +1382,11 @@ void RetouchWindow::closeEvent(QCloseEvent *event) {
     QSettings settings;
     settings.setValue("window/geometry", saveGeometry());
     settings.setValue("window/state", saveState());
+    // The Layers dock's per-section docks live in an inner QMainWindow that
+    // saveState() above doesn't see (it only covers docks added directly to
+    // this window) — persist that separately.
+    if (m_layersPanel)
+        settings.setValue("window/layersInnerState", m_layersPanel->innerDockState());
     QMainWindow::closeEvent(event);
 }
 
