@@ -140,6 +140,20 @@ struct BrushStrokePoint {
     }
 };
 
+// One dab of an erase-tool stroke on an image layer: canvas-width-normalized
+// centre + radius (same normalization as BrushStrokePoint / m.brushRadius).
+// Dabs are max-combined into a coverage buffer, then subtracted from the
+// layer's alpha at composite time (see applyMasks in Adjustments.cpp).
+// Always soft/feathered across the full radius — no hard-edge option.
+struct ErasePoint {
+    QPointF pt;
+    double radius = 0.06;
+
+    bool operator==(const ErasePoint &o) const {
+        return pt == o.pt && std::abs(radius - o.radius) < 1e-9;
+    }
+};
+
 // One adjustment layer in the stack. All geometry is stored normalized to the
 // image WIDTH (x' = x/W, y' = y/W) so it is resolution-independent and scales
 // uniformly between the display preview and full-res export. Applied after
@@ -200,6 +214,11 @@ struct Mask {
     bool sourceMissing = false;
     bool isImageLayer() const { return !sourceImagePath.isEmpty(); }
 
+    // Erase-tool strokes (image layers only): canvas-normalized dabs that
+    // punch feathered transparency into this layer's alpha at composite
+    // time. Empty for non-image layers.
+    QVector<ErasePoint> eraseStrokes;
+
     bool operator==(const Mask &o) const {
         return name == o.name && visible == o.visible &&
                std::abs(opacity - o.opacity) < 1e-9 && blend == o.blend &&
@@ -208,7 +227,7 @@ struct Mask {
                std::abs(radiusX - o.radiusX) < 1e-9 &&
                std::abs(radiusY - o.radiusY) < 1e-9 &&
                std::abs(angle - o.angle) < 1e-9 && p0 == o.p0 && p1 == o.p1 &&
-               stroke == o.stroke &&
+               stroke == o.stroke && eraseStrokes == o.eraseStrokes &&
                std::abs(brushRadius - o.brushRadius) < 1e-9 &&
                std::abs(hardness - o.hardness) < 1e-9 && autoMask == o.autoMask &&
                adj == o.adj && paintColor == o.paintColor &&
