@@ -32,6 +32,10 @@ add_executable(nikontether
     src/ui/LevelsPanel.cpp
     src/ui/MaskPanel.cpp
     src/ui/LayersPanel.cpp
+    src/ui/TonePanel.cpp
+    src/ui/ColorPanel.cpp
+    src/ui/ToneCurvePanel.cpp
+    src/ui/DetailEffectsPanel.cpp
     src/ui/ColorSwatchWidget.cpp
     src/ui/ToolFlyout.cpp
     src/ui/AppIcon.cpp
