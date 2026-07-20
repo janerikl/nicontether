@@ -91,6 +91,87 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+    if (argc >= 4 && std::strcmp(argv[1], "--layertest") == 0) {
+        QString photoPath = argv[2];
+        QString layerPath = argv[3];
+        auto pump = [](int ms){ QElapsedTimer e; e.start();
+            while (e.elapsed() < ms) QCoreApplication::processEvents(QEventLoop::AllEvents, 20); };
+
+        {
+            RetouchWindow w;
+            w.openPhoto(photoPath);
+            auto *tab = w.findChild<RetouchTab *>();
+            QElapsedTimer t; t.start();
+            while (!tab->isReady() && t.elapsed() < 15000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            printf("[session1] base ready\n");
+
+            tab->addImageLayer(layerPath);
+            pump(3000); // let async layer decode land
+            const auto &masks1 = tab->adjustments().masks;
+            printf("[session1] masks=%d cache_null=%d missing=%d\n",
+                   masks1.size(),
+                   masks1.isEmpty() ? -1 : masks1[0].sourceImageCache.isNull(),
+                   masks1.isEmpty() ? -1 : masks1[0].sourceMissing);
+
+            // Mimic the reported repro: touch a tone slider shortly after adding
+            // the layer, before/around when the async decode lands.
+            Adjustments a = tab->adjustments();
+            a.brightness = 10;
+            tab->setAdjustments(a);
+            pump(500);
+            const auto &masks1b = tab->adjustments().masks;
+            printf("[session1] after slider touch: cache_null=%d\n",
+                   masks1b.isEmpty() ? -1 : masks1b[0].sourceImageCache.isNull());
+
+            tab->saveEdits();
+            printf("[session1] saved\n");
+        }
+
+        printf("[session2] simulating restart (new RetouchTab, same path)\n");
+        {
+            RetouchWindow w2;
+            w2.openPhoto(photoPath);
+            auto *tab2 = w2.findChild<RetouchTab *>();
+            QElapsedTimer t2; t2.start();
+            while (!tab2->isReady() && t2.elapsed() < 15000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            pump(3000); // let async layer-cache decode land after reload
+            const auto &masks2 = tab2->adjustments().masks;
+            printf("[session2] masks=%d cache_null=%d missing=%d visible=%d opacity=%f blend=%d type=%d sourcePath=%s\n",
+                   masks2.size(),
+                   masks2.isEmpty() ? -1 : masks2[0].sourceImageCache.isNull(),
+                   masks2.isEmpty() ? -1 : masks2[0].sourceMissing,
+                   masks2.isEmpty() ? -1 : masks2[0].visible,
+                   masks2.isEmpty() ? -1.0 : masks2[0].opacity,
+                   masks2.isEmpty() ? -1 : int(masks2[0].blend),
+                   masks2.isEmpty() ? -1 : int(masks2[0].type),
+                   masks2.isEmpty() ? "" : masks2[0].sourceImagePath.toUtf8().constData());
+
+            QImage withLayer = tab2->previewImage();
+            withLayer.save("/tmp/claude-1000/-home-janel-Development-imgcapture/90e91887-d636-4e98-98fb-228d678bd2eb/scratchpad/layertest/session2_with_layer.png");
+
+            // Toggle the layer off to get an unambiguous A/B comparison.
+            Adjustments off = tab2->adjustments();
+            off.masks[0].visible = false;
+            tab2->setAdjustments(off);
+            pump(1000);
+            QImage withoutLayer = tab2->previewImage();
+            withoutLayer.save("/tmp/claude-1000/-home-janel-Development-imgcapture/90e91887-d636-4e98-98fb-228d678bd2eb/scratchpad/layertest/session2_without_layer.png");
+
+            long diff = 0;
+            if (withLayer.size() == withoutLayer.size() && !withLayer.isNull()) {
+                QImage a = withLayer.convertToFormat(QImage::Format_RGB888);
+                QImage b = withoutLayer.convertToFormat(QImage::Format_RGB888);
+                for (int y = 0; y < a.height(); y += 7)
+                    for (int x = 0; x < a.width(); x += 7)
+                        diff += std::abs(int(a.scanLine(y)[x*3]) - int(b.scanLine(y)[x*3]));
+            }
+            printf("[session2] pixel diff (with vs without layer) = %ld\n", diff);
+        }
+        return 0;
+    }
+
     RetouchWindow window;
     window.show();
     return app.exec();
