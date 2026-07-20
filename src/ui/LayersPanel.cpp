@@ -152,6 +152,13 @@ private:
 } // namespace
 
 LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
+    // Collapsed section rows have very little intrinsic width (just a
+    // chevron + short label); without a floor here the whole panel would
+    // shrink to that width whenever every section is collapsed, dragging
+    // the float/close buttons in tight against the label instead of sitting
+    // out at the right edge.
+    setMinimumWidth(240);
+
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(6, 6, 6, 6);
     root->setSpacing(6);
