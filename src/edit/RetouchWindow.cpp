@@ -176,15 +176,45 @@ QPixmap drawErase(const QColor &c) {
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    // A dashed-outline ellipse over a filled one: "removing" a region.
+    // A classic slanted rubber-eraser block.
+    p.translate(kIconPx / 2.0, kIconPx / 2.0);
+    p.rotate(-40);
+    p.translate(-kIconPx / 2.0, -kIconPx / 2.0);
+    QPainterPath body;
+    body.addRoundedRect(QRectF(6, 9, 16, 10), 2, 2);
     p.setPen(QPen(c, 2));
-    p.setBrush(Qt::NoBrush);
-    p.drawEllipse(QRectF(5, 5, 18, 18));
     QColor fill = c;
     fill.setAlpha(90);
-    p.setPen(Qt::NoPen);
     p.setBrush(fill);
-    p.drawEllipse(QRectF(9, 9, 10, 10));
+    p.drawPath(body);
+    // Divider line separating the coloured heel from the clean tip.
+    p.drawLine(QPointF(12, 9), QPointF(12, 19));
+    return pm;
+}
+
+// Simple, bold paintbrush: a solid filled bristle tip plus a thick handle.
+QPixmap drawBrushTool(const QColor &c) {
+    QPixmap pm(kIconPx, kIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    // Solid bristle tip, tapering to a point at the bottom-left.
+    QPainterPath tip;
+    tip.moveTo(3, 25);
+    tip.lineTo(9, 12);
+    tip.lineTo(16, 19);
+    tip.closeSubpath();
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+    p.drawPath(tip);
+
+    // Thick handle, angled up to the top-right.
+    QPen pen(c, 5);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    p.drawLine(QPointF(12, 16), QPointF(23, 5));
+
     return pm;
 }
 
@@ -214,6 +244,7 @@ QIcon makeCropIcon() { return makeToolIcon(drawCrop); }
 QIcon makeHealIcon() { return makeToolIcon(drawHeal); }
 QIcon makeMaskIcon() { return makeToolIcon(drawMask); }
 QIcon makeEraseIcon() { return makeToolIcon(drawErase); }
+QIcon makeBrushToolIcon() { return makeToolIcon(drawBrushTool); }
 
 // Two-state icon like makeToolIcon, but with the flyout corner marker baked in.
 // Used for the mask tool button, whose glyph reflects its active subtool.
@@ -694,7 +725,7 @@ void RetouchWindow::buildToolPanel() {
     m_toolsBar->addWidget(m_healToggle);
 
     m_brushToggle = new QToolButton;
-    m_brushToggle->setIcon(makeToolIcon(drawMaskBrush));
+    m_brushToggle->setIcon(makeBrushToolIcon());
     m_brushToggle->setCheckable(true);
     m_brushToggle->setShortcut(QKeySequence(Qt::Key_B));
     m_brushToggle->setToolTip("Brush (B) — paint with the foreground color; Ctrl+wheel resizes brush");
