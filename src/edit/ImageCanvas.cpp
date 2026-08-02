@@ -6,6 +6,7 @@
 #include <QKeyEvent>
 #include <QCursor>
 #include <QPixmap>
+#include <QPainterPath>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDropEvent>
@@ -56,6 +57,55 @@ const QCursor &zoomCursor() {
     }();
     return c;
 }
+
+// An eyedropper/pipette cursor for the white-balance pick tool, styled after
+// Photoshop's: a black dropper silhouette with a white outline so it reads
+// against any background, tip at bottom-left where the sample is taken.
+const QCursor &pipetteCursor() {
+    static const QCursor c = [] {
+        constexpr int px = 32;
+        QPixmap pm(px, px);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        // Build the glyph in local space (tip at origin, barrel running to
+        // the right), then rotate the whole outline -45deg and place it so
+        // the tip lands at the bottom-left, bulb at top-right.
+        QPainterPath nib;
+        nib.moveTo(-9, 0);
+        nib.lineTo(-4, -2.2);
+        nib.lineTo(-4, 2.2);
+        nib.closeSubpath();
+
+        QPainterPath body;
+        body.addRoundedRect(QRectF(-4, -2.5, 24, 5), 2.2, 2.2);
+
+        QPainterPath bulb;
+        bulb.addEllipse(QRectF(17, -4, 8, 8));
+
+        QPainterPath outline = nib.united(body).united(bulb);
+
+        QTransform t;
+        t.translate(6, 25);
+        t.rotate(-45);
+        outline = t.map(outline);
+
+        p.setPen(QPen(Qt::white, 2.4));
+        p.setBrush(Qt::black);
+        p.drawPath(outline);
+
+        // Diagonal band near the tip, a common pipette-glyph detail.
+        QLineF band(-1, -2.2, -1, 2.2);
+        band = t.map(band);
+        p.setPen(QPen(Qt::white, 1.4));
+        p.drawLine(band);
+
+        p.end();
+        return QCursor(pm, 4, 30);
+    }();
+    return c;
+}
 }
 
 ImageCanvas::ImageCanvas(QWidget *parent) : QWidget(parent) {
@@ -98,13 +148,14 @@ void ImageCanvas::setCropMode(bool on) {
 
 void ImageCanvas::setPickMode(bool on) {
     m_pickMode = on;
-    setCursor(on ? Qt::CrossCursor : (m_cropMode ? Qt::CrossCursor : Qt::ArrowCursor));
+    if (on) setCursor(pipetteCursor());
+    else setCursor(m_cropMode ? Qt::CrossCursor : Qt::ArrowCursor);
 }
 
 void ImageCanvas::setColorRangePickMode(bool on) {
     m_colorRangeMode = on;
     if (!on) m_colorRangeDragging = false;
-    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    setCursor(on ? pipetteCursor() : Qt::ArrowCursor);
     update();
 }
 
@@ -937,7 +988,7 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
 void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
     if (m_colorRangeDragging && ev->button() == Qt::LeftButton) {
         m_colorRangeDragging = false;
-        setCursor(m_colorRangeMode ? Qt::CrossCursor : Qt::ArrowCursor);
+        setCursor(m_colorRangeMode ? pipetteCursor() : Qt::ArrowCursor);
         emit colorRangeReleased();
         update();
         return;
