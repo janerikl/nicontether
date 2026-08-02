@@ -151,7 +151,8 @@ bool save(const QString &imagePath, const Adjustments &a) {
             j["paintColor"] = m.paintColor.name(QColor::HexArgb);
             QJsonArray stroke;
             for (const BrushStrokePoint &sp : m.stroke)
-                stroke.append(QJsonArray{sp.pt.x(), sp.pt.y(), sp.erase});
+                stroke.append(QJsonArray{sp.pt.x(), sp.pt.y(), sp.erase, sp.radius, sp.hardness,
+                                          double(sp.color)});
             j["stroke"] = stroke;
             QJsonArray erases;
             for (const ErasePoint &ep : m.eraseStrokes)
@@ -272,9 +273,14 @@ bool load(const QString &imagePath, Adjustments &out) {
         for (const QJsonValue &sv : j["stroke"].toArray()) {
             QJsonArray p = sv.toArray();
             if (p.size() >= 2)
+                // radius/hardness/color fall back to the mask's own values
+                // for sidecars saved before per-point brush settings were tracked.
                 m.stroke.append(BrushStrokePoint{
                     QPointF(p[0].toDouble(), p[1].toDouble()),
-                    p.size() >= 3 && p[2].toBool()});
+                    p.size() >= 3 && p[2].toBool(),
+                    p.size() >= 4 ? p[3].toDouble() : m.brushRadius,
+                    p.size() >= 5 ? p[4].toDouble() : m.hardness,
+                    p.size() >= 6 ? QRgb(qint64(p[5].toDouble())) : m.paintColor.rgb()});
         }
         for (const QJsonValue &ev : j["eraseStrokes"].toArray()) {
             QJsonArray p = ev.toArray();

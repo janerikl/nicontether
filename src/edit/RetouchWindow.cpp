@@ -60,6 +60,7 @@ constexpr int kIconPx = 28;
 const QColor kIconOff(70, 70, 70);       // idle: dark grey
 const QColor kIconOn(235, 235, 235);     // active: light
 const QColor kIconDisabled(70, 70, 70, 90); // disabled: idle color, faded
+const QColor kIconHover(20, 20, 20);      // hover (idle tool): near-black, for contrast against the lighter hover background
 
 QPixmap drawZoom(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
@@ -237,6 +238,7 @@ QIcon makeToolIcon(QPixmap (*draw)(const QColor &)) {
     QIcon icon;
     icon.addPixmap(draw(kIconOff), QIcon::Normal, QIcon::Off);
     icon.addPixmap(draw(kIconOn), QIcon::Normal, QIcon::On);
+    icon.addPixmap(draw(kIconHover), QIcon::Active, QIcon::Off);
     icon.addPixmap(draw(kIconOn), QIcon::Active, QIcon::On);
     icon.addPixmap(draw(kIconDisabled), QIcon::Disabled, QIcon::Off);
     return icon;
@@ -259,8 +261,11 @@ QIcon makeFlyoutToolIcon(QPixmap (*draw)(const QColor &)) {
     addFlyoutMarker(on, kIconOn);
     QPixmap disabled = draw(kIconDisabled);
     addFlyoutMarker(disabled, kIconDisabled);
+    QPixmap hover = draw(kIconHover);
+    addFlyoutMarker(hover, kIconHover);
     icon.addPixmap(off, QIcon::Normal, QIcon::Off);
     icon.addPixmap(on, QIcon::Normal, QIcon::On);
+    icon.addPixmap(hover, QIcon::Active, QIcon::Off);
     icon.addPixmap(on, QIcon::Active, QIcon::On);
     icon.addPixmap(disabled, QIcon::Disabled, QIcon::Off);
     return icon;
@@ -710,7 +715,7 @@ void RetouchWindow::buildToolPanel() {
     // A dark, sunken background on the active tool so its light icon stands out.
     m_toolsBar->setStyleSheet(
         "QToolButton { border: none; padding: 4px; border-radius: 4px; }"
-        "QToolButton:hover { background: rgba(255,255,255,0.10); }"
+        "QToolButton:hover { background: rgba(220,220,220,0.85); }"
         "QToolButton:checked { background: #3a3f47; }"
         "QToolButton:disabled { background: transparent; }");
     addToolBar(Qt::LeftToolBarArea, m_toolsBar);

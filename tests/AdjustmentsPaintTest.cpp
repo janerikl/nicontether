@@ -22,7 +22,8 @@ int main() {
         paint.hardness = 1.0;
         paint.opacity = 1.0;
         paint.blend = BlendMode::Normal;
-        paint.stroke.append(BrushStrokePoint{QPointF(0.5, 0.5), false});
+        paint.stroke.append(BrushStrokePoint{QPointF(0.5, 0.5), false, paint.brushRadius,
+                                             paint.hardness, paint.paintColor.rgb()});
 
         Adjustments adj;
         adj.masks.append(paint);
@@ -62,7 +63,8 @@ int main() {
         paint.brushRadius = 2.0;
         paint.hardness = 1.0;
         paint.opacity = 0.5;
-        paint.stroke.append(BrushStrokePoint{QPointF(0.5, 0.5), false});
+        paint.stroke.append(BrushStrokePoint{QPointF(0.5, 0.5), false, paint.brushRadius,
+                                             paint.hardness, paint.paintColor.rgb()});
 
         Adjustments adj;
         adj.masks.append(paint);
@@ -291,7 +293,8 @@ int main() {
                                 {0.6, 0.4}, {0.5, 0.5}, {0.4, 0.6}};
         for (int i = 0; i < pts.size(); ++i) {
             bool erase = (i == 5); // one erase dab partway through
-            adj.masks[0].stroke.append(BrushStrokePoint{pts[i], erase});
+            adj.masks[0].stroke.append(BrushStrokePoint{pts[i], erase, brush.brushRadius,
+                                                        brush.hardness});
 
             QImage incremental = applyAdjustments(base, adj, &cache);
             QImage fromScratch = applyAdjustments(base, adj, nullptr);
@@ -306,7 +309,8 @@ int main() {
         assert(afterUndoIncremental == afterUndoFromScratch);
 
         // Resume painting after the undo — cache must extend correctly again.
-        adj.masks[0].stroke.append(BrushStrokePoint{{0.55, 0.45}, false});
+        adj.masks[0].stroke.append(BrushStrokePoint{{0.55, 0.45}, false, brush.brushRadius,
+                                                    brush.hardness});
         QImage resumedIncremental = applyAdjustments(base, adj, &cache);
         QImage resumedFromScratch = applyAdjustments(base, adj, nullptr);
         assert(resumedIncremental == resumedFromScratch);

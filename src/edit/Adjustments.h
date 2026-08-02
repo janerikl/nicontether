@@ -131,12 +131,21 @@ enum class BlendMode { Normal, Multiply, Screen, Overlay, SoftLight };
 
 // One sampled point of a brush stroke (width-normalized). `erase` marks a dab
 // painted while holding Alt, which subtracts coverage instead of adding it.
+// `radius`/`hardness`/`color` are captured from the mask's brush settings at
+// the moment the dab was painted, so later changes to brush size, hardness,
+// or (for a Paint-type mask) fill color only affect new dabs, not ones
+// already committed to the stroke. `color` is unused for MaskType::Brush.
 struct BrushStrokePoint {
     QPointF pt;
     bool erase = false;
+    double radius = 0.06;
+    double hardness = 0.5;
+    QRgb color = 0xFF000000;
 
     bool operator==(const BrushStrokePoint &o) const {
-        return pt == o.pt && erase == o.erase;
+        return pt == o.pt && erase == o.erase && color == o.color &&
+               std::abs(radius - o.radius) < 1e-9 &&
+               std::abs(hardness - o.hardness) < 1e-9;
     }
 };
 
@@ -251,6 +260,7 @@ struct Mask {
 // copied along with undo snapshots or render-queue copies.
 struct BrushRasterCache {
     std::vector<uchar> cov;
+    std::vector<QRgb> col; // per-pixel dab color, only populated for Paint-type masks
     int w = 0, h = 0;
     int pointCount = 0;
     double brushRadius = -1;

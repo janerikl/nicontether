@@ -270,31 +270,48 @@ constexpr double kAutoMaskTolerance = 45.0;
 // a drag only rasterize the newly-appended stroke points instead of redoing
 // the whole stroke; see BrushRasterCache. Falls back to a full rebuild
 // whenever the cache doesn't (or can no longer) apply.
+// `colOut`, if given, receives the color of whichever dab last "won" the max
+// -coverage contest at each pixel (see per-dab BrushStrokePoint::color) — used
+// by Paint-type masks so a later color change only affects new dabs, not ones
+// already committed to the stroke.
+//
+// When `cache` is given, the rasterization happens in place in the cache's
+// own buffers (only newly-appended points are touched) — `cov`/`colOut` are
+// only copied from the cache if `populateOut` is true. During an active drag,
+// most masks in the stack haven't changed at all; the caller can pass
+// `populateOut=false` and read the cache's buffers directly, avoiding a
+// full-image copy (twice, in and out) on every mouse-move sample for masks
+// that didn't change.
 void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
-                    const QImage *ref = nullptr, BrushRasterCache *cache = nullptr) {
+                    const QImage *ref = nullptr, BrushRasterCache *cache = nullptr,
+                    std::vector<QRgb> *colOut = nullptr, bool populateOut = true) {
+    // Each stroke point carries its own radius/hardness (captured at paint
+    // time), so a later brush-size change doesn't invalidate dabs already
+    // rasterized — only new points need to be added.
     const bool canReuse = cache && cache->valid && cache->w == w && cache->h == h &&
-                          cache->brushRadius == m.brushRadius &&
-                          cache->hardness == m.hardness &&
                           cache->autoMask == m.autoMask &&
                           cache->pointCount <= m.stroke.size() &&
                           (cache->pointCount == 0 ||
                            cache->lastPoint == m.stroke[cache->pointCount - 1]);
 
+    std::vector<uchar> *covBuf = cache ? &cache->cov : &cov;
+    std::vector<QRgb> *colBuf = cache ? &cache->col : colOut;
+
     int startIdx = 0;
     if (canReuse) {
-        cov = cache->cov;
         startIdx = cache->pointCount;
     } else {
-        cov.assign(size_t(w) * h, 0);
+        covBuf->assign(size_t(w) * h, 0);
+        if (colOut) colBuf->assign(size_t(w) * h, 0);
     }
 
     const double W = w;
-    const double rad = std::max(1.0, m.brushRadius * W);
-    const double inner = clampd(m.hardness, 0.0, 1.0) * rad;
-    const double band = std::max(1e-6, rad - inner);
     const bool autoMask = m.autoMask && ref && ref->width() == w && ref->height() == h;
     for (int i = startIdx; i < m.stroke.size(); ++i) {
         const BrushStrokePoint &sp = m.stroke[i];
+        const double rad = std::max(1.0, sp.radius * W);
+        const double inner = clampd(sp.hardness, 0.0, 1.0) * rad;
+        const double band = std::max(1e-6, rad - inner);
         const double px = sp.pt.x() * W, py = sp.pt.y() * W;
         const int x0 = std::max(0, int(px - rad));
         const int x1 = std::min(w - 1, int(px + rad));
@@ -318,15 +335,19 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                     if (v <= 0.0) continue;
                 }
                 uchar iv = uchar(std::lround(v * 255.0));
-                uchar &dst = cov[size_t(y) * w + x];
-                if (sp.erase) dst = uchar(std::max(0, int(dst) - int(iv)));
-                else if (iv > dst) dst = iv;
+                size_t idx = size_t(y) * w + x;
+                uchar &dst = (*covBuf)[idx];
+                if (sp.erase) {
+                    dst = uchar(std::max(0, int(dst) - int(iv)));
+                } else if (iv > dst) {
+                    dst = iv;
+                    if (colOut) (*colBuf)[idx] = sp.color;
+                }
             }
         }
     }
 
     if (cache) {
-        cache->cov = cov;
         cache->w = w;
         cache->h = h;
         cache->pointCount = m.stroke.size();
@@ -335,6 +356,10 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
         cache->autoMask = m.autoMask;
         cache->lastPoint = m.stroke.isEmpty() ? BrushStrokePoint{} : m.stroke.last();
         cache->valid = true;
+        if (populateOut) {
+            cov = cache->cov;
+            if (colOut) *colOut = cache->col;
+        }
     }
 }
 
@@ -448,13 +473,35 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             loc = applyLayerContent(loc, m.adj);
         } else if (paintLayer) {
             loc = QImage(w, h, QImage::Format_RGBA64);
-            loc.fill(m.paintColor);
+            loc.fill(m.paintColor); // fallback fill; per-dab colors applied below
         } else {
             loc = applyLayerContent(img, m.adj);
         }
+        std::vector<QRgb> colBuf;
+        BrushRasterCache *bc = brushCache ? &(*brushCache)[mi] : nullptr;
         if (m.type == MaskType::Brush || paintLayer)
-            rasterizeBrush(m, cov, w, h, &img,
-                           brushCache ? &(*brushCache)[mi] : nullptr);
+            rasterizeBrush(m, cov, w, h, &img, bc, paintLayer ? &colBuf : nullptr,
+                           /*populateOut=*/false);
+        // With a cache, rasterizeBrush left the up-to-date buffers in the
+        // cache itself (see populateOut above) — read from there directly to
+        // avoid a full-image copy of masks that didn't change this frame.
+        const std::vector<uchar> &covRead = bc ? bc->cov : cov;
+        const std::vector<QRgb> &colRead = bc ? bc->col : colBuf;
+        if (paintLayer && (bc ? !bc->cov.empty() : !colBuf.empty())) {
+            // Each dab's own color (captured at paint time) wins wherever it
+            // set the max coverage, so re-picking the color later only
+            // affects new dabs, not ones already painted.
+            for (int y = 0; y < h; ++y) {
+                QRgba64 *line = reinterpret_cast<QRgba64 *>(loc.scanLine(y));
+                for (int x = 0; x < w; ++x) {
+                    size_t idx = size_t(y) * w + x;
+                    if (covRead[idx] == 0) continue;
+                    QRgb c = colRead[idx];
+                    line[x] = qRgba64(quint16(qRed(c) * 257), quint16(qGreen(c) * 257),
+                                      quint16(qBlue(c) * 257), line[x].alpha());
+                }
+            }
+        }
         const double op = clampd(m.opacity, 0.0, 1.0);
         for (int y = 0; y < h; ++y) {
             QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
@@ -468,7 +515,7 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                 else if (m.type == MaskType::Linear)
                     wgt = linearWeight(m, x / W, y / W);
                 else
-                    wgt = cov[size_t(y) * w + x] / 255.0;
+                    wgt = covRead[size_t(y) * w + x] / 255.0;
                 if (imageLayer)
                     wgt *= qAlpha(locLine[x]) / 255.0;
                 wgt *= op;

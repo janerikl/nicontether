@@ -307,24 +307,25 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     connect(m_delete, &QPushButton::clicked, this,
             [this] { emit deleteMaskRequested(); });
     connect(m_maskList, &QListWidget::currentRowChanged, this, [this](int i) {
-        if (!m_syncing) emit selectMaskRequested(m_hasBackground ? i - 1 : i);
+        if (!m_syncing)
+            emit selectMaskRequested(m_hasBackground && i == m_masks.size() ? -1 : i);
     });
     connect(m_maskList, &QListWidget::itemChanged, this,
             [this](QListWidgetItem *item) {
                 if (m_syncing) return;
                 int i = m_maskList->row(item);
-                if (m_hasBackground && i == 0) return; // Background has no visibility toggle
-                emit maskVisibleChanged(m_hasBackground ? i - 1 : i,
-                                        item->checkState() == Qt::Checked);
+                if (m_hasBackground && i == m_masks.size()) return; // Background has no visibility toggle
+                emit maskVisibleChanged(i, item->checkState() == Qt::Checked);
             });
     connect(m_maskList->model(), &QAbstractItemModel::rowsMoved, this,
             [this](const QModelIndex &, int start, int, const QModelIndex &,
                    int destRow) {
                 if (m_syncing) return;
-                if (m_hasBackground && (start == 0 || destRow == 0)) return; // can't move Background
+                const int bgRow = m_masks.size(); // Background is pinned to the last row
+                if (m_hasBackground && (start >= bgRow || destRow > bgRow))
+                    return; // can't move Background, or drop a layer below it
                 int to = destRow > start ? destRow - 1 : destRow;
-                int off = m_hasBackground ? 1 : 0;
-                emit maskReorderRequested(start - off, to - off);
+                emit maskReorderRequested(start, to);
             });
     connect(m_name, &QLineEdit::editingFinished, this,
             [this] { if (!m_syncing) emit maskNameChanged(m_name->text()); });
@@ -432,11 +433,6 @@ void LayersPanel::resetSections() {
 void LayersPanel::rebuildList() {
     m_syncing = true;
     m_maskList->clear();
-    if (m_hasBackground) {
-        auto *bg = new QListWidgetItem(QStringLiteral("Background \xF0\x9F\x94\x92")); // trailing lock emoji
-        bg->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled); // no drag, no checkbox
-        m_maskList->addItem(bg);
-    }
     for (int i = 0; i < m_masks.size(); ++i) {
         const Mask &m = m_masks[i];
         QString label = m.name.isEmpty()
@@ -451,11 +447,16 @@ void LayersPanel::rebuildList() {
         item->setCheckState(m.visible ? Qt::Checked : Qt::Unchecked);
         m_maskList->addItem(item);
     }
-    const int row = m_hasBackground ? m_active + 1 : m_active;
+    if (m_hasBackground) {
+        // Pinned to the bottom of the stack, like Photoshop's Background layer.
+        auto *bg = new QListWidgetItem(QStringLiteral("Background \xF0\x9F\x94\x92")); // trailing lock emoji
+        bg->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled); // no drag, no checkbox
+        m_maskList->addItem(bg);
+    }
+    const int row = (m_active >= 0) ? m_active
+                    : (m_hasBackground ? m_masks.size() : -1);
     if (row >= 0 && row < m_maskList->count())
         m_maskList->setCurrentRow(row);
-    else if (m_hasBackground && m_active == -1)
-        m_maskList->setCurrentRow(0);
     m_syncing = false;
 }
 

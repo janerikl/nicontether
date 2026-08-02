@@ -7,6 +7,10 @@
 #include <QVBoxLayout>
 #include <QFutureWatcher>
 #include <QFileInfo>
+#include <QDir>
+#include <QFile>
+#include <QUuid>
+#include <QDebug>
 #include <QTimer>
 #include <QThread>
 #include <QtConcurrent>
@@ -561,8 +565,8 @@ int RetouchTab::addMask(MaskType type) {
     Mask m;
     m.type = type;
     m.name = QStringLiteral("Layer %1").arg(m_adj.masks.size() + 1);
-    m_adj.masks.append(m);
-    m_activeMask = m_adj.masks.size() - 1;
+    m_adj.masks.insert(0, m);
+    m_activeMask = 0;
     m_maskMode = (type != MaskType::None);
     m_canvas->setMaskMode(type, m_maskMode);
     pushMaskGizmo();
@@ -573,23 +577,45 @@ int RetouchTab::addMask(MaskType type) {
 }
 
 int RetouchTab::addImageLayer(const QString &path) {
+    QString storedPath = copyImageLayerAsset(path);
     Mask m;
     m.type = MaskType::None; // covers the full frame; no shape
     m.name = QFileInfo(path).fileName();
-    m.sourceImagePath = path;
+    m.sourceImagePath = storedPath;
     m.sourceImageOffset = QPointF(0.0, 0.0);
     m.sourceImageScale = QPointF(1.0, 1.0);
     m.sourceImageLockRatio = true;
-    m_adj.masks.append(m);
-    m_activeMask = m_adj.masks.size() - 1;
+    m_adj.masks.insert(0, m);
+    m_activeMask = 0;
     m_maskMode = false;
     m_canvas->setMaskMode(MaskType::None, false);
     pushMaskGizmo();
     if (m_maskPreviewEnabled) retone();
     markEdited();
     emit masksChanged();
-    kickoffImageLayerDecode(path);
+    kickoffImageLayerDecode(storedPath);
     return m_activeMask;
+}
+
+// Copies `sourcePath` into an app-managed file next to the base photo so the
+// layer keeps working even if the original file is later moved or deleted.
+// Falls back to referencing sourcePath directly if the copy fails.
+QString RetouchTab::copyImageLayerAsset(const QString &sourcePath) {
+    QString baseDir = m_path.isEmpty() ? QFileInfo(sourcePath).absolutePath()
+                                        : QFileInfo(m_path).absolutePath();
+    QString baseName = m_path.isEmpty() ? QStringLiteral("layer")
+                                         : QFileInfo(m_path).completeBaseName();
+    QString ext = QFileInfo(sourcePath).suffix();
+    QString uuid = QUuid::createUuid().toString(QUuid::Id128).left(8);
+    QString destPath = QDir(baseDir).filePath(
+        ext.isEmpty() ? QStringLiteral("%1.layer.%2").arg(baseName, uuid)
+                       : QStringLiteral("%1.layer.%2.%3").arg(baseName, uuid, ext));
+
+    if (QFile::copy(sourcePath, destPath)) return destPath;
+
+    qWarning() << "copyImageLayerAsset: failed to copy" << sourcePath << "to" << destPath
+               << "- referencing original file location instead";
+    return sourcePath;
 }
 
 void RetouchTab::kickoffImageLayerDecode(const QString &path) {
@@ -790,7 +816,11 @@ void RetouchTab::onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm) {
 
 void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm, bool erase) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
-    m_adj.masks[m_activeMask].stroke.append(BrushStrokePoint{ptNorm, erase});
+    Mask &m = m_adj.masks[m_activeMask];
+    // Bake in the brush size/hardness/(paint) color at paint time so later
+    // changes only affect new dabs, not ones already committed to the stroke.
+    m.stroke.append(BrushStrokePoint{ptNorm, erase, m.brushRadius, m.hardness,
+                                     m.paintColor.rgb()});
     pushMaskGizmo(); // show the painted coverage right away
     retone();
 }

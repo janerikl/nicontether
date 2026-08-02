@@ -159,6 +159,7 @@ private:
     void updateHealSpots();   // push heal-op markers (display coords) to the canvas
     void pushMaskGizmo();     // sync active mask geometry to the canvas
     void kickoffImageLayerDecode(const QString &path); // async-decode an image layer's source
+    QString copyImageLayerAsset(const QString &sourcePath); // copy a layer source next to m_path so it survives move/delete
     void setupCanvasAndWiring(); // shared canvas creation + connect()s for both constructors
 
     QString m_path;
