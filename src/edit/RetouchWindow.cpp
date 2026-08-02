@@ -57,8 +57,9 @@ namespace {
 // in this project). Each icon is drawn twice: a neutral dark-grey Off state
 // and a light On state so the active (checked) tool stands out clearly.
 constexpr int kIconPx = 28;
-const QColor kIconOff(70, 70, 70);    // idle: dark grey
-const QColor kIconOn(235, 235, 235);  // active: light
+const QColor kIconOff(70, 70, 70);       // idle: dark grey
+const QColor kIconOn(235, 235, 235);     // active: light
+const QColor kIconDisabled(70, 70, 70, 90); // disabled: idle color, faded
 
 QPixmap drawZoom(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
@@ -237,6 +238,7 @@ QIcon makeToolIcon(QPixmap (*draw)(const QColor &)) {
     icon.addPixmap(draw(kIconOff), QIcon::Normal, QIcon::Off);
     icon.addPixmap(draw(kIconOn), QIcon::Normal, QIcon::On);
     icon.addPixmap(draw(kIconOn), QIcon::Active, QIcon::On);
+    icon.addPixmap(draw(kIconDisabled), QIcon::Disabled, QIcon::Off);
     return icon;
 }
 
@@ -255,9 +257,12 @@ QIcon makeFlyoutToolIcon(QPixmap (*draw)(const QColor &)) {
     addFlyoutMarker(off, kIconOff);
     QPixmap on = draw(kIconOn);
     addFlyoutMarker(on, kIconOn);
+    QPixmap disabled = draw(kIconDisabled);
+    addFlyoutMarker(disabled, kIconDisabled);
     icon.addPixmap(off, QIcon::Normal, QIcon::Off);
     icon.addPixmap(on, QIcon::Normal, QIcon::On);
     icon.addPixmap(on, QIcon::Active, QIcon::On);
+    icon.addPixmap(disabled, QIcon::Disabled, QIcon::Off);
     return icon;
 }
 
@@ -705,8 +710,9 @@ void RetouchWindow::buildToolPanel() {
     // A dark, sunken background on the active tool so its light icon stands out.
     m_toolsBar->setStyleSheet(
         "QToolButton { border: none; padding: 4px; border-radius: 4px; }"
-        "QToolButton:hover { background: rgba(0,0,0,0.08); }"
-        "QToolButton:checked { background: #3a3f47; }");
+        "QToolButton:hover { background: rgba(255,255,255,0.10); }"
+        "QToolButton:checked { background: #3a3f47; }"
+        "QToolButton:disabled { background: transparent; }");
     addToolBar(Qt::LeftToolBarArea, m_toolsBar);
 
     m_toolZoom = new QToolButton;
