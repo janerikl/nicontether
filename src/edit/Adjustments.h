@@ -122,7 +122,7 @@ struct MaskAdjust {
     bool operator!=(const MaskAdjust &o) const { return !(*this == o); }
 };
 
-enum class MaskType { Radial, Linear, Brush, Paint, None };
+enum class MaskType { Radial, Linear, Brush, Paint, Text, None };
 
 // How a layer's local adjustment composites over what's below it. Applied
 // per-channel in sRGB space, then mixed with the layer below by mask weight
@@ -204,6 +204,20 @@ struct Mask {
     // Adjustments.cpp). Unused by all other mask types.
     QColor paintColor = Qt::black;
 
+    // Text: knockout/clipping-text coverage — the layer's content (whatever
+    // is below it, tone-adjusted by `adj` like a plain layer) only shows
+    // through where these glyphs are. Plain shape only, no fill/outline/
+    // shadow of its own, since the coverage itself carries no colour.
+    // `textPos`/`textPixelSize` are width-normalized (same convention as
+    // `center`/`radiusX`), so they scale with the image like other mask
+    // geometry. Unused by all other mask types.
+    QString text;
+    QString textFamily = QStringLiteral("Sans Serif");
+    double textPixelSize = 0.08; // width-normalized (fraction of image width)
+    bool textBold = false;
+    bool textItalic = false;
+    QPointF textPos{0.3, 0.45}; // top-left, width-normalized
+
     MaskAdjust adj;
 
     // Image layer: when set, this layer's content is a cover-fit scale/crop of
@@ -240,6 +254,10 @@ struct Mask {
                std::abs(brushRadius - o.brushRadius) < 1e-9 &&
                std::abs(hardness - o.hardness) < 1e-9 && autoMask == o.autoMask &&
                adj == o.adj && paintColor == o.paintColor &&
+               text == o.text && textFamily == o.textFamily &&
+               std::abs(textPixelSize - o.textPixelSize) < 1e-9 &&
+               textBold == o.textBold && textItalic == o.textItalic &&
+               textPos == o.textPos &&
                sourceImageOffset == o.sourceImageOffset &&
                sourceImageScale == o.sourceImageScale &&
                sourceImageLockRatio == o.sourceImageLockRatio &&
@@ -279,6 +297,104 @@ struct HealOp {
     bool operator==(const HealOp &o) const {
         return x == o.x && y == o.y && radius == o.radius;
     }
+};
+
+// One text overlay. `pos` is in oriented-image pixel space, pre-crop (same
+// convention as HealOp), so text stays anchored to photo content across crop
+// changes. Font/outline/shadow metrics are absolute image-space pixels, same
+// scaling convention as HealOp::radius. Composited as the very last step of
+// rendering (after tone/colour/vignette), so — unlike heals — text pixels are
+// never touched by tone/colour adjustments (see applyTexts in TextTool.cpp,
+// called from RetouchTab after the toned render, not from applyAdjustments).
+struct TextOp {
+    QPointF pos{0, 0};
+    double rotation = 0.0; // degrees, clockwise, about pos
+
+    QString text;          // may contain '\n' for multiple lines
+
+    QString family = QStringLiteral("Sans Serif");
+    double pixelSize = 48.0;
+    bool bold = false;
+    bool italic = false;
+
+    QColor color{255, 255, 255, 255};
+
+    bool outlineEnabled = false;
+    QColor outlineColor{0, 0, 0, 255};
+    double outlineWidth = 3.0;
+
+    bool shadowEnabled = false;
+    QPointF shadowOffset{8, 8};
+    double shadowBlur = 14.0;
+    double shadowOpacity = 0.75;
+    QColor shadowColor{0, 0, 0, 255};
+
+    // Background: a solid box drawn behind the text (banner/highlight look).
+    // Drawn first, before shadow/fill/outline, sized to the text bounds plus
+    // `bgPadding` (image-space px) on all sides.
+    bool bgEnabled = false;
+    QColor bgColor{0, 0, 0, 255};
+    double bgOpacity = 0.6;
+    double bgPadding = 10.0;
+
+    bool operator==(const TextOp &o) const {
+        return pos == o.pos && std::abs(rotation - o.rotation) < 1e-9 &&
+               text == o.text && family == o.family &&
+               std::abs(pixelSize - o.pixelSize) < 1e-9 && bold == o.bold &&
+               italic == o.italic && color == o.color &&
+               outlineEnabled == o.outlineEnabled &&
+               outlineColor == o.outlineColor &&
+               std::abs(outlineWidth - o.outlineWidth) < 1e-9 &&
+               shadowEnabled == o.shadowEnabled &&
+               shadowOffset == o.shadowOffset &&
+               std::abs(shadowBlur - o.shadowBlur) < 1e-9 &&
+               std::abs(shadowOpacity - o.shadowOpacity) < 1e-9 &&
+               shadowColor == o.shadowColor &&
+               bgEnabled == o.bgEnabled && bgColor == o.bgColor &&
+               std::abs(bgOpacity - o.bgOpacity) < 1e-9 &&
+               std::abs(bgPadding - o.bgPadding) < 1e-9;
+    }
+    bool operator!=(const TextOp &o) const { return !(*this == o); }
+};
+
+enum class ShapeType { Rectangle, Ellipse, Line, Polygon, Star, Heart };
+
+// One shape overlay (rectangle/ellipse/line/polygon/star/heart). `rect` is
+// the bounding box in oriented-image pixel space, pre-crop (same convention
+// as TextOp::pos); `p1`/`p2` are used instead for Line. Composited as the
+// very last step of rendering, right after texts (see applyShapes in
+// ShapeTool.cpp, called from RetouchTab after the toned render), so shape
+// pixels are never touched by tone/colour adjustments.
+struct ShapeOp {
+    ShapeType type = ShapeType::Rectangle;
+
+    QRectF rect{0, 0, 200, 200}; // Rectangle/Ellipse/Polygon/Star/Heart
+    QPointF p1{0, 0};             // Line start
+    QPointF p2{200, 0};           // Line end
+
+    double rotation = 0.0; // degrees, clockwise, about rect.center() (or p1/p2 midpoint for Line)
+
+    int sides = 5;                  // Polygon/Star point count (3..20)
+    double innerRadiusRatio = 0.5;  // Star only (0.1..0.9)
+
+    bool fillEnabled = true;
+    QColor fillColor{255, 255, 255, 255};
+    bool strokeEnabled = true;
+    QColor strokeColor{0, 0, 0, 255};
+    double strokeWidth = 4.0;
+
+    double opacity = 1.0; // 0..1, applied to whole shape (fill+stroke)
+
+    bool operator==(const ShapeOp &o) const {
+        return type == o.type && rect == o.rect && p1 == o.p1 && p2 == o.p2 &&
+               std::abs(rotation - o.rotation) < 1e-9 && sides == o.sides &&
+               std::abs(innerRadiusRatio - o.innerRadiusRatio) < 1e-9 &&
+               fillEnabled == o.fillEnabled && fillColor == o.fillColor &&
+               strokeEnabled == o.strokeEnabled && strokeColor == o.strokeColor &&
+               std::abs(strokeWidth - o.strokeWidth) < 1e-9 &&
+               std::abs(opacity - o.opacity) < 1e-9;
+    }
+    bool operator!=(const ShapeOp &o) const { return !(*this == o); }
 };
 
 // Non-destructive edit parameters applied on top of an immutable base image.
@@ -324,6 +440,12 @@ struct Adjustments {
     // Spot-heal ops (oriented-image coords; applied before crop).
     QVector<HealOp> heals;
 
+    // Text overlays (oriented-image coords, pre-crop; see TextOp comment).
+    QVector<TextOp> texts;
+
+    // Shape overlays (oriented-image coords, pre-crop; see ShapeOp comment).
+    QVector<ShapeOp> shapes;
+
     // Geometry
     int rotationQuadrants = 0; // clockwise 90° turns (0..3)
     bool flipH = false;
@@ -347,7 +469,8 @@ struct Adjustments {
                sharpen == o.sharpen && vignette == o.vignette &&
                curve == o.curve && levels == o.levels &&
                colorRanges == o.colorRanges &&
-               masks == o.masks && heals == o.heals &&
+               masks == o.masks && heals == o.heals && texts == o.texts &&
+               shapes == o.shapes &&
                rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
                flipV == o.flipV && cropRect == o.cropRect &&
                backgroundColor == o.backgroundColor;

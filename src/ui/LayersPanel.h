@@ -80,6 +80,8 @@ signals:
     void maskTypeChanged(MaskType type);
     void maskShapeChanged(bool inverted, double feather, double hardness,
                           double brushRadius, bool autoMask);
+    void maskTextChanged(const QString &text, const QString &family, double pixelSize,
+                         bool bold, bool italic);
 
 private:
     void emitAdjust();

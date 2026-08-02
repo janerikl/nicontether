@@ -17,6 +17,7 @@ class QTabWidget;
 class QSlider;
 class QPushButton;
 class QToolButton;
+class QCheckBox;
 class FlyoutToolButton;
 class QLabel;
 class QToolBar;
@@ -154,6 +155,35 @@ private:
     FlyoutToolButton *m_maskToggle = nullptr; // left icon bar: local-mask tool
     QToolButton *m_eraseToggle = nullptr; // left icon bar: erase tool
     QSlider *m_eraseBrush = nullptr;
+    QToolButton *m_textToggle = nullptr; // left icon bar: text tool
+    class QFontComboBox *m_textFont = nullptr;
+    class QSpinBox *m_textSize = nullptr;
+    QToolButton *m_textBold = nullptr;
+    QToolButton *m_textItalic = nullptr;
+    QPushButton *m_textColorBtn = nullptr;
+    QPushButton *m_textOutlineColorBtn = nullptr;
+    class QDoubleSpinBox *m_textOutlineWidth = nullptr;
+    QPushButton *m_textShadowColorBtn = nullptr;
+    class QDoubleSpinBox *m_textShadowBlur = nullptr;
+    class QDoubleSpinBox *m_textShadowOpacity = nullptr;
+    QPushButton *m_textBgColorBtn = nullptr;
+    class QDoubleSpinBox *m_textBgOpacity = nullptr;
+    class QDoubleSpinBox *m_textBgPadding = nullptr;
+    QPushButton *m_textDelete = nullptr;
+    void updateTextOptionsFromTab(); // refresh the text options row from the active/selected text
+    void setColorSwatchButton(QPushButton *btn, const QColor &color);
+
+    QToolButton *m_shapeToggle = nullptr; // left icon bar: shape tool
+    class QComboBox *m_shapeType = nullptr;
+    class QSpinBox *m_shapeSides = nullptr;
+    class QDoubleSpinBox *m_shapeInnerRatio = nullptr;
+    QCheckBox *m_shapeFillEnabled = nullptr;
+    QPushButton *m_shapeFillColorBtn = nullptr;
+    QCheckBox *m_shapeStrokeEnabled = nullptr;
+    QPushButton *m_shapeStrokeColorBtn = nullptr;
+    class QDoubleSpinBox *m_shapeStrokeWidth = nullptr;
+    QPushButton *m_shapeDelete = nullptr;
+    void updateShapeOptionsFromTab(); // refresh the shape options row from the active/selected shape
     ColorSwatchWidget *m_colorSwatch = nullptr; // left icon bar: fg/bg color swatch
     QDockWidget *m_layersDock = nullptr;
     LayersPanel *m_layersPanel = nullptr;

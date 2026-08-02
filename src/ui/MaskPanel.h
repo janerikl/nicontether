@@ -8,6 +8,10 @@ class QComboBox;
 class QCheckBox;
 class QSlider;
 class QLabel;
+class QLineEdit;
+class QFontComboBox;
+class QSpinBox;
+class QToolButton;
 
 // Mask editor for whichever layer is selected in the Layers panel: a type
 // combo (None / Radial / Graduated / Brush) to add, remove, or change the
@@ -31,6 +35,10 @@ signals:
     void maskTypeChanged(MaskType type);
     void maskShapeChanged(bool inverted, double feather, double hardness,
                           double brushRadius, bool autoMask);
+    // Text-type mask content/style (see Mask::text and friends). `pixelSize`
+    // is width-normalized, same convention as brushRadius.
+    void maskTextChanged(const QString &text, const QString &family, double pixelSize,
+                         bool bold, bool italic);
 
 private:
     void emitShape();
@@ -50,4 +58,11 @@ private:
     QLabel *m_brushSizeLabel = nullptr;
     QSlider *m_brushSize = nullptr;
     QCheckBox *m_autoMask = nullptr;
+
+    QLineEdit *m_textContent = nullptr;
+    QFontComboBox *m_textFont = nullptr;
+    QSpinBox *m_textSize = nullptr; // percent of image width
+    QToolButton *m_textBold = nullptr;
+    QToolButton *m_textItalic = nullptr;
+    void emitText();
 };

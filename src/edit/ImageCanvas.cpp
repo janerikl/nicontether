@@ -14,6 +14,13 @@
 #include <QContextMenuEvent>
 #include <QMenu>
 #include <QColorDialog>
+#include <QPlainTextEdit>
+#include <QFont>
+#include <QTextCursor>
+#include <QTransform>
+#include <QPolygonF>
+#include <QLineF>
+#include <QEvent>
 #include <cmath>
 #include <algorithm>
 
@@ -169,6 +176,327 @@ void ImageCanvas::setHealMode(bool on) {
     m_healMode = on;
     setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
     update();
+}
+
+void ImageCanvas::setTextMode(bool on) {
+    m_textMode = on;
+    if (!on) {
+        m_textDrag = TextDrag::None;
+        m_activeTextIndex = -1;
+        cancelTextEditor();
+    }
+    setCursor(on ? Qt::IBeamCursor : Qt::ArrowCursor);
+    update();
+}
+
+void ImageCanvas::setShapeMode(bool on) {
+    m_shapeMode = on;
+    if (!on) {
+        m_shapeDrag = ShapeDrag::None;
+        m_activeShapeIndex = -1;
+    }
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+void ImageCanvas::setActiveShapeType(ShapeType t) {
+    m_activeShapeType = t;
+}
+
+void ImageCanvas::setShapeMarkers(const QVector<ShapeMarker> &markers) {
+    m_shapeMarkers = markers;
+    if (m_activeShapeIndex >= m_shapeMarkers.size()) m_activeShapeIndex = -1;
+    if (m_shapeMode) update();
+}
+
+void ImageCanvas::setActiveShapeIndex(int index) {
+    m_activeShapeIndex = index;
+    if (m_shapeMode) update();
+}
+
+void ImageCanvas::setTextMarkers(const QVector<TextMarker> &markers) {
+    m_textMarkers = markers;
+    if (m_activeTextIndex >= m_textMarkers.size()) m_activeTextIndex = -1;
+    if (m_textMode) update();
+}
+
+void ImageCanvas::setActiveTextIndex(int index) {
+    m_activeTextIndex = index;
+    if (m_textMode) update();
+}
+
+void ImageCanvas::beginTextEdit(int index, const QPointF &imgPos, const QFont &baseFont,
+                                const QColor &color, const QString &initialText) {
+    if (!m_textEditor) {
+        m_textEditor = new QPlainTextEdit(this);
+        m_textEditor->setFrameStyle(QFrame::NoFrame);
+        m_textEditor->setAttribute(Qt::WA_TranslucentBackground);
+        m_textEditor->setLineWrapMode(QPlainTextEdit::NoWrap);
+        m_textEditor->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_textEditor->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        m_textEditor->document()->setDocumentMargin(0);
+        m_textEditor->installEventFilter(this);
+        connect(m_textEditor, &QPlainTextEdit::textChanged, this, [this] {
+            if (m_textEditIndex >= 0)
+                emit textLiveContentChanged(m_textEditIndex, m_textEditor->toPlainText());
+        });
+    }
+    m_textEditIndex = index;
+    // `baseFont`'s pixel size is in display-image pixels (RetouchTab scales
+    // by m_scaleFromGeom, independent of the canvas's own view zoom). The
+    // widget itself lives in on-screen widget pixels, so it also needs the
+    // current view zoom (m_scale) applied — otherwise, at any zoom level
+    // other than 100%, the editor's text renders at the wrong size relative
+    // to the actual composited text underneath (e.g. huge when zoomed out).
+    QFont font = baseFont;
+    font.setPixelSize(std::max(1, int(std::lround(baseFont.pixelSize() * m_scale))));
+    m_textEditor->setFont(font);
+    QPalette pal = m_textEditor->palette();
+    pal.setColor(QPalette::Text, color);
+    // Fully transparent — no background wash, so the box reads as a caret
+    // over the live text rather than a highlighted panel around it (the
+    // underlying baked-in copy of this same op is suppressed for the
+    // duration of the edit — see RetouchTab::onRenderDone — so there's no
+    // double-text ghosting either).
+    pal.setColor(QPalette::Base, Qt::transparent);
+    m_textEditor->setPalette(pal);
+    m_textEditor->setPlainText(initialText);
+    QPoint wp = (m_topLeft + imgPos * m_scale).toPoint();
+    m_textEditor->move(wp);
+
+    // Size the box to fit the actual text tightly (plus a little room to
+    // keep typing), not a fixed fraction of the canvas — otherwise long/
+    // existing text gets clipped, or the box reads as a big empty panel
+    // around a small piece of text.
+    QFontMetricsF fm(font);
+    const QStringList lines = initialText.isEmpty() ? QStringList{QString()}
+                                                     : initialText.split(QLatin1Char('\n'));
+    double textWidth = 0.0;
+    for (const QString &line : lines)
+        textWidth = std::max(textWidth, double(fm.horizontalAdvance(line)));
+    int w = std::clamp(int(textWidth) + 24, 40, std::max(40, width() - wp.x() - 8));
+    int h = std::max(int(fm.height()), int(fm.lineSpacing() * (lines.size() - 1) + fm.height()));
+    m_textEditor->resize(w, h);
+    m_textEditor->show();
+    m_textEditor->raise();
+    m_textEditor->setFocus();
+    // Cursor at the end (ready to keep typing), no selection — since the box
+    // is now sized to fit the whole line, this doesn't scroll anything out
+    // of view (unlike selecting the whole document, which jumps the view to
+    // the end of the selection and hides the start of long text).
+    QTextCursor c = m_textEditor->textCursor();
+    c.movePosition(QTextCursor::End);
+    m_textEditor->setTextCursor(c);
+}
+
+void ImageCanvas::commitTextEditor() {
+    if (!m_textEditor || m_textEditIndex < 0) return;
+    int idx = m_textEditIndex;
+    QString text = m_textEditor->toPlainText();
+    m_textEditIndex = -1;
+    m_textEditor->hide();
+    emit textEditCommitted(idx, text);
+}
+
+void ImageCanvas::cancelTextEditor() {
+    if (!m_textEditor || m_textEditIndex < 0) return;
+    int idx = m_textEditIndex;
+    m_textEditIndex = -1;
+    m_textEditor->hide();
+    emit textEditCancelled(idx);
+}
+
+int ImageCanvas::textMarkerAt(const QPoint &pos) const {
+    for (int i = m_textMarkers.size() - 1; i >= 0; --i) {
+        const TextMarker &m = m_textMarkers[i];
+        QPointF imgPos = (QPointF(pos) - m_topLeft) / m_scale;
+        QPointF center = m.rect.topLeft();
+        // Undo the marker's rotation about its anchor to test in local space.
+        QTransform t;
+        t.translate(center.x(), center.y());
+        t.rotate(-m.rotation);
+        t.translate(-center.x(), -center.y());
+        QPointF local = t.map(imgPos);
+        if (m.rect.contains(local)) return i;
+    }
+    return -1;
+}
+
+QPointF ImageCanvas::textRotateHandlePos(const TextMarker &m) const {
+    QPointF anchor = m.rect.topLeft();
+    QPointF handleImg(m.rect.center().x(), m.rect.top() - 28.0 / std::max(0.01, m_scale));
+    QTransform t;
+    t.translate(anchor.x(), anchor.y());
+    t.rotate(m.rotation);
+    t.translate(-anchor.x(), -anchor.y());
+    QPointF rotated = t.map(handleImg);
+    return m_topLeft + rotated * m_scale;
+}
+
+QPointF ImageCanvas::textCornerLocal(const TextMarker &m, Handle corner) const {
+    switch (corner) {
+    case Handle::TopRight:    return QPointF(m.rect.right(), m.rect.top());
+    case Handle::BottomLeft:  return QPointF(m.rect.left(), m.rect.bottom());
+    case Handle::BottomRight: return m.rect.bottomRight();
+    default:                  return m.rect.topLeft();
+    }
+}
+
+QPointF ImageCanvas::textCornerScreenPos(const TextMarker &m, Handle corner) const {
+    QPointF anchor = m.rect.topLeft();
+    QPointF local = textCornerLocal(m, corner);
+    QTransform t;
+    t.translate(anchor.x(), anchor.y());
+    t.rotate(m.rotation);
+    t.translate(-anchor.x(), -anchor.y());
+    return m_topLeft + t.map(local) * m_scale;
+}
+
+ImageCanvas::Handle ImageCanvas::textCornerHandleAt(const QPoint &pos) const {
+    if (m_activeTextIndex < 0 || m_activeTextIndex >= m_textMarkers.size()) return Handle::None;
+    const TextMarker &m = m_textMarkers[m_activeTextIndex];
+    const double t = 10.0;
+    for (Handle h : {Handle::TopRight, Handle::BottomLeft, Handle::BottomRight}) {
+        if ((QPointF(pos) - textCornerScreenPos(m, h)).manhattanLength() <= t) return h;
+    }
+    return Handle::None;
+}
+
+int ImageCanvas::shapeMarkerAt(const QPoint &pos) const {
+    for (int i = m_shapeMarkers.size() - 1; i >= 0; --i) {
+        const ShapeMarker &m = m_shapeMarkers[i];
+        QPointF imgPos = (QPointF(pos) - m_topLeft) / m_scale;
+        if (m.type == ShapeType::Line) {
+            QLineF line(m.p1, m.p2);
+            double t = std::clamp(QPointF::dotProduct(imgPos - m.p1, m.p2 - m.p1) /
+                                       std::max(1.0, std::pow(line.length(), 2)),
+                                   0.0, 1.0);
+            QPointF closest = m.p1 + t * (m.p2 - m.p1);
+            if ((imgPos - closest).manhattanLength() <= 8.0 / std::max(0.01, m_scale)) return i;
+            continue;
+        }
+        QPointF center = m.rect.center();
+        QTransform t;
+        t.translate(center.x(), center.y());
+        t.rotate(-m.rotation);
+        t.translate(-center.x(), -center.y());
+        QPointF local = t.map(imgPos);
+        if (m.rect.contains(local)) return i;
+    }
+    return -1;
+}
+
+QPointF ImageCanvas::shapeRotateHandlePos(const ShapeMarker &m) const {
+    QPointF anchor = m.rect.center();
+    QPointF handleImg(anchor.x(), m.rect.top() - 28.0 / std::max(0.01, m_scale));
+    QTransform t;
+    t.translate(anchor.x(), anchor.y());
+    t.rotate(m.rotation);
+    t.translate(-anchor.x(), -anchor.y());
+    return m_topLeft + t.map(handleImg) * m_scale;
+}
+
+QPointF ImageCanvas::shapeCornerLocal(const ShapeMarker &m, Handle corner) const {
+    switch (corner) {
+    case Handle::TopLeft:     return m.rect.topLeft();
+    case Handle::TopRight:    return QPointF(m.rect.right(), m.rect.top());
+    case Handle::BottomLeft:  return QPointF(m.rect.left(), m.rect.bottom());
+    case Handle::BottomRight: return m.rect.bottomRight();
+    default:                  return m.rect.topLeft();
+    }
+}
+
+QPointF ImageCanvas::shapeCornerScreenPos(const ShapeMarker &m, Handle corner) const {
+    QPointF anchor = m.rect.center();
+    QPointF local = shapeCornerLocal(m, corner);
+    QTransform t;
+    t.translate(anchor.x(), anchor.y());
+    t.rotate(m.rotation);
+    t.translate(-anchor.x(), -anchor.y());
+    return m_topLeft + t.map(local) * m_scale;
+}
+
+ImageCanvas::Handle ImageCanvas::shapeCornerHandleAt(const QPoint &pos) const {
+    if (m_activeShapeIndex < 0 || m_activeShapeIndex >= m_shapeMarkers.size()) return Handle::None;
+    const ShapeMarker &m = m_shapeMarkers[m_activeShapeIndex];
+    if (m.type == ShapeType::Line) return Handle::None;
+    const double t = 10.0;
+    for (Handle h : {Handle::TopLeft, Handle::TopRight, Handle::BottomLeft, Handle::BottomRight}) {
+        if ((QPointF(pos) - shapeCornerScreenPos(m, h)).manhattanLength() <= t) return h;
+    }
+    return Handle::None;
+}
+
+QPointF ImageCanvas::shapeEndpointScreenPos(const ShapeMarker &m, bool first) const {
+    return m_topLeft + (first ? m.p1 : m.p2) * m_scale;
+}
+
+int ImageCanvas::shapeEndpointAt(const QPoint &pos) const {
+    if (m_activeShapeIndex < 0 || m_activeShapeIndex >= m_shapeMarkers.size()) return -1;
+    const ShapeMarker &m = m_shapeMarkers[m_activeShapeIndex];
+    if (m.type != ShapeType::Line) return -1;
+    const double t = 10.0;
+    if ((QPointF(pos) - shapeEndpointScreenPos(m, true)).manhattanLength() <= t) return 0;
+    if ((QPointF(pos) - shapeEndpointScreenPos(m, false)).manhattanLength() <= t) return 1;
+    return -1;
+}
+
+// Photoshop-style smart-guide snapping for Ctrl+drag: snaps `pos` (the box's
+// top-left at the candidate drop point) so its left/center/right edges align
+// with the canvas's edges/center or another text box's edges/center, within
+// a screen-space tolerance. Populates m_activeGuideXs/Ys with the matched
+// guide positions (image px) for paintEvent to draw while dragging.
+QPointF ImageCanvas::snapTextPosition(const QPointF &pos, int index) {
+    m_activeGuideXs.clear();
+    m_activeGuideYs.clear();
+    if (index < 0 || index >= m_textMarkers.size() || m_img.isNull()) return pos;
+
+    const QSizeF size = m_textMarkers[index].rect.size();
+    const double W = m_img.width(), H = m_img.height();
+    const double tol = 8.0 / std::max(0.01, m_scale); // screen px -> image px
+
+    QVector<double> xGuides = {0.0, W, W / 2.0};
+    QVector<double> yGuides = {0.0, H, H / 2.0};
+    for (int i = 0; i < m_textMarkers.size(); ++i) {
+        if (i == index) continue;
+        const QRectF &r = m_textMarkers[i].rect;
+        xGuides << r.left() << r.right() << r.center().x();
+        yGuides << r.top() << r.bottom() << r.center().y();
+    }
+
+    // For each axis independently, find the guide value closest to any of
+    // the box's three candidate edges (left/center/right, or top/center/
+    // bottom) at `pos`, within `tol`, and snap to it.
+    QPointF result = pos;
+    {
+        double bestDist = tol, bestOffset = 0.0, bestGuide = 0.0;
+        bool found = false;
+        for (double g : xGuides) {
+            for (double cand : {pos.x(), pos.x() + size.width() / 2.0, pos.x() + size.width()}) {
+                double d = std::abs(cand - g);
+                if (d < bestDist) { bestDist = d; bestOffset = g - cand; bestGuide = g; found = true; }
+            }
+        }
+        if (found) {
+            result.setX(pos.x() + bestOffset);
+            m_activeGuideXs.append(bestGuide);
+        }
+    }
+    {
+        double bestDist = tol, bestOffset = 0.0, bestGuide = 0.0;
+        bool found = false;
+        for (double g : yGuides) {
+            for (double cand : {pos.y(), pos.y() + size.height() / 2.0, pos.y() + size.height()}) {
+                double d = std::abs(cand - g);
+                if (d < bestDist) { bestDist = d; bestOffset = g - cand; bestGuide = g; found = true; }
+            }
+        }
+        if (found) {
+            result.setY(pos.y() + bestOffset);
+            m_activeGuideYs.append(bestGuide);
+        }
+    }
+    return result;
 }
 
 void ImageCanvas::setEraseMode(bool on) {
@@ -487,6 +815,108 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         p.drawEllipse(QPointF(m_mousePos), rad, rad);
     }
 
+    // Text tool: outline every placed text, highlight + rotate handle on the
+    // active one.
+    if (m_textMode) {
+        p.setRenderHint(QPainter::Antialiasing, true);
+        for (int i = 0; i < m_textMarkers.size(); ++i) {
+            const TextMarker &m = m_textMarkers[i];
+            bool active = (i == m_activeTextIndex);
+            QPointF anchor = m.rect.topLeft();
+            // Rotate the box's corners in local (unrotated) image space about
+            // the anchor, then map each to screen space once — mirrors
+            // textCornerScreenPos/textRotateHandlePos. Rotating the QPainter
+            // itself around an already screen-mapped rect double-applies
+            // m_topLeft and shifts the box away from the actual text.
+            QTransform t;
+            t.translate(anchor.x(), anchor.y());
+            t.rotate(m.rotation);
+            t.translate(-anchor.x(), -anchor.y());
+            QPolygonF poly;
+            for (const QPointF &corner : {m.rect.topLeft(), QPointF(m.rect.right(), m.rect.top()),
+                                          m.rect.bottomRight(), QPointF(m.rect.left(), m.rect.bottom())})
+                poly << (m_topLeft + t.map(corner) * m_scale);
+            p.setPen(QPen(active ? QColor(120, 200, 255) : QColor(200, 200, 200, 160),
+                         active ? 2 : 1, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawPolygon(poly);
+        }
+        if (m_activeTextIndex >= 0 && m_activeTextIndex < m_textMarkers.size()) {
+            const TextMarker &am = m_textMarkers[m_activeTextIndex];
+            QPointF hp = textRotateHandlePos(am);
+            p.setPen(QPen(QColor(120, 200, 255), 2));
+            p.setBrush(QColor(30, 30, 30));
+            p.drawEllipse(hp, 6, 6);
+            p.setPen(QPen(QColor(120, 200, 255), 1.5));
+            p.setBrush(QColor(120, 200, 255));
+            for (Handle h : {Handle::TopRight, Handle::BottomLeft, Handle::BottomRight})
+                p.drawRect(QRectF(textCornerScreenPos(am, h) - QPointF(4, 4), QSizeF(8, 8)));
+        }
+        // Smart-guide lines matched during a Ctrl+drag (see snapTextPosition),
+        // shown only while actively dragging.
+        if (!m_activeGuideXs.isEmpty() || !m_activeGuideYs.isEmpty()) {
+            p.setPen(QPen(QColor(255, 60, 200), 1, Qt::DashLine));
+            for (double gx : m_activeGuideXs) {
+                double sx = m_topLeft.x() + gx * m_scale;
+                p.drawLine(QPointF(sx, 0), QPointF(sx, height()));
+            }
+            for (double gy : m_activeGuideYs) {
+                double sy = m_topLeft.y() + gy * m_scale;
+                p.drawLine(QPointF(0, sy), QPointF(width(), sy));
+            }
+        }
+    }
+
+    // Shape tool: outline every placed shape, highlight + resize/rotate
+    // handles (or endpoint handles for a Line) on the active one.
+    if (m_shapeMode) {
+        p.setRenderHint(QPainter::Antialiasing, true);
+        for (int i = 0; i < m_shapeMarkers.size(); ++i) {
+            const ShapeMarker &m = m_shapeMarkers[i];
+            bool active = (i == m_activeShapeIndex);
+            p.setPen(QPen(active ? QColor(120, 200, 255) : QColor(200, 200, 200, 160),
+                         active ? 2 : 1, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            if (m.type == ShapeType::Line) {
+                p.drawLine(m_topLeft + m.p1 * m_scale, m_topLeft + m.p2 * m_scale);
+                continue;
+            }
+            QPointF anchor = m.rect.center();
+            QTransform t;
+            t.translate(anchor.x(), anchor.y());
+            t.rotate(m.rotation);
+            t.translate(-anchor.x(), -anchor.y());
+            QPolygonF poly;
+            for (const QPointF &corner : {m.rect.topLeft(), QPointF(m.rect.right(), m.rect.top()),
+                                          m.rect.bottomRight(), QPointF(m.rect.left(), m.rect.bottom())})
+                poly << (m_topLeft + t.map(corner) * m_scale);
+            p.drawPolygon(poly);
+        }
+        if (m_activeShapeIndex >= 0 && m_activeShapeIndex < m_shapeMarkers.size()) {
+            const ShapeMarker &am = m_shapeMarkers[m_activeShapeIndex];
+            if (am.type == ShapeType::Line) {
+                p.setPen(QPen(QColor(120, 200, 255), 1.5));
+                p.setBrush(QColor(120, 200, 255));
+                p.drawRect(QRectF(shapeEndpointScreenPos(am, true) - QPointF(4, 4), QSizeF(8, 8)));
+                p.drawRect(QRectF(shapeEndpointScreenPos(am, false) - QPointF(4, 4), QSizeF(8, 8)));
+            } else {
+                QPointF hp = shapeRotateHandlePos(am);
+                p.setPen(QPen(QColor(120, 200, 255), 2));
+                p.setBrush(QColor(30, 30, 30));
+                p.drawEllipse(hp, 6, 6);
+                p.setPen(QPen(QColor(120, 200, 255), 1.5));
+                p.setBrush(QColor(120, 200, 255));
+                for (Handle h : {Handle::TopLeft, Handle::TopRight, Handle::BottomLeft, Handle::BottomRight})
+                    p.drawRect(QRectF(shapeCornerScreenPos(am, h) - QPointF(4, 4), QSizeF(8, 8)));
+            }
+        }
+        if (m_shapeDrag == ShapeDrag::Creating) {
+            p.setPen(QPen(QColor(120, 200, 255), 1, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(QRect(m_shapeCreateP0, m_shapeCreateP1).normalized());
+        }
+    }
+
     // Local-mask gizmo.
     if (m_maskMode && m_hasActiveMask) {
         const double W = m_img.width();
@@ -651,6 +1081,115 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         return;
     }
 
+    // Text tool: click an existing text's rotate handle to rotate, its body
+    // to move, or empty canvas to place a new one.
+    if (m_textMode && ev->button() == Qt::LeftButton) {
+        if (m_textEditor && m_textEditor->isVisible()) commitTextEditor();
+        if (m_activeTextIndex >= 0 && m_activeTextIndex < m_textMarkers.size()) {
+            const TextMarker &am = m_textMarkers[m_activeTextIndex];
+            QPointF hp = textRotateHandlePos(am);
+            if ((QPointF(ev->pos()) - hp).manhattanLength() <= 10) {
+                m_textDrag = TextDrag::Rotating;
+                m_textDragStartMouse = ev->pos();
+                m_textRotateStartAngle = am.rotation;
+                return;
+            }
+            Handle corner = textCornerHandleAt(ev->pos());
+            if (corner != Handle::None) {
+                QPointF anchor = am.rect.topLeft();
+                QPointF localCorner = textCornerLocal(am, corner);
+                m_textDrag = TextDrag::Resizing;
+                m_textResizeCorner = corner;
+                m_textResizeStartDist = std::max(
+                    1.0, std::hypot(localCorner.x() - anchor.x(), localCorner.y() - anchor.y()));
+                emit textResizeStarted(m_activeTextIndex);
+                return;
+            }
+        }
+        int hit = textMarkerAt(ev->pos());
+        if (hit >= 0) {
+            m_activeTextIndex = hit;
+            m_textDrag = TextDrag::Moving;
+            m_textDragStartMouse = ev->pos();
+            m_textDragStartImgPos = m_textMarkers[hit].rect.topLeft();
+            emit textSelected(hit);
+            update();
+            return;
+        }
+        QPoint ip = imagePointAt(ev->pos());
+        if (ip.x() >= 0) {
+            m_activeTextIndex = -1;
+            emit textDeselected();
+            emit textPlaceRequested(ip);
+        }
+        return;
+    }
+
+    // Shape tool: click an existing shape's rotate handle to rotate, a
+    // corner/endpoint to resize, its body to move, or empty canvas to
+    // drag-create a new one.
+    if (m_shapeMode && ev->button() == Qt::LeftButton) {
+        if (m_activeShapeIndex >= 0 && m_activeShapeIndex < m_shapeMarkers.size()) {
+            const ShapeMarker &am = m_shapeMarkers[m_activeShapeIndex];
+            if (am.type == ShapeType::Line) {
+                int ep = shapeEndpointAt(ev->pos());
+                if (ep >= 0) {
+                    m_shapeDrag = ShapeDrag::EndpointDrag;
+                    m_shapeEndpointDragging = ep;
+                    m_shapeDragStartMouse = ev->pos();
+                    m_shapeDragStartP1 = am.p1;
+                    m_shapeDragStartP2 = am.p2;
+                    return;
+                }
+            } else {
+                QPointF hp = shapeRotateHandlePos(am);
+                if ((QPointF(ev->pos()) - hp).manhattanLength() <= 10) {
+                    m_shapeDrag = ShapeDrag::Rotating;
+                    m_shapeDragStartMouse = ev->pos();
+                    m_shapeRotateStartAngle = am.rotation;
+                    return;
+                }
+                Handle corner = shapeCornerHandleAt(ev->pos());
+                if (corner != Handle::None) {
+                    m_shapeDrag = ShapeDrag::Resizing;
+                    m_shapeResizeCorner = corner;
+                    m_shapeDragStartMouse = ev->pos();
+                    m_shapeDragStartTopLeft = am.rect.topLeft();
+                    m_shapeResizeStartSize = am.rect.size();
+                    return;
+                }
+            }
+        }
+        int hit = shapeMarkerAt(ev->pos());
+        if (hit >= 0) {
+            if (ev->modifiers() & Qt::ControlModifier) {
+                // The slot (RetouchTab::onShapeDuplicateRequested) duplicates
+                // the shape and calls setActiveShapeIndex() synchronously, so
+                // m_activeShapeIndex points at the new copy once emit returns.
+                emit shapeDuplicateRequested(hit);
+                hit = m_activeShapeIndex;
+                if (hit < 0 || hit >= m_shapeMarkers.size()) return;
+            } else {
+                m_activeShapeIndex = hit;
+                emit shapeSelected(hit);
+            }
+            m_shapeDrag = ShapeDrag::Moving;
+            m_shapeDragStartMouse = ev->pos();
+            m_shapeDragStartTopLeft = m_shapeMarkers[hit].rect.topLeft();
+            m_shapeDragStartP1 = m_shapeMarkers[hit].p1;
+            m_shapeDragStartP2 = m_shapeMarkers[hit].p2;
+            update();
+            return;
+        }
+        m_activeShapeIndex = -1;
+        emit shapeDeselected();
+        m_shapeDrag = ShapeDrag::Creating;
+        m_shapeCreateP0 = ev->pos();
+        m_shapeCreateP1 = ev->pos();
+        update();
+        return;
+    }
+
     // Spot-heal brush: each click places one heal spot.
     if (m_healMode && ev->button() == Qt::LeftButton) {
         QPoint ip = imagePointAt(ev->pos());
@@ -807,6 +1346,117 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         update();
         return;
     }
+    if (m_textMode && m_textDrag != TextDrag::None &&
+        m_activeTextIndex >= 0 && m_activeTextIndex < m_textMarkers.size()) {
+        if (m_textDrag == TextDrag::Moving) {
+            QPointF delta = (QPointF(ev->pos()) - QPointF(m_textDragStartMouse)) / m_scale;
+            if (ev->modifiers() & Qt::ShiftModifier) {
+                // Axis-lock to whichever direction has moved further from
+                // the drag start (Photoshop Move-tool convention).
+                if (std::abs(delta.x()) >= std::abs(delta.y())) delta.setY(0);
+                else delta.setX(0);
+            }
+            QPointF newPos = m_textDragStartImgPos + delta;
+            if (ev->modifiers() & Qt::ControlModifier)
+                newPos = snapTextPosition(newPos, m_activeTextIndex);
+            else {
+                m_activeGuideXs.clear();
+                m_activeGuideYs.clear();
+            }
+            emit textMoved(m_activeTextIndex, newPos);
+        } else if (m_textDrag == TextDrag::Rotating) {
+            const TextMarker &am = m_textMarkers[m_activeTextIndex];
+            QPointF anchor = m_topLeft + am.rect.topLeft() * m_scale;
+            double a0 = std::atan2(m_textDragStartMouse.y() - anchor.y(),
+                                   m_textDragStartMouse.x() - anchor.x());
+            double a1 = std::atan2(ev->pos().y() - anchor.y(), ev->pos().x() - anchor.x());
+            double deltaDeg = (a1 - a0) * 180.0 / M_PI;
+            emit textRotated(m_activeTextIndex, m_textRotateStartAngle + deltaDeg);
+        } else { // Resizing
+            const TextMarker &am = m_textMarkers[m_activeTextIndex];
+            QPointF anchor = am.rect.topLeft();
+            // Unrotate the mouse position into the box's local (unrotated)
+            // frame so the distance-from-anchor comparison is meaningful
+            // regardless of the box's current rotation.
+            QTransform t;
+            t.translate(anchor.x(), anchor.y());
+            t.rotate(-am.rotation);
+            t.translate(-anchor.x(), -anchor.y());
+            QPointF localMouse = t.map((QPointF(ev->pos()) - m_topLeft) / m_scale);
+            double dist = std::hypot(localMouse.x() - anchor.x(), localMouse.y() - anchor.y());
+            double ratio = std::clamp(dist / m_textResizeStartDist, 0.1, 20.0);
+            emit textResized(m_activeTextIndex, ratio);
+        }
+        return;
+    }
+    if (m_shapeMode && m_shapeDrag == ShapeDrag::Creating) {
+        m_shapeCreateP1 = ev->pos();
+        update();
+        return;
+    }
+    if (m_shapeMode && m_shapeDrag != ShapeDrag::None &&
+        m_activeShapeIndex >= 0 && m_activeShapeIndex < m_shapeMarkers.size()) {
+        const ShapeMarker &am = m_shapeMarkers[m_activeShapeIndex];
+        if (m_shapeDrag == ShapeDrag::EndpointDrag) {
+            QPointF imgPos = (QPointF(ev->pos()) - m_topLeft) / m_scale;
+            QPointF newP1 = (m_shapeEndpointDragging == 0) ? imgPos : am.p1;
+            QPointF newP2 = (m_shapeEndpointDragging == 1) ? imgPos : am.p2;
+            emit shapeLineEndpointsChanged(m_activeShapeIndex, newP1, newP2);
+        } else if (m_shapeDrag == ShapeDrag::Moving) {
+            QPointF delta = (QPointF(ev->pos()) - QPointF(m_shapeDragStartMouse)) / m_scale;
+            emit shapeMoved(m_activeShapeIndex, delta);
+        } else if (m_shapeDrag == ShapeDrag::Rotating) {
+            QPointF anchor = m_topLeft + am.rect.center() * m_scale;
+            double a0 = std::atan2(m_shapeDragStartMouse.y() - anchor.y(),
+                                   m_shapeDragStartMouse.x() - anchor.x());
+            double a1 = std::atan2(ev->pos().y() - anchor.y(), ev->pos().x() - anchor.x());
+            double deltaDeg = (a1 - a0) * 180.0 / M_PI;
+            emit shapeRotated(m_activeShapeIndex, m_shapeRotateStartAngle + deltaDeg);
+        } else { // Resizing
+            QPointF anchor = am.rect.center();
+            QTransform t;
+            t.translate(anchor.x(), anchor.y());
+            t.rotate(-am.rotation);
+            t.translate(-anchor.x(), -anchor.y());
+            QPointF localMouse = t.map((QPointF(ev->pos()) - m_topLeft) / m_scale);
+            QRectF r = am.rect;
+
+            // The corner opposite the one being dragged stays fixed.
+            QPointF fixedCorner;
+            switch (m_shapeResizeCorner) {
+                case Handle::TopLeft:     fixedCorner = r.bottomRight(); break;
+                case Handle::TopRight:    fixedCorner = r.bottomLeft(); break;
+                case Handle::BottomLeft:  fixedCorner = r.topRight(); break;
+                case Handle::BottomRight: fixedCorner = r.topLeft(); break;
+                default:                  fixedCorner = r.topLeft(); break;
+            }
+
+            QPointF newCorner = localMouse;
+            if ((ev->modifiers() & Qt::ShiftModifier) && m_shapeResizeStartSize.width() > 0 &&
+                m_shapeResizeStartSize.height() > 0) {
+                // Lock to the shape's aspect ratio at the start of this drag,
+                // driven by whichever axis the mouse has moved further along.
+                double aspect = m_shapeResizeStartSize.width() / m_shapeResizeStartSize.height();
+                double dx = localMouse.x() - fixedCorner.x();
+                double dy = localMouse.y() - fixedCorner.y();
+                if (std::abs(dx) > std::abs(dy) * aspect)
+                    dy = std::copysign(std::abs(dx) / aspect, dy != 0 ? dy : dx);
+                else
+                    dx = std::copysign(std::abs(dy) * aspect, dx != 0 ? dx : dy);
+                newCorner = fixedCorner + QPointF(dx, dy);
+            }
+
+            switch (m_shapeResizeCorner) {
+                case Handle::TopLeft:     r.setTopLeft(newCorner); break;
+                case Handle::TopRight:    r.setTopRight(newCorner); break;
+                case Handle::BottomLeft:  r.setBottomLeft(newCorner); break;
+                case Handle::BottomRight: r.setBottomRight(newCorner); break;
+                default: break;
+            }
+            emit shapeResized(m_activeShapeIndex, r.normalized());
+        }
+        return;
+    }
     if (m_drag == Drag::Creating) {
         m_p1 = m_cropAspect > 0 ? constrainedCorner(ev->pos()) : ev->pos();
         update();
@@ -960,6 +1610,40 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
                 break;
         }
         setCursor(c);
+    } else if (m_textMode) {
+        Qt::CursorShape c = Qt::IBeamCursor;
+        if (m_activeTextIndex >= 0 && m_activeTextIndex < m_textMarkers.size()) {
+            const TextMarker &am = m_textMarkers[m_activeTextIndex];
+            if ((QPointF(ev->pos()) - textRotateHandlePos(am)).manhattanLength() <= 10)
+                c = Qt::CrossCursor;
+            else if (Handle h = textCornerHandleAt(ev->pos()); h != Handle::None)
+                c = (h == Handle::TopRight || h == Handle::BottomLeft) ? Qt::SizeBDiagCursor
+                                                                       : Qt::SizeFDiagCursor;
+            else if (textMarkerAt(ev->pos()) >= 0)
+                c = Qt::SizeAllCursor;
+        } else if (textMarkerAt(ev->pos()) >= 0) {
+            c = Qt::SizeAllCursor;
+        }
+        setCursor(c);
+    } else if (m_shapeMode) {
+        Qt::CursorShape c = Qt::CrossCursor;
+        if (m_activeShapeIndex >= 0 && m_activeShapeIndex < m_shapeMarkers.size()) {
+            const ShapeMarker &am = m_shapeMarkers[m_activeShapeIndex];
+            if (am.type == ShapeType::Line && shapeEndpointAt(ev->pos()) >= 0) {
+                c = Qt::SizeAllCursor;
+            } else if (am.type != ShapeType::Line &&
+                       (QPointF(ev->pos()) - shapeRotateHandlePos(am)).manhattanLength() <= 10) {
+                c = Qt::CrossCursor;
+            } else if (Handle h = shapeCornerHandleAt(ev->pos()); h != Handle::None) {
+                c = (h == Handle::TopRight || h == Handle::BottomLeft) ? Qt::SizeBDiagCursor
+                                                                       : Qt::SizeFDiagCursor;
+            } else if (shapeMarkerAt(ev->pos()) >= 0) {
+                c = Qt::SizeAllCursor;
+            }
+        } else if (shapeMarkerAt(ev->pos()) >= 0) {
+            c = Qt::SizeAllCursor;
+        }
+        setCursor(c);
     } else if (m_healMode) {
         m_mousePos = ev->pos();
         update(); // move the brush-size circle
@@ -986,6 +1670,30 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
 }
 
 void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
+    if (m_shapeDrag == ShapeDrag::Creating && ev->button() == Qt::LeftButton) {
+        m_shapeDrag = ShapeDrag::None;
+        QRect box = QRect(m_shapeCreateP0, m_shapeCreateP1).normalized();
+        update();
+        if (box.width() >= 4 || box.height() >= 4) {
+            QPointF tl = (QPointF(box.topLeft()) - m_topLeft) / m_scale;
+            QPointF br = (QPointF(box.bottomRight()) - m_topLeft) / m_scale;
+            emit shapeCreateRequested(m_activeShapeType, QRectF(tl, br).normalized());
+        }
+        return;
+    }
+    if (m_shapeDrag != ShapeDrag::None && ev->button() == Qt::LeftButton) {
+        m_shapeDrag = ShapeDrag::None;
+        m_shapeEndpointDragging = -1;
+        update();
+        return;
+    }
+    if (m_textDrag != TextDrag::None && ev->button() == Qt::LeftButton) {
+        m_textDrag = TextDrag::None;
+        m_activeGuideXs.clear();
+        m_activeGuideYs.clear();
+        update();
+        return;
+    }
     if (m_colorRangeDragging && ev->button() == Qt::LeftButton) {
         m_colorRangeDragging = false;
         setCursor(m_colorRangeMode ? pipetteCursor() : Qt::ArrowCursor);
@@ -1058,6 +1766,40 @@ void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
     }
 }
 
+void ImageCanvas::mouseDoubleClickEvent(QMouseEvent *ev) {
+    if (m_textMode && ev->button() == Qt::LeftButton) {
+        int hit = textMarkerAt(ev->pos());
+        if (hit >= 0) {
+            m_activeTextIndex = hit;
+            emit textSelected(hit);
+            emit textEditRequested(hit);
+            update();
+            return;
+        }
+    }
+    QWidget::mouseDoubleClickEvent(ev);
+}
+
+bool ImageCanvas::eventFilter(QObject *watched, QEvent *event) {
+    if (watched == m_textEditor && m_textEditor) {
+        if (event->type() == QEvent::KeyPress) {
+            auto *ke = static_cast<QKeyEvent *>(event);
+            if (ke->key() == Qt::Key_Escape) {
+                cancelTextEditor();
+                return true;
+            }
+            if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) &&
+                !(ke->modifiers() & Qt::ShiftModifier)) {
+                commitTextEditor();
+                return true;
+            }
+        } else if (event->type() == QEvent::FocusOut) {
+            commitTextEditor();
+        }
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
 void ImageCanvas::wheelEvent(QWheelEvent *ev) {
     if ((ev->modifiers() & Qt::ControlModifier) && !m_img.isNull()) {
         // In heal mode, ctrl+wheel resizes the brush instead of zooming.
@@ -1087,6 +1829,17 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
             ev->accept();
             return;
         }
+        // In text mode with a text selected, ctrl+wheel scales its font size
+        // the same way dragging a corner handle does — each notch is one
+        // resize gesture (start captures the current size as the baseline,
+        // then scales it by a fixed ~5% step).
+        if (m_textMode && m_activeTextIndex >= 0 && m_activeTextIndex < m_textMarkers.size()) {
+            double factor = ev->angleDelta().y() > 0 ? 1.05 : (1.0 / 1.05);
+            emit textResizeStarted(m_activeTextIndex);
+            emit textResized(m_activeTextIndex, factor);
+            ev->accept();
+            return;
+        }
         // Ctrl+wheel only zooms while the Zoom tool is selected.
         if (m_zoomMode) {
             double f = ev->angleDelta().y() > 0 ? 1.10 : (1.0 / 1.10);
@@ -1102,6 +1855,33 @@ void ImageCanvas::keyPressEvent(QKeyEvent *ev) {
     if (m_cropMode && (ev->key() == Qt::Key_Return || ev->key() == Qt::Key_Enter) &&
         !selectionInImage().isEmpty()) {
         emit commitCropRequested();
+        ev->accept();
+        return;
+    }
+    if (m_textMode && (ev->key() == Qt::Key_Delete || ev->key() == Qt::Key_Backspace) &&
+        m_activeTextIndex >= 0) {
+        int idx = m_activeTextIndex;
+        m_activeTextIndex = -1;
+        emit textDeleteRequested(idx);
+        ev->accept();
+        return;
+    }
+    if (m_shapeMode && (ev->key() == Qt::Key_Delete || ev->key() == Qt::Key_Backspace) &&
+        m_activeShapeIndex >= 0) {
+        int idx = m_activeShapeIndex;
+        m_activeShapeIndex = -1;
+        emit shapeDeleteRequested(idx);
+        ev->accept();
+        return;
+    }
+    if (m_shapeMode && m_activeShapeIndex >= 0 &&
+        (ev->key() == Qt::Key_Plus || ev->key() == Qt::Key_Equal)) {
+        emit shapeRaiseRequested(m_activeShapeIndex);
+        ev->accept();
+        return;
+    }
+    if (m_shapeMode && m_activeShapeIndex >= 0 && ev->key() == Qt::Key_Minus) {
+        emit shapeLowerRequested(m_activeShapeIndex);
         ev->accept();
         return;
     }

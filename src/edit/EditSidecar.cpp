@@ -149,6 +149,13 @@ bool save(const QString &imagePath, const Adjustments &a) {
             j["hardness"] = m.hardness;
             j["autoMask"] = m.autoMask;
             j["paintColor"] = m.paintColor.name(QColor::HexArgb);
+            j["text"] = m.text;
+            j["textFamily"] = m.textFamily;
+            j["textPixelSize"] = m.textPixelSize;
+            j["textBold"] = m.textBold;
+            j["textItalic"] = m.textItalic;
+            j["textPosX"] = m.textPos.x();
+            j["textPosY"] = m.textPos.y();
             QJsonArray stroke;
             for (const BrushStrokePoint &sp : m.stroke)
                 stroke.append(QJsonArray{sp.pt.x(), sp.pt.y(), sp.erase, sp.radius, sp.hardness,
@@ -191,6 +198,75 @@ bool save(const QString &imagePath, const Adjustments &a) {
         heals.append(h);
     }
     o["heals"] = heals;
+
+    if (!a.texts.isEmpty()) {
+        QJsonArray texts;
+        for (const TextOp &t : a.texts) {
+            QJsonObject j;
+            j["x"] = t.pos.x();
+            j["y"] = t.pos.y();
+            j["rotation"] = t.rotation;
+            j["text"] = t.text;
+            j["family"] = t.family;
+            j["pixelSize"] = t.pixelSize;
+            j["bold"] = t.bold;
+            j["italic"] = t.italic;
+            j["color"] = t.color.name(QColor::HexArgb);
+            j["outlineEnabled"] = t.outlineEnabled;
+            j["outlineColor"] = t.outlineColor.name(QColor::HexArgb);
+            j["outlineWidth"] = t.outlineWidth;
+            j["shadowEnabled"] = t.shadowEnabled;
+            j["shadowOffsetX"] = t.shadowOffset.x();
+            j["shadowOffsetY"] = t.shadowOffset.y();
+            j["shadowBlur"] = t.shadowBlur;
+            j["shadowOpacity"] = t.shadowOpacity;
+            j["shadowColor"] = t.shadowColor.name(QColor::HexArgb);
+            j["bgEnabled"] = t.bgEnabled;
+            j["bgColor"] = t.bgColor.name(QColor::HexArgb);
+            j["bgOpacity"] = t.bgOpacity;
+            j["bgPadding"] = t.bgPadding;
+            texts.append(j);
+        }
+        o["texts"] = texts;
+    }
+
+    if (!a.shapes.isEmpty()) {
+        QJsonArray shapes;
+        auto shapeTypeName = [](ShapeType t) {
+            switch (t) {
+            case ShapeType::Rectangle: return "rectangle";
+            case ShapeType::Ellipse:   return "ellipse";
+            case ShapeType::Line:      return "line";
+            case ShapeType::Polygon:   return "polygon";
+            case ShapeType::Star:      return "star";
+            case ShapeType::Heart:     return "heart";
+            }
+            return "rectangle";
+        };
+        for (const ShapeOp &s : a.shapes) {
+            QJsonObject j;
+            j["type"] = shapeTypeName(s.type);
+            j["rectX"] = s.rect.x();
+            j["rectY"] = s.rect.y();
+            j["rectW"] = s.rect.width();
+            j["rectH"] = s.rect.height();
+            j["p1x"] = s.p1.x();
+            j["p1y"] = s.p1.y();
+            j["p2x"] = s.p2.x();
+            j["p2y"] = s.p2.y();
+            j["rotation"] = s.rotation;
+            j["sides"] = s.sides;
+            j["innerRadiusRatio"] = s.innerRadiusRatio;
+            j["fillEnabled"] = s.fillEnabled;
+            j["fillColor"] = s.fillColor.name(QColor::HexArgb);
+            j["strokeEnabled"] = s.strokeEnabled;
+            j["strokeColor"] = s.strokeColor.name(QColor::HexArgb);
+            j["strokeWidth"] = s.strokeWidth;
+            j["opacity"] = s.opacity;
+            shapes.append(j);
+        }
+        o["shapes"] = shapes;
+    }
 
     QFile f(pathFor(imagePath));
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
@@ -270,6 +346,12 @@ bool load(const QString &imagePath, Adjustments &out) {
         m.hardness = j["hardness"].toDouble(0.5);
         m.autoMask = j["autoMask"].toBool(false);
         m.paintColor = QColor(j["paintColor"].toString(QStringLiteral("#ff000000")));
+        m.text = j["text"].toString();
+        m.textFamily = j["textFamily"].toString(QStringLiteral("Sans Serif"));
+        m.textPixelSize = j["textPixelSize"].toDouble(0.08);
+        m.textBold = j["textBold"].toBool(false);
+        m.textItalic = j["textItalic"].toBool(false);
+        m.textPos = QPointF(j["textPosX"].toDouble(0.3), j["textPosY"].toDouble(0.45));
         for (const QJsonValue &sv : j["stroke"].toArray()) {
             QJsonArray p = sv.toArray();
             if (p.size() >= 2)
@@ -315,6 +397,58 @@ bool load(const QString &imagePath, Adjustments &out) {
         hp.y = h["y"].toInt();
         hp.radius = h["r"].toInt();
         a.heals.append(hp);
+    }
+    for (const QJsonValue &v : o["texts"].toArray()) {
+        QJsonObject j = v.toObject();
+        TextOp t;
+        t.pos = QPointF(j["x"].toDouble(0.0), j["y"].toDouble(0.0));
+        t.rotation = j["rotation"].toDouble(0.0);
+        t.text = j["text"].toString();
+        t.family = j["family"].toString(QStringLiteral("Sans Serif"));
+        t.pixelSize = j["pixelSize"].toDouble(48.0);
+        t.bold = j["bold"].toBool(false);
+        t.italic = j["italic"].toBool(false);
+        t.color = QColor(j["color"].toString(QStringLiteral("#ffffffff")));
+        t.outlineEnabled = j["outlineEnabled"].toBool(false);
+        t.outlineColor = QColor(j["outlineColor"].toString(QStringLiteral("#ff000000")));
+        t.outlineWidth = j["outlineWidth"].toDouble(3.0);
+        t.shadowEnabled = j["shadowEnabled"].toBool(false);
+        t.shadowOffset = QPointF(j["shadowOffsetX"].toDouble(4.0), j["shadowOffsetY"].toDouble(4.0));
+        t.shadowBlur = j["shadowBlur"].toDouble(6.0);
+        t.shadowOpacity = j["shadowOpacity"].toDouble(0.6);
+        t.shadowColor = QColor(j["shadowColor"].toString(QStringLiteral("#ff000000")));
+        t.bgEnabled = j["bgEnabled"].toBool(false);
+        t.bgColor = QColor(j["bgColor"].toString(QStringLiteral("#ff000000")));
+        t.bgOpacity = j["bgOpacity"].toDouble(0.6);
+        t.bgPadding = j["bgPadding"].toDouble(10.0);
+        a.texts.append(t);
+    }
+    auto shapeTypeFromName = [](const QString &name) {
+        if (name == "ellipse") return ShapeType::Ellipse;
+        if (name == "line") return ShapeType::Line;
+        if (name == "polygon") return ShapeType::Polygon;
+        if (name == "star") return ShapeType::Star;
+        if (name == "heart") return ShapeType::Heart;
+        return ShapeType::Rectangle;
+    };
+    for (const QJsonValue &v : o["shapes"].toArray()) {
+        QJsonObject j = v.toObject();
+        ShapeOp s;
+        s.type = shapeTypeFromName(j["type"].toString());
+        s.rect = QRectF(j["rectX"].toDouble(0.0), j["rectY"].toDouble(0.0),
+                        j["rectW"].toDouble(200.0), j["rectH"].toDouble(200.0));
+        s.p1 = QPointF(j["p1x"].toDouble(0.0), j["p1y"].toDouble(0.0));
+        s.p2 = QPointF(j["p2x"].toDouble(200.0), j["p2y"].toDouble(0.0));
+        s.rotation = j["rotation"].toDouble(0.0);
+        s.sides = j["sides"].toInt(5);
+        s.innerRadiusRatio = j["innerRadiusRatio"].toDouble(0.5);
+        s.fillEnabled = j["fillEnabled"].toBool(true);
+        s.fillColor = QColor(j["fillColor"].toString(QStringLiteral("#ffffffff")));
+        s.strokeEnabled = j["strokeEnabled"].toBool(true);
+        s.strokeColor = QColor(j["strokeColor"].toString(QStringLiteral("#ff000000")));
+        s.strokeWidth = j["strokeWidth"].toDouble(4.0);
+        s.opacity = j["opacity"].toDouble(1.0);
+        a.shapes.append(s);
     }
     out = a;
     return true;

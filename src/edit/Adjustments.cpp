@@ -1,8 +1,12 @@
 #include "edit/Adjustments.h"
 
 #include <QPainter>
+#include <QPainterPath>
 #include <QRectF>
 #include <QTransform>
+#include <QFont>
+#include <QFontMetrics>
+#include <QStringList>
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -363,6 +367,44 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
     }
 }
 
+// Rasterizes a Text-type mask's glyph shape into a coverage buffer, same
+// uchar-per-pixel layout as rasterizeBrush's `cov` output (0 = no coverage,
+// 255 = full). `textPos`/`textPixelSize` are width-normalized like other
+// mask geometry (see Mask::center). Cheap enough (a handful of glyph paths)
+// to recompute fresh every render — no incremental cache needed, unlike
+// brush strokes.
+void rasterizeText(const Mask &m, std::vector<uchar> &cov, int w, int h) {
+    cov.assign(size_t(w) * h, 0);
+    if (m.text.trimmed().isEmpty() || w <= 0 || h <= 0) return;
+
+    QImage mask(w, h, QImage::Format_Alpha8);
+    mask.fill(0);
+    QPainter p(&mask);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    QFont font(m.textFamily);
+    font.setPixelSize(std::max(1, int(std::lround(m.textPixelSize * w))));
+    font.setBold(m.textBold);
+    font.setItalic(m.textItalic);
+    QFontMetricsF fm(font);
+
+    QPainterPath path;
+    const QStringList lines = m.text.split(QLatin1Char('\n'));
+    const double x0 = m.textPos.x() * w, y0 = m.textPos.y() * w;
+    double y = y0 + fm.ascent();
+    for (const QString &line : lines) {
+        if (!line.isEmpty()) path.addText(x0, y, font, line);
+        y += fm.lineSpacing();
+    }
+    p.fillPath(path, Qt::white);
+    p.end();
+
+    for (int yy = 0; yy < h; ++yy) {
+        const uchar *src = mask.constScanLine(yy);
+        std::copy(src, src + w, cov.begin() + size_t(yy) * w);
+    }
+}
+
 QImage applyLayerContent(const QImage &src, const MaskAdjust &a); // fwd decl
 
 // Scale `src` to cover a w×h target (aspect-fill) and crop to exactly that
@@ -419,11 +461,16 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             continue;
         }
         const bool paintLayer = m.type == MaskType::Paint;
-        if (!imageLayer && !paintLayer && m.adj.isZero()) {
+        const bool textLayer = m.type == MaskType::Text;
+        if (!imageLayer && !paintLayer && !textLayer && m.adj.isZero()) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
         if ((m.type == MaskType::Brush || paintLayer) && m.stroke.isEmpty()) {
+            if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
+            continue;
+        }
+        if (textLayer && m.text.trimmed().isEmpty()) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
@@ -482,10 +529,15 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         if (m.type == MaskType::Brush || paintLayer)
             rasterizeBrush(m, cov, w, h, &img, bc, paintLayer ? &colBuf : nullptr,
                            /*populateOut=*/false);
+        else if (textLayer)
+            rasterizeText(m, cov, w, h); // no incremental cache — cheap to redo each render
         // With a cache, rasterizeBrush left the up-to-date buffers in the
         // cache itself (see populateOut above) — read from there directly to
         // avoid a full-image copy of masks that didn't change this frame.
-        const std::vector<uchar> &covRead = bc ? bc->cov : cov;
+        // Text never uses the cache (it's not brush/paint), so always read
+        // straight from `cov`.
+        const std::vector<uchar> &covRead =
+            (bc && (m.type == MaskType::Brush || paintLayer)) ? bc->cov : cov;
         const std::vector<QRgb> &colRead = bc ? bc->col : colBuf;
         if (paintLayer && (bc ? !bc->cov.empty() : !colBuf.empty())) {
             // Each dab's own color (captured at paint time) wins wherever it
@@ -720,6 +772,10 @@ static bool hasMaskEdits(const Adjustments &adj) {
             if (m.stroke.isEmpty()) continue;
             return true;
         }
+        if (m.type == MaskType::Text) {
+            if (m.text.trimmed().isEmpty()) continue;
+            return true;
+        }
         if (m.adj.isZero()) continue;
         if (m.type == MaskType::Brush && m.stroke.isEmpty()) continue;
         return true;
@@ -752,6 +808,8 @@ QImage maskCoverageOverlay(const Mask &m, int w, int h, const QColor &tint,
             refPtr = &ref;
         }
         rasterizeBrush(m, cov, ow, oh, refPtr, cache);
+    } else if (m.type == MaskType::Text) {
+        rasterizeText(m, cov, ow, oh);
     }
     const int tr = tint.red(), tg = tint.green(), tb = tint.blue();
     for (int y = 0; y < oh; ++y) {
@@ -894,6 +952,7 @@ QString historyStepLabel(const Adjustments &prev, const Adjustments &curr) {
     if (curr.colorRanges != prev.colorRanges) return QStringLiteral("Color Range");
     if (curr.masks != prev.masks)             return QStringLiteral("Layer");
     if (curr.heals != prev.heals)             return QStringLiteral("Spot Heal");
+    if (curr.texts != prev.texts)             return QStringLiteral("Text");
     if (curr.rotationQuadrants != prev.rotationQuadrants)
         return QStringLiteral("Rotate");
     if (curr.flipH != prev.flipH || curr.flipV != prev.flipV)

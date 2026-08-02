@@ -373,6 +373,7 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
             });
     connect(m_maskPanel, &MaskPanel::maskTypeChanged, this, &LayersPanel::maskTypeChanged);
     connect(m_maskPanel, &MaskPanel::maskShapeChanged, this, &LayersPanel::maskShapeChanged);
+    connect(m_maskPanel, &MaskPanel::maskTextChanged, this, &LayersPanel::maskTextChanged);
 
     clear();
 }

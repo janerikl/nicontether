@@ -50,6 +50,8 @@ add_executable(nikontether
     src/edit/CurveEditor.cpp
     src/edit/EditSidecar.cpp
     src/edit/HealTool.cpp
+    src/edit/TextTool.cpp
+    src/edit/ShapeTool.cpp
     src/edit/NewDocumentDialog.cpp
     src/edit/NewDocumentSize.cpp
 )

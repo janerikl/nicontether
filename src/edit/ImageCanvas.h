@@ -15,6 +15,7 @@ class QDragEnterEvent;
 class QDragLeaveEvent;
 class QDropEvent;
 class QContextMenuEvent;
+class QPlainTextEdit;
 
 // Displays an image with zoom + pan, and supports crop rubber-band selection and
 // a white-balance eyedropper. Zoom: Ctrl+wheel (anchored to the cursor),
@@ -43,6 +44,39 @@ public:
     void setColorRangePickMode(bool on);
     void setColorRangeAmount(int amount); // -100..100, shown in the drag swatch
     void setHealMode(bool on); // spot-heal brush
+    void setTextMode(bool on); // text tool: click to place, drag to move/rotate
+
+    // An existing text op's on-canvas footprint, in the same pixel space as
+    // the QImage passed to setImage() (display-scaled, already
+    // oriented/cropped). `rect` is the unrotated bounding box; the vector
+    // index corresponds 1:1 to the order of Adjustments::texts.
+    struct TextMarker {
+        QRectF rect;
+        double rotation = 0.0; // degrees, clockwise, about rect.topLeft()
+    };
+    void setTextMarkers(const QVector<TextMarker> &markers);
+    void setActiveTextIndex(int index); // -1 = none; shows the rotate handle
+
+    // Opens the inline editor over the given text op. `imgPos`/`font`/`color`
+    // style the editor to match the op while typing.
+    void beginTextEdit(int index, const QPointF &imgPos, const QFont &font,
+                       const QColor &color, const QString &initialText);
+    void setShapeMode(bool on); // shape tool: drag to create, click to select/move/resize/rotate
+    void setActiveShapeType(ShapeType t); // type created by the next drag-to-create gesture
+
+    // An existing shape op's on-canvas footprint, in the same pixel space as
+    // the QImage passed to setImage() (display-scaled, already
+    // oriented/cropped). `rect` is used for all types except Line, which
+    // uses `p1`/`p2` instead. Index corresponds 1:1 to Adjustments::shapes.
+    struct ShapeMarker {
+        ShapeType type = ShapeType::Rectangle;
+        QRectF rect;
+        QPointF p1, p2;
+        double rotation = 0.0; // degrees, clockwise, about rect.center() (or p1/p2 midpoint)
+    };
+    void setShapeMarkers(const QVector<ShapeMarker> &markers);
+    void setActiveShapeIndex(int index); // -1 = none; shows resize/rotate handles
+
     void setEraseMode(bool on); // erase brush: punches transparency into the selected image layer
     void setZoomMode(bool on); // zoom tool: enables marquee-drag zoom + Ctrl+wheel
     void setBrushRadius(int displayPx);
@@ -82,6 +116,32 @@ signals:
     void colorRangeDragged(int dxPixels);
     void colorRangeReleased();
     void healAt(const QPoint &imagePoint);
+    void textPlaceRequested(const QPoint &imagePoint);
+    void textSelected(int index);
+    void textDeselected();
+    void textMoved(int index, const QPointF &newImagePos);
+    void textRotated(int index, double newRotationDegrees);
+    void textEditRequested(int index); // double-click on existing text
+    void textEditCommitted(int index, const QString &text);
+    void textEditCancelled(int index);
+    void textLiveContentChanged(int index, const QString &text); // fires on every keystroke
+    void textDeleteRequested(int index);
+    void textResizeStarted(int index); // corner-drag resize began
+    void textResized(int index, double ratio); // font size = size-at-drag-start * ratio
+    void shapeCreateRequested(ShapeType type, const QRectF &imageRect); // drag-to-create bounding box
+    void shapeSelected(int index);
+    void shapeDeselected();
+    void shapeMoved(int index, const QPointF &deltaImage);
+    void shapeResized(int index, const QRectF &newImageRect); // unrotated local rect
+    void shapeLineEndpointsChanged(int index, const QPointF &p1, const QPointF &p2);
+    void shapeRotated(int index, double newRotationDegrees);
+    void shapeDeleteRequested(int index);
+    // Ctrl+drag on an existing shape: duplicate it in place (same geometry
+    // and style), select the copy, and continue the drag as a move of the
+    // copy — the original is left untouched.
+    void shapeDuplicateRequested(int index);
+    void shapeRaiseRequested(int index); // '+': move one level up the stack
+    void shapeLowerRequested(int index); // '-': move one level down the stack
     void eraseAt(const QPointF &ptNorm); // one erase-stroke sample (width-normalized)
     void eraseFinished();                // drag released -> commit history
     void zoomChanged(double percent);
@@ -99,10 +159,12 @@ signals:
     void imageLayerDropped(const QString &path); // a photo was dropped in as a layer
 
 protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *) override;
     void mouseMoveEvent(QMouseEvent *) override;
     void mouseReleaseEvent(QMouseEvent *) override;
+    void mouseDoubleClickEvent(QMouseEvent *) override;
     void wheelEvent(QWheelEvent *) override;
     void keyPressEvent(QKeyEvent *) override;
     void keyReleaseEvent(QKeyEvent *) override;
@@ -125,6 +187,24 @@ private:
     QRect selectionInImage() const;    // current rubber band mapped to image coords
     QPoint constrainedCorner(const QPoint &pos) const; // apply aspect + bounds
     Handle handleAt(const QPoint &pos) const; // which crop handle is under pos
+    int textMarkerAt(const QPoint &pos) const; // which text body is under pos, or -1
+    QPointF textRotateHandlePos(const TextMarker &m) const; // widget coords
+    // Which corner handle (of the active text's box) is under `pos`, or None.
+    // TopLeft is excluded — it coincides with the rotation anchor, so a drag
+    // there moves the text rather than resizing it.
+    Handle textCornerHandleAt(const QPoint &pos) const;
+    QPointF textCornerLocal(const TextMarker &m, Handle corner) const; // unrotated local space
+    QPointF textCornerScreenPos(const TextMarker &m, Handle corner) const;
+    void commitTextEditor();
+    void cancelTextEditor();
+
+    int shapeMarkerAt(const QPoint &pos) const; // which shape body is under pos, or -1
+    QPointF shapeRotateHandlePos(const ShapeMarker &m) const; // widget coords
+    QPointF shapeCornerLocal(const ShapeMarker &m, Handle corner) const; // unrotated local space
+    QPointF shapeCornerScreenPos(const ShapeMarker &m, Handle corner) const;
+    Handle shapeCornerHandleAt(const QPoint &pos) const; // which corner of the active shape
+    QPointF shapeEndpointScreenPos(const ShapeMarker &m, bool first) const; // Line p1/p2
+    int shapeEndpointAt(const QPoint &pos) const; // 0=p1, 1=p2, -1=none, for the active Line
 
     void relayoutFit();  // recompute scale/offset to fit + centre
     void zoomTo(double newScale, const QPointF &anchorWidgetPos);
@@ -143,6 +223,38 @@ private:
     int m_colorRangeChannel = 0; // 0=R,1=G,2=B — dominant channel (swatch border)
     int m_colorRangeAmount = 0;  // -100..100, shown in the amount bar
     bool m_healMode = false;
+    bool m_textMode = false;
+    QVector<TextMarker> m_textMarkers; // display-image-space, index-aligned with Adjustments::texts
+    int m_activeTextIndex = -1;
+    enum class TextDrag { None, Moving, Rotating, Resizing };
+    TextDrag m_textDrag = TextDrag::None;
+    QPointF m_textDragStartImgPos;   // marker rect top-left at drag start (image px)
+    QPoint m_textDragStartMouse;     // widget px
+    double m_textRotateStartAngle = 0.0; // marker rotation at drag start
+    Handle m_textResizeCorner = Handle::None; // which corner is being dragged
+    double m_textResizeStartDist = 1.0;       // anchor->corner distance (local px) at drag start
+    QPlainTextEdit *m_textEditor = nullptr;
+    int m_textEditIndex = -1; // index being edited by m_textEditor, or -1
+    // Smart-guide snap targets (image px) matched during a Ctrl+drag move,
+    // shown as guide lines while dragging and cleared on release.
+    QVector<double> m_activeGuideXs;
+    QVector<double> m_activeGuideYs;
+    QPointF snapTextPosition(const QPointF &pos, int index); // Ctrl+drag alignment snap
+    bool m_shapeMode = false;
+    ShapeType m_activeShapeType = ShapeType::Rectangle;
+    QVector<ShapeMarker> m_shapeMarkers; // display-image-space, index-aligned with Adjustments::shapes
+    int m_activeShapeIndex = -1;
+    enum class ShapeDrag { None, Creating, Moving, Rotating, Resizing, EndpointDrag };
+    ShapeDrag m_shapeDrag = ShapeDrag::None;
+    QPoint m_shapeDragStartMouse;      // widget px
+    QPointF m_shapeDragStartTopLeft;   // marker rect top-left at drag start (image px)
+    QPointF m_shapeDragStartP1, m_shapeDragStartP2; // Line endpoints at drag start (image px)
+    double m_shapeRotateStartAngle = 0.0;
+    Handle m_shapeResizeCorner = Handle::None;
+    QSizeF m_shapeResizeStartSize; // active shape's rect size at resize-drag start (for Shift aspect-lock)
+    int m_shapeEndpointDragging = -1; // 0=p1, 1=p2, while dragging a Line endpoint
+    QPoint m_shapeCreateP0, m_shapeCreateP1; // rubber-band corners while creating (widget coords)
+
     bool m_eraseMode = false;
     bool m_eraseDragging = false;
     QPointF m_lastEraseNorm{-1, -1};

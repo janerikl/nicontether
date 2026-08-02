@@ -3,6 +3,8 @@
 #include "edit/RawLoader.h"
 #include "edit/EditSidecar.h"
 #include "edit/HealTool.h"
+#include "edit/TextTool.h"
+#include "edit/ShapeTool.h"
 
 #include <QVBoxLayout>
 #include <QFutureWatcher>
@@ -14,6 +16,7 @@
 #include <QTimer>
 #include <QThread>
 #include <QtConcurrent>
+#include <QFont>
 #include <algorithm>
 
 void RenderWorker::render(const QImage &src, const Adjustments &adj, int maskSnapshotIndex) {
@@ -85,6 +88,32 @@ void RetouchTab::setupCanvasAndWiring() {
     connect(m_canvas, &ImageCanvas::colorRangeReleased, this,
             &RetouchTab::onColorRangeReleased);
     connect(m_canvas, &ImageCanvas::healAt, this, &RetouchTab::onHealAt);
+    connect(m_canvas, &ImageCanvas::textPlaceRequested, this, &RetouchTab::onTextPlaceRequested);
+    connect(m_canvas, &ImageCanvas::textSelected, this, &RetouchTab::onTextSelected);
+    connect(m_canvas, &ImageCanvas::textDeselected, this, &RetouchTab::onTextDeselected);
+    connect(m_canvas, &ImageCanvas::textMoved, this, &RetouchTab::onTextMoved);
+    connect(m_canvas, &ImageCanvas::textRotated, this, &RetouchTab::onTextRotated);
+    connect(m_canvas, &ImageCanvas::textEditRequested, this, &RetouchTab::onTextEditRequested);
+    connect(m_canvas, &ImageCanvas::textEditCommitted, this, &RetouchTab::onTextEditCommitted);
+    connect(m_canvas, &ImageCanvas::textEditCancelled, this, &RetouchTab::onTextEditCancelled);
+    connect(m_canvas, &ImageCanvas::textLiveContentChanged, this,
+            &RetouchTab::onTextLiveContentChanged);
+    connect(m_canvas, &ImageCanvas::textDeleteRequested, this, &RetouchTab::onTextDeleteRequested);
+    connect(m_canvas, &ImageCanvas::textResizeStarted, this, &RetouchTab::onTextResizeStarted);
+    connect(m_canvas, &ImageCanvas::textResized, this, &RetouchTab::onTextResized);
+    connect(m_canvas, &ImageCanvas::shapeCreateRequested, this, &RetouchTab::onShapeCreateRequested);
+    connect(m_canvas, &ImageCanvas::shapeSelected, this, &RetouchTab::onShapeSelected);
+    connect(m_canvas, &ImageCanvas::shapeDeselected, this, &RetouchTab::onShapeDeselected);
+    connect(m_canvas, &ImageCanvas::shapeMoved, this, &RetouchTab::onShapeMoved);
+    connect(m_canvas, &ImageCanvas::shapeResized, this, &RetouchTab::onShapeResized);
+    connect(m_canvas, &ImageCanvas::shapeLineEndpointsChanged, this,
+            &RetouchTab::onShapeLineEndpointsChanged);
+    connect(m_canvas, &ImageCanvas::shapeRotated, this, &RetouchTab::onShapeRotated);
+    connect(m_canvas, &ImageCanvas::shapeDeleteRequested, this, &RetouchTab::onShapeDeleteRequested);
+    connect(m_canvas, &ImageCanvas::shapeDuplicateRequested, this,
+            &RetouchTab::onShapeDuplicateRequested);
+    connect(m_canvas, &ImageCanvas::shapeRaiseRequested, this, &RetouchTab::onShapeRaiseRequested);
+    connect(m_canvas, &ImageCanvas::shapeLowerRequested, this, &RetouchTab::onShapeLowerRequested);
     connect(m_canvas, &ImageCanvas::eraseAt, this, &RetouchTab::onEraseAt);
     connect(m_canvas, &ImageCanvas::eraseFinished, this, &RetouchTab::onEraseFinished);
     connect(m_canvas, &ImageCanvas::zoomChanged, this, &RetouchTab::zoomChanged);
@@ -182,7 +211,8 @@ void RetouchTab::onDecodeFinished() {
 
 bool RetouchTab::hasEdits() const {
     return hasToneEdits(m_adj) || m_adj.rotationQuadrants != 0 || m_adj.flipH ||
-           m_adj.flipV || !m_adj.cropRect.isNull() || !m_adj.heals.isEmpty();
+           m_adj.flipV || !m_adj.cropRect.isNull() || !m_adj.heals.isEmpty() ||
+           !m_adj.texts.isEmpty() || !m_adj.shapes.isEmpty();
 }
 
 void RetouchTab::assignPath(const QString &path) {
@@ -279,9 +309,13 @@ void RetouchTab::rebuildGeom() {
     if (!m_adj.heals.isEmpty()) applyHeal(oriented, m_adj.heals);
 
     m_geomImg = oriented;
+    m_geomCropOffset = QPoint();
     if (!m_cropMode && !m_adj.cropRect.isNull()) {
         QRect r = m_adj.cropRect.intersected(oriented.rect());
-        if (r.isValid() && !r.isEmpty()) m_geomImg = oriented.copy(r);
+        if (r.isValid() && !r.isEmpty()) {
+            m_geomImg = oriented.copy(r);
+            m_geomCropOffset = r.topLeft();
+        }
     }
 
     if (qMax(m_geomImg.width(), m_geomImg.height()) > kDisplayMaxDim) {
@@ -294,7 +328,45 @@ void RetouchTab::rebuildGeom() {
                           ? double(m_scaled.width()) / m_geomImg.width()
                           : 1.0;
     updateHealSpots();
+    updateTextMarkers();
+    updateShapeMarkers();
     retone();
+}
+
+// Convert stored text ops (oriented-image, pre-crop coords) into the display
+// (m_scaled) pixel space so the canvas can draw/hit-test selection boxes.
+void RetouchTab::updateTextMarkers() {
+    QVector<ImageCanvas::TextMarker> markers;
+    for (const TextOp &op : m_adj.texts) {
+        TextOp local = op;
+        local.pos = (op.pos - QPointF(m_geomCropOffset)) * m_scaleFromGeom;
+        local.pixelSize *= m_scaleFromGeom;
+        ImageCanvas::TextMarker m;
+        m.rect = textOpBounds(local);
+        m.rotation = op.rotation;
+        markers.append(m);
+    }
+    m_canvas->setTextMarkers(markers);
+    m_canvas->setActiveTextIndex(m_activeText);
+}
+
+// Convert stored shape ops (oriented-image, pre-crop coords) into the
+// display (m_scaled) pixel space so the canvas can draw/hit-test selection
+// boxes/handles.
+void RetouchTab::updateShapeMarkers() {
+    QVector<ImageCanvas::ShapeMarker> markers;
+    for (const ShapeOp &op : m_adj.shapes) {
+        ImageCanvas::ShapeMarker m;
+        m.type = op.type;
+        m.rect = QRectF((op.rect.topLeft() - QPointF(m_geomCropOffset)) * m_scaleFromGeom,
+                        op.rect.size() * m_scaleFromGeom);
+        m.p1 = (op.p1 - QPointF(m_geomCropOffset)) * m_scaleFromGeom;
+        m.p2 = (op.p2 - QPointF(m_geomCropOffset)) * m_scaleFromGeom;
+        m.rotation = op.rotation;
+        markers.append(m);
+    }
+    m_canvas->setShapeMarkers(markers);
+    m_canvas->setActiveShapeIndex(m_activeShape);
 }
 
 // Convert stored heal ops (oriented-image, pre-crop coords) into the display
@@ -348,8 +420,23 @@ void RetouchTab::requestRender(const QImage &src, const Adjustments &adj, int ma
 
 void RetouchTab::onRenderDone(const QImage &result, const QImage &maskSnapshot) {
     m_lastEdited = result;
+    if (!m_adj.texts.isEmpty()) {
+        // The op currently open in the inline editor still composites
+        // normally — background/shadow/outline all preview live — but its
+        // glyph *fill* is hidden, since the editor widget already shows that
+        // live text itself; compositing the fill too would double it up.
+        if (m_textEditIndex >= 0 && m_textEditIndex < m_adj.texts.size()) {
+            QVector<TextOp> texts = m_adj.texts;
+            texts[m_textEditIndex].color.setAlpha(0);
+            applyTexts(m_lastEdited, texts, m_geomCropOffset, m_scaleFromGeom);
+        } else {
+            applyTexts(m_lastEdited, m_adj.texts, m_geomCropOffset, m_scaleFromGeom);
+        }
+    }
+    if (!m_adj.shapes.isEmpty())
+        applyShapes(m_lastEdited, m_adj.shapes, m_geomCropOffset, m_scaleFromGeom);
     if (!maskSnapshot.isNull()) m_maskPreviewImage = maskSnapshot;
-    if (!m_showingOriginal) m_canvas->setImage(result);
+    if (!m_showingOriginal) m_canvas->setImage(m_lastEdited);
     emit previewUpdated();
     if (m_maskPreviewEnabled) emit maskPreviewUpdated();
     m_rendering = false;
@@ -493,6 +580,423 @@ void RetouchTab::setEraseMode(bool on) {
 void RetouchTab::setEraseBrush(int radiusDisplayPx) {
     m_eraseRadiusDisplay = radiusDisplayPx;
     m_canvas->setBrushRadius(radiusDisplayPx);
+}
+
+void RetouchTab::setTextMode(bool on) {
+    m_textMode = on;
+    m_canvas->setTextMode(on);
+    if (on) m_canvas->setFocus();
+    else m_activeText = -1;
+}
+
+// A click placed a new text op (point in display-image coords, pre-crop
+// stored per TextOp convention). Opens the inline editor immediately;
+// committing empty text (or cancelling) discards the draft.
+void RetouchTab::onTextPlaceRequested(const QPoint &imgPoint) {
+    if (m_scaleFromGeom <= 0) return;
+    double inv = 1.0 / m_scaleFromGeom;
+    TextOp op = m_textDefaults;
+    op.pos = QPointF(imgPoint.x() * inv, imgPoint.y() * inv) + QPointF(m_geomCropOffset);
+    op.text.clear();
+    m_adj.texts.append(op);
+    m_activeText = m_adj.texts.size() - 1;
+    m_newTextIndex = m_activeText;
+    m_textEditIndex = m_activeText;
+    updateTextMarkers();
+    retone(); // suppress the (empty) baked-in text while the editor owns it
+
+    QFont font(op.family);
+    font.setPixelSize(std::max(1, int(std::lround(op.pixelSize * m_scaleFromGeom))));
+    font.setBold(op.bold);
+    font.setItalic(op.italic);
+    m_canvas->beginTextEdit(m_activeText, QPointF(imgPoint), font, op.color, QString());
+    emit textsChanged();
+}
+
+void RetouchTab::onTextSelected(int index) {
+    if (index < 0 || index >= m_adj.texts.size()) return;
+    m_activeText = index;
+    m_newTextIndex = -1;
+    m_canvas->setActiveTextIndex(index);
+    emit textsChanged();
+}
+
+void RetouchTab::onTextDeselected() {
+    m_activeText = -1;
+    emit textsChanged();
+}
+
+void RetouchTab::onTextMoved(int index, const QPointF &newImgPos) {
+    if (index < 0 || index >= m_adj.texts.size() || m_scaleFromGeom <= 0) return;
+    double inv = 1.0 / m_scaleFromGeom;
+    m_adj.texts[index].pos =
+        QPointF(newImgPos.x() * inv, newImgPos.y() * inv) + QPointF(m_geomCropOffset);
+    updateTextMarkers();
+    retone();
+    markEdited();
+}
+
+void RetouchTab::onTextRotated(int index, double newRotationDegrees) {
+    if (index < 0 || index >= m_adj.texts.size()) return;
+    m_adj.texts[index].rotation = newRotationDegrees;
+    updateTextMarkers();
+    retone();
+    markEdited();
+}
+
+void RetouchTab::onTextEditRequested(int index) {
+    if (index < 0 || index >= m_adj.texts.size() || m_scaleFromGeom <= 0) return;
+    m_activeText = index;
+    m_newTextIndex = -1;
+    m_textEditIndex = index;
+    const TextOp &op = m_adj.texts[index];
+    QPointF displayPos = (op.pos - QPointF(m_geomCropOffset)) * m_scaleFromGeom;
+    QFont font(op.family);
+    font.setPixelSize(std::max(1, int(std::lround(op.pixelSize * m_scaleFromGeom))));
+    font.setBold(op.bold);
+    font.setItalic(op.italic);
+    m_canvas->beginTextEdit(index, displayPos, font, op.color, op.text);
+    retone(); // suppress the stale baked-in text while the editor owns it
+}
+
+void RetouchTab::onTextEditCommitted(int index, const QString &text) {
+    if (index < 0 || index >= m_adj.texts.size()) return;
+    bool wasNewEmptyDraft = (index == m_newTextIndex) && m_adj.texts[index].text.isEmpty();
+    m_newTextIndex = -1;
+    if (m_textEditIndex == index) m_textEditIndex = -1;
+    if (text.trimmed().isEmpty()) {
+        m_adj.texts.removeAt(index);
+        if (m_activeText == index) m_activeText = -1;
+        else if (m_activeText > index) --m_activeText;
+        updateTextMarkers();
+        retone();
+        if (!wasNewEmptyDraft) markEdited(); // clearing existing text is itself an edit
+        return;
+    }
+    m_adj.texts[index].text = text;
+    updateTextMarkers();
+    retone();
+    markEdited();
+}
+
+void RetouchTab::onTextEditCancelled(int index) {
+    if (index < 0 || index >= m_adj.texts.size()) return;
+    if (m_textEditIndex == index) m_textEditIndex = -1;
+    if (index == m_newTextIndex && m_adj.texts[index].text.isEmpty()) {
+        m_adj.texts.removeAt(index);
+        if (m_activeText == index) m_activeText = -1;
+        else if (m_activeText > index) --m_activeText;
+        m_newTextIndex = -1;
+        updateTextMarkers();
+        retone();
+    } else {
+        retone(); // re-composite the (unchanged) baked-in text now that the editor is gone
+    }
+}
+
+// Live-updates the op's text as the user types (before committing), so
+// shadow/outline/background style controls preview correctly while the
+// editor is still open — see onRenderDone's fill-only suppression.
+void RetouchTab::onTextLiveContentChanged(int index, const QString &text) {
+    if (index < 0 || index >= m_adj.texts.size()) return;
+    m_adj.texts[index].text = text;
+    updateTextMarkers();
+    retone();
+}
+
+void RetouchTab::onTextDeleteRequested(int index) {
+    if (index < 0 || index >= m_adj.texts.size()) return;
+    m_adj.texts.removeAt(index);
+    if (m_activeText == index) m_activeText = -1;
+    else if (m_activeText > index) --m_activeText;
+    if (m_newTextIndex == index) m_newTextIndex = -1;
+    updateTextMarkers();
+    retone();
+    markEdited();
+}
+
+void RetouchTab::onTextResizeStarted(int index) {
+    if (index < 0 || index >= m_adj.texts.size()) return;
+    m_textResizeStartPixelSize = m_adj.texts[index].pixelSize;
+}
+
+// Corner-drag resize: uniformly scales font size relative to its value when
+// the drag began (`ratio` is cumulative from drag start, not incremental).
+void RetouchTab::onTextResized(int index, double ratio) {
+    if (index < 0 || index >= m_adj.texts.size()) return;
+    m_adj.texts[index].pixelSize = std::clamp(m_textResizeStartPixelSize * ratio, 1.0, 2000.0);
+    updateTextMarkers();
+    retone();
+    markEdited();
+    emit textsChanged();
+}
+
+void RetouchTab::deleteActiveText() {
+    if (m_activeText >= 0) onTextDeleteRequested(m_activeText);
+}
+
+TextOp RetouchTab::activeTextStyle() const {
+    if (m_activeText >= 0 && m_activeText < m_adj.texts.size()) return m_adj.texts[m_activeText];
+    return m_textDefaults;
+}
+
+void RetouchTab::setTextFont(const QString &family, double pixelSize, bool bold, bool italic) {
+    TextOp *target = (m_activeText >= 0 && m_activeText < m_adj.texts.size())
+                         ? &m_adj.texts[m_activeText] : &m_textDefaults;
+    target->family = family;
+    target->pixelSize = pixelSize;
+    target->bold = bold;
+    target->italic = italic;
+    if (target != &m_textDefaults) {
+        updateTextMarkers();
+        retone();
+        markEdited();
+    }
+    emit textsChanged();
+}
+
+void RetouchTab::setTextColor(const QColor &color) {
+    TextOp *target = (m_activeText >= 0 && m_activeText < m_adj.texts.size())
+                         ? &m_adj.texts[m_activeText] : &m_textDefaults;
+    target->color = color;
+    if (target != &m_textDefaults) { retone(); markEdited(); }
+    emit textsChanged();
+}
+
+void RetouchTab::setTextOutline(bool enabled, const QColor &color, double width) {
+    TextOp *target = (m_activeText >= 0 && m_activeText < m_adj.texts.size())
+                         ? &m_adj.texts[m_activeText] : &m_textDefaults;
+    target->outlineEnabled = enabled;
+    target->outlineColor = color;
+    target->outlineWidth = width;
+    if (target != &m_textDefaults) { retone(); markEdited(); }
+    emit textsChanged();
+}
+
+void RetouchTab::setTextShadow(bool enabled, const QPointF &offset, double blur, double opacity,
+                               const QColor &color) {
+    TextOp *target = (m_activeText >= 0 && m_activeText < m_adj.texts.size())
+                         ? &m_adj.texts[m_activeText] : &m_textDefaults;
+    target->shadowEnabled = enabled;
+    target->shadowOffset = offset;
+    target->shadowBlur = blur;
+    target->shadowOpacity = opacity;
+    target->shadowColor = color;
+    if (target != &m_textDefaults) { retone(); markEdited(); }
+    emit textsChanged();
+}
+
+void RetouchTab::setTextBackground(bool enabled, const QColor &color, double opacity,
+                                   double padding) {
+    TextOp *target = (m_activeText >= 0 && m_activeText < m_adj.texts.size())
+                         ? &m_adj.texts[m_activeText] : &m_textDefaults;
+    target->bgEnabled = enabled;
+    target->bgColor = color;
+    target->bgOpacity = opacity;
+    target->bgPadding = padding;
+    if (target != &m_textDefaults) { retone(); markEdited(); }
+    emit textsChanged();
+}
+
+// ---- Shape tool -------------------------------------------------------
+
+void RetouchTab::setShapeMode(bool on) {
+    m_shapeMode = on;
+    m_canvas->setShapeMode(on);
+    if (on) m_canvas->setFocus();
+    else m_activeShape = -1;
+}
+
+void RetouchTab::setActiveShapeType(ShapeType t) {
+    m_canvas->setActiveShapeType(t);
+    if (m_activeShape >= 0 && m_activeShape < m_adj.shapes.size()) {
+        m_adj.shapes[m_activeShape].type = t;
+        updateShapeMarkers();
+        retone();
+        markEdited();
+    } else {
+        m_shapeDefaults.type = t;
+    }
+    emit shapesChanged();
+}
+
+// A drag-create gesture finished (bounding box in display-image coords,
+// pre-crop stored per ShapeOp convention).
+void RetouchTab::onShapeCreateRequested(ShapeType type, const QRectF &imageRect) {
+    if (m_scaleFromGeom <= 0) return;
+    double inv = 1.0 / m_scaleFromGeom;
+    ShapeOp op = m_shapeDefaults;
+    op.type = type;
+    if (type == ShapeType::Line) {
+        op.p1 = imageRect.topLeft() * inv + QPointF(m_geomCropOffset);
+        op.p2 = imageRect.bottomRight() * inv + QPointF(m_geomCropOffset);
+    } else {
+        op.rect = QRectF(imageRect.topLeft() * inv, imageRect.size() * inv)
+                      .translated(QPointF(m_geomCropOffset));
+    }
+    m_adj.shapes.append(op);
+    m_activeShape = m_adj.shapes.size() - 1;
+    updateShapeMarkers();
+    retone();
+    markEdited();
+    emit shapesChanged();
+}
+
+void RetouchTab::onShapeSelected(int index) {
+    if (index < 0 || index >= m_adj.shapes.size()) return;
+    m_activeShape = index;
+    m_shapeMoveStartRect = m_adj.shapes[index].rect;
+    m_shapeMoveStartP1 = m_adj.shapes[index].p1;
+    m_shapeMoveStartP2 = m_adj.shapes[index].p2;
+    m_canvas->setActiveShapeIndex(index);
+    emit shapesChanged();
+}
+
+void RetouchTab::onShapeDeselected() {
+    m_activeShape = -1;
+    emit shapesChanged();
+}
+
+// `deltaImage` is the total offset from the drag's press point (display-image
+// coords), not an incremental step — RetouchTab must apply it against the
+// shape's position as of the drag start (captured in onShapeSelected), not
+// accumulate it onto the shape's current (already-moved) position.
+void RetouchTab::onShapeMoved(int index, const QPointF &deltaImage) {
+    if (index < 0 || index >= m_adj.shapes.size() || m_scaleFromGeom <= 0) return;
+    QPointF delta = deltaImage / m_scaleFromGeom;
+    ShapeOp &op = m_adj.shapes[index];
+    if (op.type == ShapeType::Line) {
+        op.p1 = m_shapeMoveStartP1 + delta;
+        op.p2 = m_shapeMoveStartP2 + delta;
+    } else {
+        op.rect = m_shapeMoveStartRect.translated(delta);
+    }
+    updateShapeMarkers();
+    retone();
+    markEdited();
+}
+
+void RetouchTab::onShapeResized(int index, const QRectF &newImageRect) {
+    if (index < 0 || index >= m_adj.shapes.size() || m_scaleFromGeom <= 0) return;
+    double inv = 1.0 / m_scaleFromGeom;
+    m_adj.shapes[index].rect = QRectF(newImageRect.topLeft() * inv + QPointF(m_geomCropOffset),
+                                      newImageRect.size() * inv);
+    updateShapeMarkers();
+    retone();
+    markEdited();
+}
+
+void RetouchTab::onShapeLineEndpointsChanged(int index, const QPointF &p1, const QPointF &p2) {
+    if (index < 0 || index >= m_adj.shapes.size() || m_scaleFromGeom <= 0) return;
+    double inv = 1.0 / m_scaleFromGeom;
+    m_adj.shapes[index].p1 = p1 * inv + QPointF(m_geomCropOffset);
+    m_adj.shapes[index].p2 = p2 * inv + QPointF(m_geomCropOffset);
+    updateShapeMarkers();
+    retone();
+    markEdited();
+}
+
+void RetouchTab::onShapeRotated(int index, double newRotationDegrees) {
+    if (index < 0 || index >= m_adj.shapes.size()) return;
+    m_adj.shapes[index].rotation = newRotationDegrees;
+    updateShapeMarkers();
+    retone();
+    markEdited();
+}
+
+void RetouchTab::onShapeDeleteRequested(int index) {
+    if (index < 0 || index >= m_adj.shapes.size()) return;
+    m_adj.shapes.removeAt(index);
+    if (m_activeShape == index) m_activeShape = -1;
+    else if (m_activeShape > index) --m_activeShape;
+    updateShapeMarkers();
+    retone();
+    markEdited();
+    emit shapesChanged();
+}
+
+// Ctrl+drag on an existing shape: append an exact copy (same geometry and
+// style) and select it, so ImageCanvas's already-in-progress move drag
+// continues by dragging the copy away from the untouched original.
+void RetouchTab::onShapeDuplicateRequested(int index) {
+    if (index < 0 || index >= m_adj.shapes.size()) return;
+    ShapeOp copy = m_adj.shapes[index];
+    m_adj.shapes.append(copy);
+    m_activeShape = m_adj.shapes.size() - 1;
+    m_shapeMoveStartRect = copy.rect;
+    m_shapeMoveStartP1 = copy.p1;
+    m_shapeMoveStartP2 = copy.p2;
+    updateShapeMarkers();
+    retone();
+    markEdited();
+    emit shapesChanged();
+}
+
+// '+': move one level toward the top of the stack (shapes render in vector
+// order, so "up" means a higher index — swap with the next entry).
+void RetouchTab::onShapeRaiseRequested(int index) {
+    if (index < 0 || index >= m_adj.shapes.size() - 1) return;
+    m_adj.shapes.swapItemsAt(index, index + 1);
+    m_activeShape = index + 1;
+    updateShapeMarkers();
+    retone();
+    markEdited();
+    emit shapesChanged();
+}
+
+// '-': move one level toward the bottom of the stack.
+void RetouchTab::onShapeLowerRequested(int index) {
+    if (index <= 0 || index >= m_adj.shapes.size()) return;
+    m_adj.shapes.swapItemsAt(index, index - 1);
+    m_activeShape = index - 1;
+    updateShapeMarkers();
+    retone();
+    markEdited();
+    emit shapesChanged();
+}
+
+void RetouchTab::deleteActiveShape() {
+    if (m_activeShape >= 0) onShapeDeleteRequested(m_activeShape);
+}
+
+ShapeOp RetouchTab::activeShapeStyle() const {
+    if (m_activeShape >= 0 && m_activeShape < m_adj.shapes.size()) return m_adj.shapes[m_activeShape];
+    return m_shapeDefaults;
+}
+
+void RetouchTab::setShapeSides(int sides) {
+    ShapeOp *target = (m_activeShape >= 0 && m_activeShape < m_adj.shapes.size())
+                          ? &m_adj.shapes[m_activeShape] : &m_shapeDefaults;
+    target->sides = sides;
+    if (target != &m_shapeDefaults) { retone(); markEdited(); }
+    emit shapesChanged();
+}
+
+void RetouchTab::setShapeInnerRadiusRatio(double ratio) {
+    ShapeOp *target = (m_activeShape >= 0 && m_activeShape < m_adj.shapes.size())
+                          ? &m_adj.shapes[m_activeShape] : &m_shapeDefaults;
+    target->innerRadiusRatio = ratio;
+    if (target != &m_shapeDefaults) { retone(); markEdited(); }
+    emit shapesChanged();
+}
+
+void RetouchTab::setShapeFill(bool enabled, const QColor &color) {
+    ShapeOp *target = (m_activeShape >= 0 && m_activeShape < m_adj.shapes.size())
+                          ? &m_adj.shapes[m_activeShape] : &m_shapeDefaults;
+    target->fillEnabled = enabled;
+    target->fillColor = color;
+    if (target != &m_shapeDefaults) { retone(); markEdited(); }
+    emit shapesChanged();
+}
+
+void RetouchTab::setShapeStroke(bool enabled, const QColor &color, double width) {
+    ShapeOp *target = (m_activeShape >= 0 && m_activeShape < m_adj.shapes.size())
+                          ? &m_adj.shapes[m_activeShape] : &m_shapeDefaults;
+    target->strokeEnabled = enabled;
+    target->strokeColor = color;
+    target->strokeWidth = width;
+    if (target != &m_shapeDefaults) { retone(); markEdited(); }
+    emit shapesChanged();
 }
 
 void RetouchTab::clearHeals() {
@@ -796,6 +1300,20 @@ void RetouchTab::setPaintColor(const QColor &color) {
     markEdited();
 }
 
+void RetouchTab::setActiveMaskText(const QString &text, const QString &family,
+                                   double pixelSize, bool bold, bool italic) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    if (m.type != MaskType::Text) return;
+    m.text = text;
+    m.textFamily = family;
+    m.textPixelSize = pixelSize;
+    m.textBold = bold;
+    m.textItalic = italic;
+    retone();
+    markEdited();
+}
+
 void RetouchTab::onMaskRadial(const QPointF &centerNorm, double radiusNorm) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
     Mask &m = m_adj.masks[m_activeMask];
@@ -892,6 +1410,10 @@ void RetouchTab::resetCrop() {
 
 QImage RetouchTab::renderFullRes() const {
     if (m_geomImg.isNull()) return QImage();
-    // m_geomImg is the full-res oriented + healed + cropped base; apply tone.
-    return applyAdjustments(m_geomImg, toneOnly(m_adj));
+    // m_geomImg is the full-res oriented + healed + cropped base; apply tone,
+    // then composite text last so it stays unaffected by tone/colour.
+    QImage out = applyAdjustments(m_geomImg, toneOnly(m_adj));
+    if (!m_adj.texts.isEmpty()) applyTexts(out, m_adj.texts, m_geomCropOffset);
+    if (!m_adj.shapes.isEmpty()) applyShapes(out, m_adj.shapes, m_geomCropOffset);
+    return out;
 }

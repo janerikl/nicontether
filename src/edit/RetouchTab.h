@@ -62,6 +62,37 @@ public:
     void setEraseMode(bool on);
     void setEraseBrush(int radiusDisplayPx);
 
+    // Text tool.
+    void setTextMode(bool on);
+    void deleteActiveText();
+    int activeTextIndex() const { return m_activeText; }
+    // Style of the active text, or the "next new text" defaults if none is
+    // selected — what the options bar should display.
+    TextOp activeTextStyle() const;
+    // Each setter applies to the active text if one is selected, otherwise
+    // updates the defaults used for the next newly-placed text.
+    void setTextFont(const QString &family, double pixelSize, bool bold, bool italic);
+    void setTextColor(const QColor &color);
+    void setTextOutline(bool enabled, const QColor &color, double width);
+    void setTextShadow(bool enabled, const QPointF &offset, double blur, double opacity,
+                       const QColor &color);
+    void setTextBackground(bool enabled, const QColor &color, double opacity, double padding);
+
+    // Shape tool.
+    void setShapeMode(bool on);
+    void setActiveShapeType(ShapeType t);
+    void deleteActiveShape();
+    int activeShapeIndex() const { return m_activeShape; }
+    // Style of the active shape, or the "next new shape" defaults if none is
+    // selected — what the options bar should display.
+    ShapeOp activeShapeStyle() const;
+    // Each setter applies to the active shape if one is selected, otherwise
+    // updates the defaults used for the next newly-created shape.
+    void setShapeSides(int sides);
+    void setShapeInnerRadiusRatio(double ratio);
+    void setShapeFill(bool enabled, const QColor &color);
+    void setShapeStroke(bool enabled, const QColor &color, double width);
+
     // Local adjustment masks.
     void setMaskMode(bool on);              // enter/leave mask editing on the canvas
     int addMask(MaskType type);             // append + select; returns its index
@@ -76,6 +107,8 @@ public:
     void setActiveMaskShape(bool inverted, double feather, double hardness,
                             double brushRadius, bool autoMask);
     void setPaintColor(const QColor &color); // no-op unless the active layer is MaskType::Paint
+    void setActiveMaskText(const QString &text, const QString &family, double pixelSize,
+                           bool bold, bool italic); // no-op unless the active layer is MaskType::Text
     void setActiveMaskOpacity(double opacity);       // 0..1
     void setActiveMaskBlend(BlendMode mode);
     void setActiveMaskVisible(bool visible);
@@ -130,6 +163,8 @@ signals:
     void maskPreviewUpdated(); // a new per-layer histogram source image is available
     void masksChanged();   // mask list or active-mask geometry changed
     void maskBrushChanged(double radiusNorm); // ctrl+wheel resized the mask brush
+    void textsChanged();   // text list, active text, or its style changed
+    void shapesChanged();  // shape list, active shape, or its style changed
 
 private slots:
     void onDecodeFinished();
@@ -139,6 +174,29 @@ private slots:
     void onColorRangeDragged(int dxPixels);
     void onColorRangeReleased();
     void onHealAt(const QPoint &imgPoint);
+    void onTextPlaceRequested(const QPoint &imgPoint);
+    void onTextSelected(int index);
+    void onTextDeselected();
+    void onTextMoved(int index, const QPointF &newImgPos);
+    void onTextRotated(int index, double newRotationDegrees);
+    void onTextEditRequested(int index);
+    void onTextEditCommitted(int index, const QString &text);
+    void onTextEditCancelled(int index);
+    void onTextLiveContentChanged(int index, const QString &text);
+    void onTextDeleteRequested(int index);
+    void onTextResizeStarted(int index);
+    void onTextResized(int index, double ratio);
+    void onShapeCreateRequested(ShapeType type, const QRectF &imageRect);
+    void onShapeSelected(int index);
+    void onShapeDeselected();
+    void onShapeMoved(int index, const QPointF &deltaImage);
+    void onShapeResized(int index, const QRectF &newImageRect);
+    void onShapeLineEndpointsChanged(int index, const QPointF &p1, const QPointF &p2);
+    void onShapeRotated(int index, double newRotationDegrees);
+    void onShapeDeleteRequested(int index);
+    void onShapeDuplicateRequested(int index);
+    void onShapeRaiseRequested(int index);
+    void onShapeLowerRequested(int index);
     void onEraseAt(const QPointF &ptNorm);
     void onEraseFinished();
     void onRenderDone(const QImage &result, const QImage &maskSnapshot);
@@ -157,6 +215,8 @@ private:
     void commitHistory();     // snapshot current adjustments (coalesced)
     void applyHistoryState(); // apply m_history[m_histIndex]
     void updateHealSpots();   // push heal-op markers (display coords) to the canvas
+    void updateTextMarkers(); // push text-op markers (display coords) to the canvas
+    void updateShapeMarkers(); // push shape-op markers (display coords) to the canvas
     void pushMaskGizmo();     // sync active mask geometry to the canvas
     void kickoffImageLayerDecode(const QString &path); // async-decode an image layer's source
     QString copyImageLayerAsset(const QString &sourcePath); // copy a layer source next to m_path so it survives move/delete
@@ -169,6 +229,18 @@ private:
     bool m_cropMode = false;
     bool m_maskMode = false;
     int m_activeMask = -1; // index into m_adj.masks, or -1
+    bool m_textMode = false;
+    int m_activeText = -1;   // index into m_adj.texts, or -1
+    int m_newTextIndex = -1; // index of a just-placed, not-yet-committed draft, or -1
+    int m_textEditIndex = -1; // index currently open in the inline editor, or -1
+    TextOp m_textDefaults;   // style applied to the next newly-placed text
+    double m_textResizeStartPixelSize = 48.0; // captured at corner-drag start
+
+    bool m_shapeMode = false;
+    int m_activeShape = -1;   // index into m_adj.shapes, or -1
+    ShapeOp m_shapeDefaults;  // style/type applied to the next newly-created shape
+    QRectF m_shapeMoveStartRect;   // active shape's rect at move-drag start
+    QPointF m_shapeMoveStartP1, m_shapeMoveStartP2; // active Line's endpoints at move-drag start
     bool m_dirty = false; // unsaved changes since last save/load
     int m_healRadiusDisplay = 20; // brush radius in display pixels
     int m_eraseRadiusDisplay = 20; // erase brush radius in display pixels
@@ -177,6 +249,7 @@ private:
     QRect m_pendingCrop; // in oriented-image coords, awaiting Apply
 
     QImage m_geomImg;            // oriented (+crop unless cropMode), full res, untoned
+    QPoint m_geomCropOffset;     // crop top-left baked into m_geomImg/m_scaled, or (0,0)
     QImage m_scaled;             // display base, untoned
     double m_scaleFromGeom = 1.0;
 

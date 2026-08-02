@@ -13,6 +13,8 @@
 #include "ui/PreferencesDialog.h"
 #include "camera/CameraModels.h"
 #include "ui/ControlsPanel.h"
+#include "ui/ScrubSpinBox.h"
+#include <QFrame>
 #include "capture/NefPreview.h"
 
 #include <QScrollArea>
@@ -32,6 +34,11 @@
 #include <QPushButton>
 #include <QToolButton>
 #include <QComboBox>
+#include <QCheckBox>
+#include <QFontComboBox>
+#include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QColorDialog>
 #include <QLabel>
 #include <QToolBar>
 #include <QStackedWidget>
@@ -221,6 +228,33 @@ QPixmap drawBrushTool(const QColor &c) {
     return pm;
 }
 
+// Simple "T" glyph for the text tool.
+QPixmap drawTextTool(const QColor &c) {
+    QPixmap pm(kIconPx, kIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(c, 4);
+    pen.setCapStyle(Qt::FlatCap);
+    p.setPen(pen);
+    p.drawLine(QPointF(6, 6), QPointF(22, 6));
+    p.drawLine(QPointF(14, 6), QPointF(14, 24));
+    return pm;
+}
+
+// Simple rect + ellipse glyph for the shape tool.
+QPixmap drawShapeTool(const QColor &c) {
+    QPixmap pm(kIconPx, kIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(c, 2.5));
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(QRectF(4, 4, 13, 13));
+    p.drawEllipse(QRectF(13, 13, 13, 13));
+    return pm;
+}
+
 // Overlay a small corner triangle marking a tool that owns a subtool flyout.
 void addFlyoutMarker(QPixmap &pm, const QColor &c) {
     QPainter p(&pm);
@@ -250,6 +284,8 @@ QIcon makeHealIcon() { return makeToolIcon(drawHeal); }
 QIcon makeMaskIcon() { return makeToolIcon(drawMask); }
 QIcon makeEraseIcon() { return makeToolIcon(drawErase); }
 QIcon makeBrushToolIcon() { return makeToolIcon(drawBrushTool); }
+QIcon makeTextIcon() { return makeToolIcon(drawTextTool); }
+QIcon makeShapeIcon() { return makeToolIcon(drawShapeTool); }
 
 // Two-state icon like makeToolIcon, but with the flyout corner marker baked in.
 // Used for the mask tool button, whose glyph reflects its active subtool.
@@ -755,6 +791,20 @@ void RetouchWindow::buildToolPanel() {
     m_eraseToggle->setToolTip("Erase (E) — paint transparency onto the selected image layer; Ctrl+wheel resizes brush");
     m_toolsBar->addWidget(m_eraseToggle);
 
+    m_textToggle = new QToolButton;
+    m_textToggle->setIcon(makeTextIcon());
+    m_textToggle->setCheckable(true);
+    m_textToggle->setShortcut(QKeySequence(Qt::Key_T));
+    m_textToggle->setToolTip("Text (T) — click to place, drag to move, drag the handle to rotate");
+    m_toolsBar->addWidget(m_textToggle);
+
+    m_shapeToggle = new QToolButton;
+    m_shapeToggle->setIcon(makeShapeIcon());
+    m_shapeToggle->setCheckable(true);
+    m_shapeToggle->setShortcut(QKeySequence(Qt::Key_U));
+    m_shapeToggle->setToolTip("Shape (U) — drag to draw, drag handles to move/resize/rotate");
+    m_toolsBar->addWidget(m_shapeToggle);
+
     m_maskToggle = new FlyoutToolButton;
     m_maskToggle->setIcon(makeFlyoutToolIcon(maskGlyph(m_activeMaskSubtool)));
     m_maskToggle->setCheckable(true);
@@ -789,7 +839,9 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
-            if (tab) { tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); }
+            { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
+            { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
+            if (tab) { tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(0);
             m_toolOptionsBar->setVisible(true);
@@ -807,7 +859,9 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); }
+            { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
+            { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(1);
             m_toolOptionsBar->setVisible(true);
@@ -828,7 +882,9 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); }
+            { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
+            { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(2);
             m_toolOptionsBar->setVisible(true);
@@ -849,7 +905,9 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); }
+            { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
+            { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsBar->setVisible(false); // layers/masks use their own docks
             if (m_layersDock) { m_layersDock->show(); m_layersDock->raise(); }
@@ -870,7 +928,9 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); }
+            { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
+            { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(3);
             m_toolOptionsBar->setVisible(true);
@@ -897,7 +957,9 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); }
+            { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
+            { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(4);
             m_toolOptionsBar->setVisible(true);
@@ -908,6 +970,48 @@ void RetouchWindow::buildToolPanel() {
             tab->setEraseBrush(m_eraseBrush->value());
             tab->setEraseMode(on);
         }
+    });
+    connect(m_textToggle, &QToolButton::toggled, this, [this](bool on) {
+        RetouchTab *tab = currentTab();
+        if (on) {
+            { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
+            { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
+            { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
+            { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
+            { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+            { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+            { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
+            { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setShapeMode(false); }
+            if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
+            m_toolOptionsStack->setCurrentIndex(5);
+            m_toolOptionsBar->setVisible(true);
+        } else {
+            m_toolOptionsBar->setVisible(false);
+        }
+        if (tab && tab->isReady()) tab->setTextMode(on);
+        updateTextOptionsFromTab();
+    });
+    connect(m_shapeToggle, &QToolButton::toggled, this, [this](bool on) {
+        RetouchTab *tab = currentTab();
+        if (on) {
+            { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
+            { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
+            { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
+            { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
+            { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+            { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+            { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
+            { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); }
+            if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
+            m_toolOptionsStack->setCurrentIndex(6);
+            m_toolOptionsBar->setVisible(true);
+        } else {
+            m_toolOptionsBar->setVisible(false);
+        }
+        if (tab && tab->isReady()) tab->setShapeMode(on);
+        updateShapeOptionsFromTab();
     });
 }
 
@@ -1069,6 +1173,295 @@ void RetouchWindow::buildToolOptionsBar() {
         RetouchTab *tab = currentTab();
         if (tab) tab->setEraseBrush(v);
     });
+
+    // --- Text page (index 5) ---
+    auto *textPage = new QWidget;
+    auto *textRow = new QHBoxLayout(textPage);
+    textRow->setContentsMargins(4, 2, 4, 2);
+
+    m_textFont = new QFontComboBox;
+    m_textFont->setMinimumWidth(140);
+    auto *textSizeScrub = new ScrubSpinBox;
+    textSizeScrub->setScrubPixelsPerStep(4);
+    m_textSize = textSizeScrub;
+    m_textSize->setRange(4, 500);
+    m_textSize->setValue(48);
+    m_textSize->setSuffix(" px");
+    m_textBold = new QToolButton;
+    m_textBold->setText("B");
+    m_textBold->setCheckable(true);
+    m_textItalic = new QToolButton;
+    m_textItalic->setText("I");
+    m_textItalic->setCheckable(true);
+    m_textColorBtn = new QPushButton("Color");
+
+    m_textOutlineColorBtn = new QPushButton("Color");
+    auto *outlineWidthScrub = new ScrubDoubleSpinBox;
+    outlineWidthScrub->setScrubPixelsPerStep(4.0);
+    m_textOutlineWidth = outlineWidthScrub;
+    m_textOutlineWidth->setRange(0.0, 60.0); // 0 = effectively off, no separate enable control
+    m_textOutlineWidth->setValue(3.0);
+    m_textOutlineWidth->setSuffix(" px");
+
+    m_textShadowColorBtn = new QPushButton("Color");
+    auto *shadowBlurScrub = new ScrubDoubleSpinBox;
+    shadowBlurScrub->setScrubPixelsPerStep(4.0);
+    m_textShadowBlur = shadowBlurScrub;
+    m_textShadowBlur->setRange(0.0, 100.0);
+    m_textShadowBlur->setValue(14.0);
+    m_textShadowBlur->setSuffix(" px");
+    auto *shadowOpacityScrub = new ScrubDoubleSpinBox;
+    shadowOpacityScrub->setScrubPixelsPerStep(150.0); // 0..1 range: slow, precise drag
+    m_textShadowOpacity = shadowOpacityScrub;
+    m_textShadowOpacity->setRange(0.0, 1.0);
+    m_textShadowOpacity->setSingleStep(0.05);
+    m_textShadowOpacity->setValue(0.75);
+
+    m_textBgColorBtn = new QPushButton("Color");
+    auto *bgOpacityScrub = new ScrubDoubleSpinBox;
+    bgOpacityScrub->setScrubPixelsPerStep(150.0);
+    m_textBgOpacity = bgOpacityScrub;
+    m_textBgOpacity->setRange(0.0, 1.0);
+    m_textBgOpacity->setSingleStep(0.05);
+    m_textBgOpacity->setValue(0.6);
+    auto *bgPaddingScrub = new ScrubDoubleSpinBox;
+    bgPaddingScrub->setScrubPixelsPerStep(3.0);
+    m_textBgPadding = bgPaddingScrub;
+    m_textBgPadding->setRange(0.0, 200.0);
+    m_textBgPadding->setValue(10.0);
+    m_textBgPadding->setSuffix(" px");
+
+    m_textDelete = new QPushButton("Delete");
+
+    textRow->addWidget(m_textFont);
+    textRow->addWidget(m_textSize);
+    textRow->addWidget(m_textBold);
+    textRow->addWidget(m_textItalic);
+    textRow->addWidget(new QLabel("Fill:"));
+    textRow->addWidget(m_textColorBtn);
+    textRow->addWidget(new QLabel("Outline:"));
+    textRow->addWidget(m_textOutlineColorBtn);
+    textRow->addWidget(new QLabel("Width:"));
+    textRow->addWidget(m_textOutlineWidth);
+    auto *sep1 = new QFrame; sep1->setFrameShape(QFrame::VLine); sep1->setFrameShadow(QFrame::Sunken);
+    textRow->addWidget(sep1);
+    textRow->addWidget(new QLabel("Shadow:"));
+    textRow->addWidget(m_textShadowColorBtn);
+    textRow->addWidget(new QLabel("Blur:"));
+    textRow->addWidget(m_textShadowBlur);
+    textRow->addWidget(new QLabel("Opacity:"));
+    textRow->addWidget(m_textShadowOpacity);
+    auto *sep2 = new QFrame; sep2->setFrameShape(QFrame::VLine); sep2->setFrameShadow(QFrame::Sunken);
+    textRow->addWidget(sep2);
+    textRow->addWidget(new QLabel("Background:"));
+    textRow->addWidget(m_textBgColorBtn);
+    textRow->addWidget(new QLabel("Opacity:"));
+    textRow->addWidget(m_textBgOpacity);
+    textRow->addWidget(new QLabel("Padding:"));
+    textRow->addWidget(m_textBgPadding);
+    textRow->addWidget(m_textDelete);
+    textRow->addStretch(1);
+    m_toolOptionsStack->addWidget(textPage);
+
+    // Each group is pushed independently, and always as enabled=true — there's
+    // no separate on/off toggle; touching that group's color or any of its
+    // sliders is itself what turns it on. (To turn one off, drag its
+    // width/opacity down to 0 — the renderer already treats that as invisible.)
+    auto pushFontStyle = [this] {
+        RetouchTab *tab = currentTab();
+        if (!tab) return;
+        tab->setTextFont(m_textFont->currentFont().family(), m_textSize->value(),
+                         m_textBold->isChecked(), m_textItalic->isChecked());
+    };
+    auto pushOutlineStyle = [this] {
+        RetouchTab *tab = currentTab();
+        if (!tab) return;
+        tab->setTextOutline(true, m_textOutlineColorBtn->property("color").value<QColor>(),
+                            m_textOutlineWidth->value());
+    };
+    auto pushShadowStyle = [this] {
+        RetouchTab *tab = currentTab();
+        if (!tab) return;
+        tab->setTextShadow(true, QPointF(8, 8), m_textShadowBlur->value(),
+                           m_textShadowOpacity->value(),
+                           m_textShadowColorBtn->property("color").value<QColor>());
+    };
+    auto pushBgStyle = [this] {
+        RetouchTab *tab = currentTab();
+        if (!tab) return;
+        tab->setTextBackground(true, m_textBgColorBtn->property("color").value<QColor>(),
+                               m_textBgOpacity->value(), m_textBgPadding->value());
+    };
+    connect(m_textFont, &QFontComboBox::currentFontChanged, this, [pushFontStyle] { pushFontStyle(); });
+    connect(m_textSize, &QSpinBox::valueChanged, this, [pushFontStyle] { pushFontStyle(); });
+    connect(m_textBold, &QToolButton::toggled, this, [pushFontStyle] { pushFontStyle(); });
+    connect(m_textItalic, &QToolButton::toggled, this, [pushFontStyle] { pushFontStyle(); });
+    connect(m_textOutlineWidth, &QDoubleSpinBox::valueChanged, this, [pushOutlineStyle] { pushOutlineStyle(); });
+    connect(m_textShadowBlur, &QDoubleSpinBox::valueChanged, this, [pushShadowStyle] { pushShadowStyle(); });
+    connect(m_textShadowOpacity, &QDoubleSpinBox::valueChanged, this, [pushShadowStyle] { pushShadowStyle(); });
+    connect(m_textBgOpacity, &QDoubleSpinBox::valueChanged, this, [pushBgStyle] { pushBgStyle(); });
+    connect(m_textBgPadding, &QDoubleSpinBox::valueChanged, this, [pushBgStyle] { pushBgStyle(); });
+
+    connect(m_textColorBtn, &QPushButton::clicked, this, [this] {
+        QColor c = QColorDialog::getColor(m_textColorBtn->property("color").value<QColor>(),
+                                          this, "Text Color", QColorDialog::ShowAlphaChannel);
+        if (!c.isValid()) return;
+        setColorSwatchButton(m_textColorBtn, c);
+        RetouchTab *tab = currentTab();
+        if (tab) tab->setTextColor(c);
+    });
+    connect(m_textOutlineColorBtn, &QPushButton::clicked, this, [this, pushOutlineStyle] {
+        QColor c = QColorDialog::getColor(m_textOutlineColorBtn->property("color").value<QColor>(),
+                                          this, "Outline Color", QColorDialog::ShowAlphaChannel);
+        if (!c.isValid()) return;
+        setColorSwatchButton(m_textOutlineColorBtn, c);
+        pushOutlineStyle();
+    });
+    connect(m_textShadowColorBtn, &QPushButton::clicked, this, [this, pushShadowStyle] {
+        QColor c = QColorDialog::getColor(m_textShadowColorBtn->property("color").value<QColor>(),
+                                          this, "Shadow Color", QColorDialog::ShowAlphaChannel);
+        if (!c.isValid()) return;
+        setColorSwatchButton(m_textShadowColorBtn, c);
+        pushShadowStyle();
+    });
+    connect(m_textBgColorBtn, &QPushButton::clicked, this, [this, pushBgStyle] {
+        QColor c = QColorDialog::getColor(m_textBgColorBtn->property("color").value<QColor>(),
+                                          this, "Background Color", QColorDialog::ShowAlphaChannel);
+        if (!c.isValid()) return;
+        setColorSwatchButton(m_textBgColorBtn, c);
+        pushBgStyle();
+    });
+    connect(m_textDelete, &QPushButton::clicked, this, [this] {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->deleteActiveText();
+        updateTextOptionsFromTab();
+    });
+
+    setColorSwatchButton(m_textColorBtn, Qt::white);
+    setColorSwatchButton(m_textOutlineColorBtn, Qt::black);
+    setColorSwatchButton(m_textShadowColorBtn, Qt::black);
+    setColorSwatchButton(m_textBgColorBtn, Qt::black);
+
+    // --- Shape page (index 6) ---
+    auto *shapePage = new QWidget;
+    auto *shapeRow = new QHBoxLayout(shapePage);
+    shapeRow->setContentsMargins(4, 2, 4, 2);
+
+    m_shapeType = new QComboBox;
+    m_shapeType->addItem("Rectangle", int(ShapeType::Rectangle));
+    m_shapeType->addItem("Ellipse", int(ShapeType::Ellipse));
+    m_shapeType->addItem("Line", int(ShapeType::Line));
+    m_shapeType->addItem("Polygon", int(ShapeType::Polygon));
+    m_shapeType->addItem("Star", int(ShapeType::Star));
+    m_shapeType->addItem("Heart", int(ShapeType::Heart));
+
+    auto *sidesScrub = new ScrubSpinBox;
+    sidesScrub->setScrubPixelsPerStep(6);
+    m_shapeSides = sidesScrub;
+    m_shapeSides->setRange(3, 20);
+    m_shapeSides->setValue(5);
+
+    auto *innerRatioScrub = new ScrubDoubleSpinBox;
+    innerRatioScrub->setScrubPixelsPerStep(150.0);
+    m_shapeInnerRatio = innerRatioScrub;
+    m_shapeInnerRatio->setRange(0.1, 0.9);
+    m_shapeInnerRatio->setSingleStep(0.05);
+    m_shapeInnerRatio->setValue(0.5);
+
+    m_shapeFillEnabled = new QCheckBox("Fill:");
+    m_shapeFillEnabled->setChecked(true);
+    m_shapeFillColorBtn = new QPushButton("Color");
+
+    m_shapeStrokeEnabled = new QCheckBox("Stroke:");
+    m_shapeStrokeEnabled->setChecked(true);
+    m_shapeStrokeColorBtn = new QPushButton("Color");
+    auto *strokeWidthScrub = new ScrubDoubleSpinBox;
+    strokeWidthScrub->setScrubPixelsPerStep(4.0);
+    m_shapeStrokeWidth = strokeWidthScrub;
+    m_shapeStrokeWidth->setRange(0.0, 200.0);
+    m_shapeStrokeWidth->setValue(4.0);
+    m_shapeStrokeWidth->setSuffix(" px");
+
+    m_shapeDelete = new QPushButton("Delete");
+
+    shapeRow->addWidget(new QLabel("Shape:"));
+    shapeRow->addWidget(m_shapeType);
+    shapeRow->addWidget(new QLabel("Sides:"));
+    shapeRow->addWidget(m_shapeSides);
+    shapeRow->addWidget(new QLabel("Inner:"));
+    shapeRow->addWidget(m_shapeInnerRatio);
+    auto *shapeSep1 = new QFrame; shapeSep1->setFrameShape(QFrame::VLine); shapeSep1->setFrameShadow(QFrame::Sunken);
+    shapeRow->addWidget(shapeSep1);
+    shapeRow->addWidget(m_shapeFillEnabled);
+    shapeRow->addWidget(m_shapeFillColorBtn);
+    auto *shapeSep2 = new QFrame; shapeSep2->setFrameShape(QFrame::VLine); shapeSep2->setFrameShadow(QFrame::Sunken);
+    shapeRow->addWidget(shapeSep2);
+    shapeRow->addWidget(m_shapeStrokeEnabled);
+    shapeRow->addWidget(m_shapeStrokeColorBtn);
+    shapeRow->addWidget(new QLabel("Width:"));
+    shapeRow->addWidget(m_shapeStrokeWidth);
+    shapeRow->addWidget(m_shapeDelete);
+    shapeRow->addStretch(1);
+    m_toolOptionsStack->addWidget(shapePage);
+
+    connect(m_shapeType, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        RetouchTab *tab = currentTab();
+        if (!tab) return;
+        ShapeType t = ShapeType(m_shapeType->currentData().toInt());
+        tab->setActiveShapeType(t);
+        bool isPoly = (t == ShapeType::Polygon || t == ShapeType::Star);
+        m_shapeSides->setVisible(isPoly);
+        m_shapeInnerRatio->setVisible(t == ShapeType::Star);
+        bool isLine = (t == ShapeType::Line);
+        m_shapeFillEnabled->setEnabled(!isLine);
+        m_shapeFillColorBtn->setEnabled(!isLine);
+    });
+    connect(m_shapeSides, &QSpinBox::valueChanged, this, [this](int v) {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->setShapeSides(v);
+    });
+    connect(m_shapeInnerRatio, &QDoubleSpinBox::valueChanged, this, [this](double v) {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->setShapeInnerRadiusRatio(v);
+    });
+    auto pushShapeFill = [this] {
+        RetouchTab *tab = currentTab();
+        if (!tab) return;
+        tab->setShapeFill(m_shapeFillEnabled->isChecked(),
+                          m_shapeFillColorBtn->property("color").value<QColor>());
+    };
+    auto pushShapeStroke = [this] {
+        RetouchTab *tab = currentTab();
+        if (!tab) return;
+        tab->setShapeStroke(m_shapeStrokeEnabled->isChecked(),
+                            m_shapeStrokeColorBtn->property("color").value<QColor>(),
+                            m_shapeStrokeWidth->value());
+    };
+    connect(m_shapeFillEnabled, &QCheckBox::toggled, this, [pushShapeFill] { pushShapeFill(); });
+    connect(m_shapeStrokeEnabled, &QCheckBox::toggled, this, [pushShapeStroke] { pushShapeStroke(); });
+    connect(m_shapeStrokeWidth, &QDoubleSpinBox::valueChanged, this, [pushShapeStroke] { pushShapeStroke(); });
+    connect(m_shapeFillColorBtn, &QPushButton::clicked, this, [this, pushShapeFill] {
+        QColor c = QColorDialog::getColor(m_shapeFillColorBtn->property("color").value<QColor>(),
+                                          this, "Fill Color", QColorDialog::ShowAlphaChannel);
+        if (!c.isValid()) return;
+        setColorSwatchButton(m_shapeFillColorBtn, c);
+        pushShapeFill();
+    });
+    connect(m_shapeStrokeColorBtn, &QPushButton::clicked, this, [this, pushShapeStroke] {
+        QColor c = QColorDialog::getColor(m_shapeStrokeColorBtn->property("color").value<QColor>(),
+                                          this, "Stroke Color", QColorDialog::ShowAlphaChannel);
+        if (!c.isValid()) return;
+        setColorSwatchButton(m_shapeStrokeColorBtn, c);
+        pushShapeStroke();
+    });
+    connect(m_shapeDelete, &QPushButton::clicked, this, [this] {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->deleteActiveShape();
+        updateShapeOptionsFromTab();
+    });
+
+    setColorSwatchButton(m_shapeFillColorBtn, Qt::white);
+    setColorSwatchButton(m_shapeStrokeColorBtn, Qt::black);
 
     m_toolOptionsBar->addWidget(m_toolOptionsStack);
 }
@@ -1350,6 +1743,12 @@ void RetouchWindow::buildLayersDock() {
                 RetouchTab *tab = currentTab();
                 if (tab) tab->setActiveMaskShape(inv, f, h, br, am);
             });
+    connect(m_layersPanel, &LayersPanel::maskTextChanged, this,
+            [this](const QString &text, const QString &family, double pixelSize,
+                   bool bold, bool italic) {
+                RetouchTab *tab = currentTab();
+                if (tab) tab->setActiveMaskText(text, family, pixelSize, bold, italic);
+            });
     connect(m_layersPanel, &LayersPanel::maskOpacityChanged, this,
             [this](double opacity) {
                 RetouchTab *tab = currentTab();
@@ -1588,6 +1987,12 @@ void RetouchWindow::openPhoto(const QString &path) {
 }
 
 void RetouchWindow::wireTabSignals(RetouchTab *tab) {
+    connect(tab, &RetouchTab::textsChanged, this, [this, tab] {
+        if (tab == currentTab()) updateTextOptionsFromTab();
+    });
+    connect(tab, &RetouchTab::shapesChanged, this, [this, tab] {
+        if (tab == currentTab()) updateShapeOptionsFromTab();
+    });
     connect(tab, &RetouchTab::cropPending, this, [this, tab](bool has) {
         if (tab == currentTab()) m_cropApply->setEnabled(has);
     });
@@ -1723,6 +2128,78 @@ void RetouchWindow::applyModeChrome(Mode mode) {
     }
 }
 
+void RetouchWindow::setColorSwatchButton(QPushButton *btn, const QColor &color) {
+    if (!btn) return;
+    btn->setProperty("color", color);
+    btn->setStyleSheet(QString("background-color: %1;").arg(color.name(QColor::HexArgb)));
+}
+
+// Refreshes the text options row from the active text (or the "next new
+// text" defaults if none is selected), without re-emitting change signals.
+void RetouchWindow::updateTextOptionsFromTab() {
+    if (!m_textFont) return;
+    RetouchTab *tab = currentTab();
+    TextOp style = (tab && tab->isReady()) ? tab->activeTextStyle() : TextOp();
+    bool hasSelection = tab && tab->activeTextIndex() >= 0;
+
+    const QSignalBlocker b1(m_textFont);
+    const QSignalBlocker b2(m_textSize);
+    const QSignalBlocker b3(m_textBold);
+    const QSignalBlocker b4(m_textItalic);
+    const QSignalBlocker b6(m_textOutlineWidth);
+    const QSignalBlocker b8(m_textShadowBlur);
+    const QSignalBlocker b9(m_textShadowOpacity);
+    const QSignalBlocker b11(m_textBgOpacity);
+    const QSignalBlocker b12(m_textBgPadding);
+
+    m_textFont->setCurrentFont(QFont(style.family));
+    m_textSize->setValue(int(std::lround(style.pixelSize)));
+    m_textBold->setChecked(style.bold);
+    m_textItalic->setChecked(style.italic);
+    setColorSwatchButton(m_textColorBtn, style.color);
+    setColorSwatchButton(m_textOutlineColorBtn, style.outlineColor);
+    m_textOutlineWidth->setValue(style.outlineWidth);
+    setColorSwatchButton(m_textShadowColorBtn, style.shadowColor);
+    m_textShadowBlur->setValue(style.shadowBlur);
+    m_textShadowOpacity->setValue(style.shadowOpacity);
+    setColorSwatchButton(m_textBgColorBtn, style.bgColor);
+    m_textBgOpacity->setValue(style.bgOpacity);
+    m_textBgPadding->setValue(style.bgPadding);
+    if (m_textDelete) m_textDelete->setEnabled(hasSelection);
+}
+
+// Refreshes the shape options row from the active shape (or the "next new
+// shape" defaults if none is selected), without re-emitting change signals.
+void RetouchWindow::updateShapeOptionsFromTab() {
+    if (!m_shapeType) return;
+    RetouchTab *tab = currentTab();
+    ShapeOp style = (tab && tab->isReady()) ? tab->activeShapeStyle() : ShapeOp();
+    bool hasSelection = tab && tab->activeShapeIndex() >= 0;
+
+    const QSignalBlocker b1(m_shapeType);
+    const QSignalBlocker b2(m_shapeSides);
+    const QSignalBlocker b3(m_shapeInnerRatio);
+    const QSignalBlocker b4(m_shapeFillEnabled);
+    const QSignalBlocker b5(m_shapeStrokeEnabled);
+    const QSignalBlocker b6(m_shapeStrokeWidth);
+
+    m_shapeType->setCurrentIndex(m_shapeType->findData(int(style.type)));
+    m_shapeSides->setValue(style.sides);
+    m_shapeInnerRatio->setValue(style.innerRadiusRatio);
+    bool isPoly = (style.type == ShapeType::Polygon || style.type == ShapeType::Star);
+    m_shapeSides->setVisible(isPoly);
+    m_shapeInnerRatio->setVisible(style.type == ShapeType::Star);
+    bool isLine = (style.type == ShapeType::Line);
+    m_shapeFillEnabled->setEnabled(!isLine);
+    m_shapeFillColorBtn->setEnabled(!isLine);
+    m_shapeFillEnabled->setChecked(style.fillEnabled);
+    setColorSwatchButton(m_shapeFillColorBtn, style.fillColor);
+    m_shapeStrokeEnabled->setChecked(style.strokeEnabled);
+    setColorSwatchButton(m_shapeStrokeColorBtn, style.strokeColor);
+    m_shapeStrokeWidth->setValue(style.strokeWidth);
+    if (m_shapeDelete) m_shapeDelete->setEnabled(hasSelection);
+}
+
 void RetouchWindow::deselectAllTools() {
     RetouchTab *tab = currentTab();
     if (m_toolZoom) {
@@ -1750,6 +2227,16 @@ void RetouchWindow::deselectAllTools() {
         m_maskToggle->setChecked(false);
     }
     if (tab) tab->setMaskMode(false);
+    if (m_textToggle) {
+        QSignalBlocker b(m_textToggle);
+        m_textToggle->setChecked(false);
+    }
+    if (tab) tab->setTextMode(false);
+    if (m_shapeToggle) {
+        QSignalBlocker b(m_shapeToggle);
+        m_shapeToggle->setChecked(false);
+    }
+    if (tab) tab->setShapeMode(false);
     if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
     if (tab) tab->setColorRangePickMode(false);
     if (m_toolOptionsBar) m_toolOptionsBar->setVisible(false);

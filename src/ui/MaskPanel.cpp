@@ -3,9 +3,16 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QSlider>
+#include <QLineEdit>
+#include <QFontComboBox>
+#include <QFont>
+#include <QSpinBox>
+#include <QToolButton>
 #include <QVBoxLayout>
+#include "ui/ScrubSpinBox.h"
 #include <cmath>
 
 MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
@@ -24,8 +31,33 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     m_type->addItem("Radial", int(MaskType::Radial));
     m_type->addItem("Graduated", int(MaskType::Linear));
     m_type->addItem("Brush", int(MaskType::Brush));
+    m_type->addItem("Text (clip)", int(MaskType::Text));
     form->addRow("Mask:", m_type);
     root->addLayout(form);
+
+    auto *textForm = new QFormLayout;
+    m_textContent = new QLineEdit;
+    m_textContent->setPlaceholderText("Text…");
+    textForm->addRow("Text:", m_textContent);
+    auto *textStyleRow = new QHBoxLayout;
+    m_textFont = new QFontComboBox;
+    auto *textSizeScrub = new ScrubSpinBox;
+    textSizeScrub->setScrubPixelsPerStep(6); // coarser: this field's range is only 1-40
+    m_textSize = textSizeScrub;
+    m_textSize->setRange(1, 40); // percent of image width, same scale as m_brushSize
+    m_textSize->setSuffix("%");
+    m_textBold = new QToolButton;
+    m_textBold->setText("B");
+    m_textBold->setCheckable(true);
+    m_textItalic = new QToolButton;
+    m_textItalic->setText("I");
+    m_textItalic->setCheckable(true);
+    textStyleRow->addWidget(m_textFont);
+    textStyleRow->addWidget(m_textSize);
+    textStyleRow->addWidget(m_textBold);
+    textStyleRow->addWidget(m_textItalic);
+    textForm->addRow("Style:", textStyleRow);
+    root->addLayout(textForm);
 
     auto *shape = new QFormLayout;
     m_invert = new QCheckBox("Invert mask");
@@ -55,6 +87,12 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     connect(m_autoMask, &QCheckBox::toggled, this, [this] { emitShape(); });
     for (QSlider *s : {m_feather, m_hardness, m_brushSize})
         connect(s, &QSlider::valueChanged, this, [this] { emitShape(); });
+
+    connect(m_textContent, &QLineEdit::textChanged, this, [this] { emitText(); });
+    connect(m_textFont, &QFontComboBox::currentFontChanged, this, [this] { emitText(); });
+    connect(m_textSize, &QSpinBox::valueChanged, this, [this] { emitText(); });
+    connect(m_textBold, &QToolButton::toggled, this, [this] { emitText(); });
+    connect(m_textItalic, &QToolButton::toggled, this, [this] { emitText(); });
 
     clear();
 }
@@ -91,9 +129,16 @@ void MaskPanel::loadMask() {
     m_hardness->setValue(int(m_mask.hardness * 100));
     m_brushSize->setValue(int(m_mask.brushRadius * 100));
     m_autoMask->setChecked(m_mask.autoMask);
+    m_textContent->setText(m_mask.text);
+    m_textFont->setCurrentFont(QFont(m_mask.textFamily));
+    m_textSize->setValue(int(std::lround(m_mask.textPixelSize * 100)));
+    m_textBold->setChecked(m_mask.textBold);
+    m_textItalic->setChecked(m_mask.textItalic);
 
     const bool brush = m_hasSelection && m_mask.type == MaskType::Brush;
-    const bool geometric = m_hasSelection && m_mask.type != MaskType::None;
+    const bool text = m_hasSelection && m_mask.type == MaskType::Text;
+    const bool geometric = m_hasSelection && m_mask.type != MaskType::None &&
+                           m_mask.type != MaskType::Text;
     m_hardnessLabel->setVisible(brush);
     m_hardness->setVisible(brush);
     m_brushSizeLabel->setVisible(brush);
@@ -102,7 +147,19 @@ void MaskPanel::loadMask() {
     m_invert->setVisible(geometric);
     m_feather->setVisible(geometric);
     m_feather->setEnabled(geometric && m_mask.type != MaskType::Brush);
+    m_textContent->setVisible(text);
+    m_textFont->setVisible(text);
+    m_textSize->setVisible(text);
+    m_textBold->setVisible(text);
+    m_textItalic->setVisible(text);
     m_syncing = false;
+}
+
+void MaskPanel::emitText() {
+    if (m_syncing) return;
+    emit maskTextChanged(m_textContent->text(), m_textFont->currentFont().family(),
+                         m_textSize->value() / 100.0, m_textBold->isChecked(),
+                         m_textItalic->isChecked());
 }
 
 void MaskPanel::emitShape() {
