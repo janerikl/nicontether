@@ -385,6 +385,14 @@ struct ShapeOp {
 
     double opacity = 1.0; // 0..1, applied to whole shape (fill+stroke)
 
+    bool visible = true; // Layers-panel eye toggle; hidden shapes are skipped by applyShapes
+    // Shapes sharing a non-empty groupId belong to the same group (assigned
+    // by RetouchTab::groupSelectedShapes, cleared by ungroupSelectedShapes).
+    // Grouped shapes are kept contiguous in the stack and select/move/resize
+    // together; empty means ungrouped. Not a QUuid field to keep EditSidecar
+    // (de)serialization a plain string round-trip.
+    QString groupId;
+
     bool operator==(const ShapeOp &o) const {
         return type == o.type && rect == o.rect && p1 == o.p1 && p2 == o.p2 &&
                std::abs(rotation - o.rotation) < 1e-9 && sides == o.sides &&
@@ -392,7 +400,8 @@ struct ShapeOp {
                fillEnabled == o.fillEnabled && fillColor == o.fillColor &&
                strokeEnabled == o.strokeEnabled && strokeColor == o.strokeColor &&
                std::abs(strokeWidth - o.strokeWidth) < 1e-9 &&
-               std::abs(opacity - o.opacity) < 1e-9;
+               std::abs(opacity - o.opacity) < 1e-9 &&
+               visible == o.visible && groupId == o.groupId;
     }
     bool operator!=(const ShapeOp &o) const { return !(*this == o); }
 };

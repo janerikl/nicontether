@@ -18,6 +18,7 @@
 #include <QtConcurrent>
 #include <QFont>
 #include <algorithm>
+#include <cmath>
 
 void RenderWorker::render(const QImage &src, const Adjustments &adj, int maskSnapshotIndex) {
     QImage maskSnapshot;
@@ -112,8 +113,22 @@ void RetouchTab::setupCanvasAndWiring() {
     connect(m_canvas, &ImageCanvas::shapeDeleteRequested, this, &RetouchTab::onShapeDeleteRequested);
     connect(m_canvas, &ImageCanvas::shapeDuplicateRequested, this,
             &RetouchTab::onShapeDuplicateRequested);
+    connect(m_canvas, &ImageCanvas::shapeGroupDuplicateRequested, this,
+            &RetouchTab::onShapeGroupDuplicateRequested);
     connect(m_canvas, &ImageCanvas::shapeRaiseRequested, this, &RetouchTab::onShapeRaiseRequested);
     connect(m_canvas, &ImageCanvas::shapeLowerRequested, this, &RetouchTab::onShapeLowerRequested);
+    connect(m_canvas, &ImageCanvas::shapeGroupDeleteRequested, this,
+            &RetouchTab::onShapeGroupDeleteRequested);
+    connect(m_canvas, &ImageCanvas::shapeToggleSelectRequested, this,
+            &RetouchTab::onShapeToggleSelectRequested);
+    connect(m_canvas, &ImageCanvas::shapeGroupMoveStarted, this,
+            &RetouchTab::onShapeGroupMoveStarted);
+    connect(m_canvas, &ImageCanvas::shapeGroupMoveRequested, this,
+            &RetouchTab::onShapeGroupMoveRequested);
+    connect(m_canvas, &ImageCanvas::shapeGroupResizeStarted, this,
+            &RetouchTab::onShapeGroupMoveStarted);
+    connect(m_canvas, &ImageCanvas::shapeGroupResizeRequested, this,
+            &RetouchTab::onShapeGroupResizeRequested);
     connect(m_canvas, &ImageCanvas::eraseAt, this, &RetouchTab::onEraseAt);
     connect(m_canvas, &ImageCanvas::eraseFinished, this, &RetouchTab::onEraseFinished);
     connect(m_canvas, &ImageCanvas::zoomChanged, this, &RetouchTab::zoomChanged);
@@ -367,6 +382,7 @@ void RetouchTab::updateShapeMarkers() {
     }
     m_canvas->setShapeMarkers(markers);
     m_canvas->setActiveShapeIndex(m_activeShape);
+    m_canvas->setSelectedShapeIndices(m_selectedShapes);
 }
 
 // Convert stored heal ops (oriented-image, pre-crop coords) into the display
@@ -804,7 +820,7 @@ void RetouchTab::setShapeMode(bool on) {
     m_shapeMode = on;
     m_canvas->setShapeMode(on);
     if (on) m_canvas->setFocus();
-    else m_activeShape = -1;
+    else { m_activeShape = -1; m_selectedShapes.clear(); }
 }
 
 void RetouchTab::setActiveShapeType(ShapeType t) {
@@ -836,25 +852,138 @@ void RetouchTab::onShapeCreateRequested(ShapeType type, const QRectF &imageRect)
     }
     m_adj.shapes.append(op);
     m_activeShape = m_adj.shapes.size() - 1;
+    m_selectedShapes = {m_activeShape};
     updateShapeMarkers();
     retone();
     markEdited();
     emit shapesChanged();
 }
 
+// Plain click on a shape not already part of a multi-selection (from the
+// canvas): selects it (or its whole group, see selectShape) and captures
+// move-drag start geometry for the clicked shape specifically, since
+// ImageCanvas re-checks the (possibly just-expanded) selection right after
+// this returns and may switch the in-progress drag to a group move instead.
 void RetouchTab::onShapeSelected(int index) {
     if (index < 0 || index >= m_adj.shapes.size()) return;
-    m_activeShape = index;
+    selectShape(index);
     m_shapeMoveStartRect = m_adj.shapes[index].rect;
     m_shapeMoveStartP1 = m_adj.shapes[index].p1;
     m_shapeMoveStartP2 = m_adj.shapes[index].p2;
-    m_canvas->setActiveShapeIndex(index);
+}
+
+// Select a shape — from the canvas or the Layers panel. If it belongs to a
+// group, every shape sharing that groupId is selected too (grouped shapes
+// always act as one unit), matching Illustrator/Photoshop group semantics.
+void RetouchTab::selectShape(int index) {
+    if (index < 0 || index >= m_adj.shapes.size()) return;
+    const QString groupId = m_adj.shapes[index].groupId;
+    if (groupId.isEmpty()) {
+        m_selectedShapes = {index};
+    } else {
+        m_selectedShapes.clear();
+        for (int i = 0; i < m_adj.shapes.size(); ++i)
+            if (m_adj.shapes[i].groupId == groupId) m_selectedShapes.insert(i);
+    }
+    m_activeShape = index;
+    updateShapeMarkers();
     emit shapesChanged();
 }
 
 void RetouchTab::onShapeDeselected() {
     m_activeShape = -1;
+    m_selectedShapes.clear();
+    updateShapeMarkers();
     emit shapesChanged();
+}
+
+// Ctrl+click (no drag) on a shape: toggle its multi-selection membership
+// without disturbing the rest of the selection.
+void RetouchTab::onShapeToggleSelectRequested(int index) {
+    if (index < 0 || index >= m_adj.shapes.size()) return;
+    if (m_selectedShapes.contains(index)) {
+        m_selectedShapes.remove(index);
+        if (m_activeShape == index)
+            m_activeShape = m_selectedShapes.isEmpty() ? -1 : *m_selectedShapes.constBegin();
+    } else {
+        m_selectedShapes.insert(index);
+        m_activeShape = index;
+    }
+    updateShapeMarkers();
+    emit shapesChanged();
+}
+
+// Press on a shape that's already part of a >1-member selection: capture
+// every member's current geometry so the upcoming shapeGroupMoveRequested
+// deltas (cumulative from this drag's start) can be applied as absolute
+// offsets rather than compounding across move events.
+// Shared start-capture for both a group move and a group resize (also used
+// via shapeGroupResizeStarted — resize needs the same per-shape reference
+// geometry, plus stroke width so it can scale proportionally too).
+void RetouchTab::onShapeGroupMoveStarted(const QList<int> &indices) {
+    m_shapeGroupStartRect.clear();
+    m_shapeGroupStartP1.clear();
+    m_shapeGroupStartP2.clear();
+    m_shapeGroupStartStrokeWidth.clear();
+    for (int idx : indices) {
+        if (idx < 0 || idx >= m_adj.shapes.size()) continue;
+        m_shapeGroupStartRect[idx] = m_adj.shapes[idx].rect;
+        m_shapeGroupStartP1[idx] = m_adj.shapes[idx].p1;
+        m_shapeGroupStartP2[idx] = m_adj.shapes[idx].p2;
+        m_shapeGroupStartStrokeWidth[idx] = m_adj.shapes[idx].strokeWidth;
+    }
+}
+
+void RetouchTab::onShapeGroupMoveRequested(const QList<int> &indices, const QPointF &deltaImage) {
+    if (m_scaleFromGeom <= 0) return;
+    QPointF delta = deltaImage / m_scaleFromGeom;
+    for (int idx : indices) {
+        if (idx < 0 || idx >= m_adj.shapes.size() || !m_shapeGroupStartRect.contains(idx)) continue;
+        ShapeOp &op = m_adj.shapes[idx];
+        if (op.type == ShapeType::Line) {
+            op.p1 = m_shapeGroupStartP1[idx] + delta;
+            op.p2 = m_shapeGroupStartP2[idx] + delta;
+        } else {
+            op.rect = m_shapeGroupStartRect[idx].translated(delta);
+        }
+    }
+    updateShapeMarkers();
+    retone();
+    markEdited();
+}
+
+// `scaleX`/`scaleY` are absolute factors relative to the group's combined
+// bounding box at drag start (see shapeGroupResizeStarted → onShapeGroupMoveStarted),
+// not incremental — every selected shape's start geometry is scaled about
+// the fixed `anchorImage` corner (display-image space, same convention as
+// onShapeResized's newImageRect) each call, so results don't compound across
+// move events.
+void RetouchTab::onShapeGroupResizeRequested(const QList<int> &indices, const QPointF &anchorImage,
+                                             double scaleX, double scaleY) {
+    if (m_scaleFromGeom <= 0) return;
+    double inv = 1.0 / m_scaleFromGeom;
+    QPointF anchor = anchorImage * inv + QPointF(m_geomCropOffset);
+    double strokeScale = std::sqrt(std::abs(scaleX * scaleY));
+    auto scalePoint = [&](const QPointF &p) {
+        return QPointF(anchor.x() + (p.x() - anchor.x()) * scaleX,
+                       anchor.y() + (p.y() - anchor.y()) * scaleY);
+    };
+    for (int idx : indices) {
+        if (idx < 0 || idx >= m_adj.shapes.size() || !m_shapeGroupStartRect.contains(idx)) continue;
+        ShapeOp &op = m_adj.shapes[idx];
+        if (op.type == ShapeType::Line) {
+            op.p1 = scalePoint(m_shapeGroupStartP1[idx]);
+            op.p2 = scalePoint(m_shapeGroupStartP2[idx]);
+        } else {
+            QRectF startRect = m_shapeGroupStartRect[idx];
+            op.rect = QRectF(scalePoint(startRect.topLeft()), scalePoint(startRect.bottomRight()))
+                          .normalized();
+        }
+        op.strokeWidth = std::max(0.0, m_shapeGroupStartStrokeWidth.value(idx, op.strokeWidth) * strokeScale);
+    }
+    updateShapeMarkers();
+    retone();
+    markEdited();
 }
 
 // `deltaImage` is the total offset from the drag's press point (display-image
@@ -909,6 +1038,30 @@ void RetouchTab::onShapeDeleteRequested(int index) {
     m_adj.shapes.removeAt(index);
     if (m_activeShape == index) m_activeShape = -1;
     else if (m_activeShape > index) --m_activeShape;
+    QSet<int> reselected;
+    for (int idx : m_selectedShapes) {
+        if (idx == index) continue;
+        reselected.insert(idx > index ? idx - 1 : idx);
+    }
+    m_selectedShapes = reselected;
+    updateShapeMarkers();
+    retone();
+    markEdited();
+    emit shapesChanged();
+}
+
+// Delete/Backspace with more than one shape selected: remove every selected
+// shape in one step (highest index first, so earlier removals don't shift
+// the indices of shapes still to be removed).
+void RetouchTab::onShapeGroupDeleteRequested(const QList<int> &indices) {
+    QList<int> sorted = indices;
+    std::sort(sorted.begin(), sorted.end(), std::greater<int>());
+    for (int idx : sorted) {
+        if (idx < 0 || idx >= m_adj.shapes.size()) continue;
+        m_adj.shapes.removeAt(idx);
+    }
+    m_activeShape = -1;
+    m_selectedShapes.clear();
     updateShapeMarkers();
     retone();
     markEdited();
@@ -921,11 +1074,55 @@ void RetouchTab::onShapeDeleteRequested(int index) {
 void RetouchTab::onShapeDuplicateRequested(int index) {
     if (index < 0 || index >= m_adj.shapes.size()) return;
     ShapeOp copy = m_adj.shapes[index];
+    copy.groupId.clear(); // a lone duplicate leaves its group, even if the original had one
     m_adj.shapes.append(copy);
     m_activeShape = m_adj.shapes.size() - 1;
+    m_selectedShapes = {m_activeShape};
     m_shapeMoveStartRect = copy.rect;
     m_shapeMoveStartP1 = copy.p1;
     m_shapeMoveStartP2 = copy.p2;
+    updateShapeMarkers();
+    retone();
+    markEdited();
+    emit shapesChanged();
+}
+
+// Ctrl+drag with a multi-selection: append an exact copy of every selected
+// shape, select the copies as the new group, and capture their (identical
+// to the originals) start geometry so the in-progress group-move drag
+// continues by dragging the copies away — the originals are left untouched.
+void RetouchTab::onShapeGroupDuplicateRequested(const QList<int> &indices) {
+    m_shapeGroupStartRect.clear();
+    m_shapeGroupStartP1.clear();
+    m_shapeGroupStartP2.clear();
+
+    // If every duplicated shape shares the same (non-empty) group, the
+    // copies form their own new group too, preserving that structure —
+    // otherwise (an ad-hoc multi-selection) the copies stay ungrouped.
+    QString sourceGroupId = indices.isEmpty() || indices.first() < 0 ||
+                                    indices.first() >= m_adj.shapes.size()
+                                ? QString()
+                                : m_adj.shapes[indices.first()].groupId;
+    bool sameGroup = !sourceGroupId.isEmpty();
+    for (int idx : indices)
+        if (idx < 0 || idx >= m_adj.shapes.size() || m_adj.shapes[idx].groupId != sourceGroupId)
+            sameGroup = false;
+    QString newGroupId = sameGroup ? QUuid::createUuid().toString() : QString();
+
+    QList<int> newIndices;
+    for (int idx : indices) {
+        if (idx < 0 || idx >= m_adj.shapes.size()) continue;
+        ShapeOp copy = m_adj.shapes[idx];
+        copy.groupId = newGroupId;
+        m_adj.shapes.append(copy);
+        int newIdx = m_adj.shapes.size() - 1;
+        newIndices.append(newIdx);
+        m_shapeGroupStartRect[newIdx] = copy.rect;
+        m_shapeGroupStartP1[newIdx] = copy.p1;
+        m_shapeGroupStartP2[newIdx] = copy.p2;
+    }
+    m_selectedShapes = QSet<int>(newIndices.begin(), newIndices.end());
+    m_activeShape = newIndices.isEmpty() ? -1 : newIndices.last();
     updateShapeMarkers();
     retone();
     markEdited();
@@ -937,6 +1134,7 @@ void RetouchTab::onShapeDuplicateRequested(int index) {
 void RetouchTab::onShapeRaiseRequested(int index) {
     if (index < 0 || index >= m_adj.shapes.size() - 1) return;
     m_adj.shapes.swapItemsAt(index, index + 1);
+    if (m_selectedShapes.remove(index)) m_selectedShapes.insert(index + 1);
     m_activeShape = index + 1;
     updateShapeMarkers();
     retone();
@@ -948,6 +1146,7 @@ void RetouchTab::onShapeRaiseRequested(int index) {
 void RetouchTab::onShapeLowerRequested(int index) {
     if (index <= 0 || index >= m_adj.shapes.size()) return;
     m_adj.shapes.swapItemsAt(index, index - 1);
+    if (m_selectedShapes.remove(index)) m_selectedShapes.insert(index - 1);
     m_activeShape = index - 1;
     updateShapeMarkers();
     retone();
@@ -956,7 +1155,65 @@ void RetouchTab::onShapeLowerRequested(int index) {
 }
 
 void RetouchTab::deleteActiveShape() {
-    if (m_activeShape >= 0) onShapeDeleteRequested(m_activeShape);
+    if (m_selectedShapes.size() > 1) onShapeGroupDeleteRequested(m_selectedShapes.values());
+    else if (m_activeShape >= 0) onShapeDeleteRequested(m_activeShape);
+}
+
+void RetouchTab::setShapeVisible(int index, bool visible) {
+    if (index < 0 || index >= m_adj.shapes.size()) return;
+    m_adj.shapes[index].visible = visible;
+    retone();
+    markEdited();
+    emit shapesChanged();
+}
+
+// Tags the current multi-selection as one group and moves its members to be
+// contiguous in the stack (at the position of the topmost/frontmost member,
+// so grouping doesn't change what's drawn on top of what), so the group's
+// z-order stays a single contiguous block going forward.
+void RetouchTab::groupSelectedShapes() {
+    if (m_selectedShapes.size() < 2) return;
+    QList<int> sorted = m_selectedShapes.values();
+    std::sort(sorted.begin(), sorted.end());
+    const int originalTop = sorted.last();
+
+    QVector<ShapeOp> members;
+    members.reserve(sorted.size());
+    for (int i = sorted.size() - 1; i >= 0; --i) {
+        members.prepend(m_adj.shapes[sorted[i]]);
+        m_adj.shapes.removeAt(sorted[i]);
+    }
+    const int insertAt = originalTop - (sorted.size() - 1);
+
+    const QString groupId = QUuid::createUuid().toString();
+    for (ShapeOp &op : members) op.groupId = groupId;
+    for (int i = 0; i < members.size(); ++i) m_adj.shapes.insert(insertAt + i, members[i]);
+
+    m_selectedShapes.clear();
+    for (int i = 0; i < members.size(); ++i) m_selectedShapes.insert(insertAt + i);
+    m_activeShape = insertAt + members.size() - 1;
+
+    updateShapeMarkers();
+    retone();
+    markEdited();
+    emit shapesChanged();
+}
+
+// Clears the group tag of every shape sharing a group with the current
+// selection — the shapes stay exactly where they are, they just stop
+// acting as one unit.
+void RetouchTab::ungroupSelectedShapes() {
+    QSet<QString> groupIds;
+    for (int idx : m_selectedShapes)
+        if (idx >= 0 && idx < m_adj.shapes.size() && !m_adj.shapes[idx].groupId.isEmpty())
+            groupIds.insert(m_adj.shapes[idx].groupId);
+    if (groupIds.isEmpty()) return;
+    for (ShapeOp &op : m_adj.shapes)
+        if (groupIds.contains(op.groupId)) op.groupId.clear();
+    updateShapeMarkers();
+    retone();
+    markEdited();
+    emit shapesChanged();
 }
 
 ShapeOp RetouchTab::activeShapeStyle() const {

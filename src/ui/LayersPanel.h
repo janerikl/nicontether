@@ -13,6 +13,8 @@ class QPushButton;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QTreeWidget;
+class QTreeWidgetItem;
 class QCheckBox;
 class QMainWindow;
 class QDockWidget;
@@ -38,6 +40,11 @@ public:
     explicit LayersPanel(QWidget *parent = nullptr);
 
     void setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground);
+    // Shapes section: a nested view of Adjustments::shapes — grouped shapes
+    // (shared groupId, always kept contiguous) show as a collapsible "Group"
+    // parent row with the members nested underneath; ungrouped shapes are
+    // top-level rows. Top of the list = topmost/frontmost in the stack.
+    void setShapes(const QVector<ShapeOp> &shapes, int activeIndex);
     void clear();
 
     // Pushes a rendered preview into the selected layer's Levels histogram
@@ -83,15 +90,23 @@ signals:
     void maskTextChanged(const QString &text, const QString &family, double pixelSize,
                          bool bold, bool italic);
 
+    void selectShapeRequested(int index);
+    void shapeVisibleChanged(int index, bool visible);
+    void groupShapesRequested();
+    void ungroupShapesRequested();
+
 private:
     void emitAdjust();
     void emitImageTransform();
     void loadActive();
     void rebuildList();
+    void rebuildShapeList();
 
     QVector<Mask> m_masks;
     int m_active = -1;
     bool m_hasBackground = false;
+    QVector<ShapeOp> m_shapes;
+    int m_activeShape = -1;
     bool m_syncing = false;
     MaskAdjust m_curAdjust; // last-loaded active layer's adjustment, patched per-section
 
@@ -118,10 +133,15 @@ private:
     DetailEffectsPanel *m_detailEffectsPanel = nullptr;
     MaskPanel *m_maskPanel = nullptr;
 
+    QTreeWidget *m_shapeList = nullptr;
+    QPushButton *m_groupShapes = nullptr;
+    QPushButton *m_ungroupShapes = nullptr;
+
     QDockWidget *m_toneSectionDock = nullptr;
     QDockWidget *m_colorSectionDock = nullptr;
     QDockWidget *m_toneCurveSectionDock = nullptr;
     QDockWidget *m_levelsSectionDock = nullptr;
     QDockWidget *m_detailEffectsSectionDock = nullptr;
     QDockWidget *m_masksSectionDock = nullptr;
+    QDockWidget *m_shapesSectionDock = nullptr;
 };

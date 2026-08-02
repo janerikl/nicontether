@@ -4,6 +4,9 @@
 #include <QImage>
 #include <QRect>
 #include <QColor>
+#include <QSet>
+#include <QMap>
+#include <QList>
 
 #include "edit/Adjustments.h"
 
@@ -92,6 +95,15 @@ public:
     void setShapeInnerRadiusRatio(double ratio);
     void setShapeFill(bool enabled, const QColor &color);
     void setShapeStroke(bool enabled, const QColor &color, double width);
+    const QVector<ShapeOp> &shapes() const { return m_adj.shapes; }
+    const QSet<int> &selectedShapes() const { return m_selectedShapes; }
+    // Select a shape (e.g. a Layers-panel row click). If it belongs to a
+    // group, the whole group is selected, matching a canvas click on a
+    // grouped shape — see onShapeSelected.
+    void selectShape(int index);
+    void setShapeVisible(int index, bool visible);
+    void groupSelectedShapes();   // Ctrl+G: tag the current multi-selection as one group
+    void ungroupSelectedShapes(); // Ctrl+Shift+G: clear the group tag of every selected shape
 
     // Local adjustment masks.
     void setMaskMode(bool on);              // enter/leave mask editing on the canvas
@@ -194,9 +206,16 @@ private slots:
     void onShapeLineEndpointsChanged(int index, const QPointF &p1, const QPointF &p2);
     void onShapeRotated(int index, double newRotationDegrees);
     void onShapeDeleteRequested(int index);
+    void onShapeGroupDeleteRequested(const QList<int> &indices);
     void onShapeDuplicateRequested(int index);
+    void onShapeGroupDuplicateRequested(const QList<int> &indices);
     void onShapeRaiseRequested(int index);
     void onShapeLowerRequested(int index);
+    void onShapeToggleSelectRequested(int index);
+    void onShapeGroupMoveStarted(const QList<int> &indices);
+    void onShapeGroupMoveRequested(const QList<int> &indices, const QPointF &deltaImage);
+    void onShapeGroupResizeRequested(const QList<int> &indices, const QPointF &anchorImage,
+                                     double scaleX, double scaleY);
     void onEraseAt(const QPointF &ptNorm);
     void onEraseFinished();
     void onRenderDone(const QImage &result, const QImage &maskSnapshot);
@@ -241,6 +260,10 @@ private:
     ShapeOp m_shapeDefaults;  // style/type applied to the next newly-created shape
     QRectF m_shapeMoveStartRect;   // active shape's rect at move-drag start
     QPointF m_shapeMoveStartP1, m_shapeMoveStartP2; // active Line's endpoints at move-drag start
+    QSet<int> m_selectedShapes;   // multi-selection; superset of m_activeShape when non-empty
+    QMap<int, QRectF> m_shapeGroupStartRect;   // per-shape rect at group-move/resize-drag start
+    QMap<int, QPointF> m_shapeGroupStartP1, m_shapeGroupStartP2; // per-Line endpoints, same
+    QMap<int, double> m_shapeGroupStartStrokeWidth; // per-shape stroke width, same (for group resize)
     bool m_dirty = false; // unsaved changes since last save/load
     int m_healRadiusDisplay = 20; // brush radius in display pixels
     int m_eraseRadiusDisplay = 20; // erase brush radius in display pixels

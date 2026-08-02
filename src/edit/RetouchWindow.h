@@ -205,6 +205,8 @@ private:
     class QAction *m_copyEditsAction = nullptr;
     class QAction *m_pasteEditsAction = nullptr;
     class QAction *m_syncEditsAction = nullptr;
+    class QAction *m_groupShapesAction = nullptr;
+    class QAction *m_ungroupShapesAction = nullptr;
     Adjustments m_editClipboard;
     bool m_hasEditClipboard = false;
     void onCopyEdits();

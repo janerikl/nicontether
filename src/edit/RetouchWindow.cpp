@@ -497,6 +497,20 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     connect(m_pasteEditsAction, &QAction::triggered, this, &RetouchWindow::onPasteEdits);
     connect(m_syncEditsAction, &QAction::triggered, this, &RetouchWindow::onSyncEdits);
 
+    editMenu->addSeparator();
+    m_groupShapesAction = editMenu->addAction("Group Shapes");
+    m_groupShapesAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
+    m_ungroupShapesAction = editMenu->addAction("Ungroup Shapes");
+    m_ungroupShapesAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G));
+    connect(m_groupShapesAction, &QAction::triggered, this, [this] {
+        RetouchTab *tab = currentTab();
+        if (tab) { tab->groupSelectedShapes(); refreshMaskPanel(); }
+    });
+    connect(m_ungroupShapesAction, &QAction::triggered, this, [this] {
+        RetouchTab *tab = currentTab();
+        if (tab) { tab->ungroupSelectedShapes(); refreshMaskPanel(); }
+    });
+
     // Center: a stack (editing tabs / tether) with the shared filmstrip below,
     // so the filmstrip is visible in both modes.
     auto *central = new QWidget;
@@ -1774,15 +1788,36 @@ void RetouchWindow::buildLayersDock() {
                 RetouchTab *tab = currentTab();
                 if (tab) { tab->moveMask(from, to); refreshMaskPanel(); }
             });
+    connect(m_layersPanel, &LayersPanel::selectShapeRequested, this, [this](int index) {
+        RetouchTab *tab = currentTab();
+        if (tab) { tab->selectShape(index); refreshMaskPanel(); }
+    });
+    connect(m_layersPanel, &LayersPanel::shapeVisibleChanged, this,
+            [this](int index, bool visible) {
+                RetouchTab *tab = currentTab();
+                if (tab) { tab->setShapeVisible(index, visible); refreshMaskPanel(); }
+            });
+    connect(m_layersPanel, &LayersPanel::groupShapesRequested, this, [this] {
+        RetouchTab *tab = currentTab();
+        if (tab) { tab->groupSelectedShapes(); refreshMaskPanel(); }
+    });
+    connect(m_layersPanel, &LayersPanel::ungroupShapesRequested, this, [this] {
+        RetouchTab *tab = currentTab();
+        if (tab) { tab->ungroupSelectedShapes(); refreshMaskPanel(); }
+    });
 }
 
 void RetouchWindow::refreshMaskPanel() {
     RetouchTab *tab = currentTab();
     const bool ready = tab && tab->isReady();
     if (m_layersPanel) {
-        if (ready) m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex(),
-                                           !tab->path().isEmpty());
-        else m_layersPanel->clear();
+        if (ready) {
+            m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex(),
+                                    !tab->path().isEmpty());
+            m_layersPanel->setShapes(tab->shapes(), tab->activeShapeIndex());
+        } else {
+            m_layersPanel->clear();
+        }
     }
     const int idx = ready ? tab->activeMaskIndex() : -1;
     const bool isImageLayer = ready && idx >= 0 && idx < tab->masks().size() &&
@@ -1991,7 +2026,7 @@ void RetouchWindow::wireTabSignals(RetouchTab *tab) {
         if (tab == currentTab()) updateTextOptionsFromTab();
     });
     connect(tab, &RetouchTab::shapesChanged, this, [this, tab] {
-        if (tab == currentTab()) updateShapeOptionsFromTab();
+        if (tab == currentTab()) { updateShapeOptionsFromTab(); refreshMaskPanel(); }
     });
     connect(tab, &RetouchTab::cropPending, this, [this, tab](bool has) {
         if (tab == currentTab()) m_cropApply->setEnabled(has);

@@ -214,6 +214,11 @@ void ImageCanvas::setActiveShapeIndex(int index) {
     if (m_shapeMode) update();
 }
 
+void ImageCanvas::setSelectedShapeIndices(const QSet<int> &indices) {
+    m_selectedShapeIndices = indices;
+    if (m_shapeMode) update();
+}
+
 void ImageCanvas::setTextMarkers(const QVector<TextMarker> &markers) {
     m_textMarkers = markers;
     if (m_activeTextIndex >= m_textMarkers.size()) m_activeTextIndex = -1;
@@ -439,6 +444,48 @@ int ImageCanvas::shapeEndpointAt(const QPoint &pos) const {
     if ((QPointF(pos) - shapeEndpointScreenPos(m, true)).manhattanLength() <= t) return 0;
     if ((QPointF(pos) - shapeEndpointScreenPos(m, false)).manhattanLength() <= t) return 1;
     return -1;
+}
+
+QRectF ImageCanvas::shapeGroupBounds() const {
+    QRectF bounds;
+    bool first = true;
+    for (int i : m_selectedShapeIndices) {
+        if (i < 0 || i >= m_shapeMarkers.size()) continue;
+        const ShapeMarker &m = m_shapeMarkers[i];
+        QRectF r;
+        if (m.type == ShapeType::Line) {
+            r = QRectF(m.p1, m.p2).normalized();
+        } else {
+            QPointF anchor = m.rect.center();
+            QTransform t;
+            t.translate(anchor.x(), anchor.y());
+            t.rotate(m.rotation);
+            t.translate(-anchor.x(), -anchor.y());
+            QPolygonF poly;
+            for (const QPointF &corner : {m.rect.topLeft(), QPointF(m.rect.right(), m.rect.top()),
+                                          m.rect.bottomRight(), QPointF(m.rect.left(), m.rect.bottom())})
+                poly << t.map(corner);
+            r = poly.boundingRect();
+        }
+        bounds = first ? r : bounds.united(r);
+        first = false;
+    }
+    return bounds;
+}
+
+ImageCanvas::Handle ImageCanvas::shapeGroupCornerHandleAt(const QPoint &pos) const {
+    QRectF gb = shapeGroupBounds();
+    if (gb.isEmpty()) return Handle::None;
+    const double t = 10.0;
+    const QPointF tl = m_topLeft + gb.topLeft() * m_scale;
+    const QPointF tr = m_topLeft + QPointF(gb.right(), gb.top()) * m_scale;
+    const QPointF bl = m_topLeft + QPointF(gb.left(), gb.bottom()) * m_scale;
+    const QPointF br = m_topLeft + gb.bottomRight() * m_scale;
+    if ((QPointF(pos) - tl).manhattanLength() <= t) return Handle::TopLeft;
+    if ((QPointF(pos) - tr).manhattanLength() <= t) return Handle::TopRight;
+    if ((QPointF(pos) - bl).manhattanLength() <= t) return Handle::BottomLeft;
+    if ((QPointF(pos) - br).manhattanLength() <= t) return Handle::BottomRight;
+    return Handle::None;
 }
 
 // Photoshop-style smart-guide snapping for Ctrl+drag: snaps `pos` (the box's
@@ -873,9 +920,9 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         p.setRenderHint(QPainter::Antialiasing, true);
         for (int i = 0; i < m_shapeMarkers.size(); ++i) {
             const ShapeMarker &m = m_shapeMarkers[i];
-            bool active = (i == m_activeShapeIndex);
-            p.setPen(QPen(active ? QColor(120, 200, 255) : QColor(200, 200, 200, 160),
-                         active ? 2 : 1, Qt::DashLine));
+            bool selected = m_selectedShapeIndices.contains(i) || i == m_activeShapeIndex;
+            p.setPen(QPen(selected ? QColor(120, 200, 255) : QColor(200, 200, 200, 160),
+                         selected ? 2 : 1, Qt::DashLine));
             p.setBrush(Qt::NoBrush);
             if (m.type == ShapeType::Line) {
                 p.drawLine(m_topLeft + m.p1 * m_scale, m_topLeft + m.p2 * m_scale);
@@ -914,6 +961,23 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
             p.setPen(QPen(QColor(120, 200, 255), 1, Qt::DashLine));
             p.setBrush(Qt::NoBrush);
             p.drawRect(QRect(m_shapeCreateP0, m_shapeCreateP1).normalized());
+        }
+        // Multi-selection: combined bounding box with its own corner
+        // handles (orange, distinct from a single shape's blue handles),
+        // for a group resize dragging all selected shapes together.
+        if (m_selectedShapeIndices.size() > 1) {
+            QRectF gb = shapeGroupBounds();
+            if (!gb.isEmpty()) {
+                QRectF screenBounds(m_topLeft + gb.topLeft() * m_scale, gb.size() * m_scale);
+                p.setPen(QPen(QColor(255, 190, 60), 1.5, Qt::DashLine));
+                p.setBrush(Qt::NoBrush);
+                p.drawRect(screenBounds);
+                p.setPen(QPen(QColor(255, 190, 60), 1.5));
+                p.setBrush(QColor(255, 190, 60));
+                for (const QPointF &corner : {screenBounds.topLeft(), screenBounds.topRight(),
+                                              screenBounds.bottomLeft(), screenBounds.bottomRight()})
+                    p.drawRect(QRectF(corner - QPointF(4, 4), QSizeF(8, 8)));
+            }
         }
     }
 
@@ -1129,6 +1193,20 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
     // corner/endpoint to resize, its body to move, or empty canvas to
     // drag-create a new one.
     if (m_shapeMode && ev->button() == Qt::LeftButton) {
+        // A multi-selection's combined bounding-box handles take priority
+        // over any individual active-shape handle underneath.
+        if (m_selectedShapeIndices.size() > 1) {
+            Handle gcorner = shapeGroupCornerHandleAt(ev->pos());
+            if (gcorner != Handle::None) {
+                m_shapeDrag = ShapeDrag::ResizingGroup;
+                m_shapeGroupResizeCorner = gcorner;
+                m_shapeDragStartMouse = ev->pos();
+                m_shapeGroupResizeStartBounds = shapeGroupBounds();
+                m_shapeGroupIndices = m_selectedShapeIndices.values();
+                emit shapeGroupResizeStarted(m_shapeGroupIndices);
+                return;
+            }
+        }
         if (m_activeShapeIndex >= 0 && m_activeShapeIndex < m_shapeMarkers.size()) {
             const ShapeMarker &am = m_shapeMarkers[m_activeShapeIndex];
             if (am.type == ShapeType::Line) {
@@ -1163,15 +1241,35 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         int hit = shapeMarkerAt(ev->pos());
         if (hit >= 0) {
             if (ev->modifiers() & Qt::ControlModifier) {
-                // The slot (RetouchTab::onShapeDuplicateRequested) duplicates
-                // the shape and calls setActiveShapeIndex() synchronously, so
-                // m_activeShapeIndex points at the new copy once emit returns.
-                emit shapeDuplicateRequested(hit);
-                hit = m_activeShapeIndex;
-                if (hit < 0 || hit >= m_shapeMarkers.size()) return;
-            } else {
+                // Ambiguous until release: resolved to a duplicate-drag once
+                // the mouse moves past a threshold (mouseMoveEvent), or to a
+                // plain toggle-select if released without much movement
+                // (mouseReleaseEvent). If the hit shape is already part of a
+                // multi-selection, the whole group is duplicated together.
+                m_shapeCtrlPending = true;
+                m_shapeCtrlPendingHit = hit;
+                m_shapeCtrlPendingGroup = m_selectedShapeIndices.contains(hit) &&
+                                          m_selectedShapeIndices.size() > 1;
+                m_shapeDragStartMouse = ev->pos();
+                return;
+            }
+            if (!(m_selectedShapeIndices.contains(hit) && m_selectedShapeIndices.size() > 1)) {
+                // Not already part of a multi-selection: select it (the slot
+                // may synchronously expand the selection to the shape's
+                // persistent group via setSelectedShapeIndices — re-checked
+                // below before deciding Moving vs MovingGroup).
                 m_activeShapeIndex = hit;
                 emit shapeSelected(hit);
+            }
+            if (m_selectedShapeIndices.contains(hit) && m_selectedShapeIndices.size() > 1) {
+                // Either already a multi-selection, or shapeSelected just
+                // expanded it to the shape's group: drag the whole group.
+                m_shapeDrag = ShapeDrag::MovingGroup;
+                m_shapeDragStartMouse = ev->pos();
+                m_shapeGroupIndices = m_selectedShapeIndices.values();
+                emit shapeGroupMoveStarted(m_shapeGroupIndices);
+                update();
+                return;
             }
             m_shapeDrag = ShapeDrag::Moving;
             m_shapeDragStartMouse = ev->pos();
@@ -1389,9 +1487,69 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         }
         return;
     }
+    if (m_shapeMode && m_shapeCtrlPending) {
+        double dist = (QPointF(ev->pos()) - QPointF(m_shapeDragStartMouse)).manhattanLength();
+        if (dist > 4.0) {
+            m_shapeCtrlPending = false;
+            if (m_shapeCtrlPendingGroup) {
+                // The slot duplicates every selected shape and updates the
+                // selection (via setSelectedShapeIndices/setActiveShapeIndex)
+                // synchronously, so both reflect the new copies once emit
+                // returns; the copies' start geometry is also captured there
+                // (identical to the originals), so no separate "started"
+                // signal is needed before the group drag continues.
+                emit shapeGroupDuplicateRequested(m_selectedShapeIndices.values());
+                m_shapeGroupIndices = m_selectedShapeIndices.values();
+                m_shapeDrag = ShapeDrag::MovingGroup;
+            } else {
+                // Resolved to a single-shape duplicate-drag: the slot
+                // duplicates the shape and calls setActiveShapeIndex()
+                // synchronously, so m_activeShapeIndex points at the new
+                // copy once emit returns.
+                emit shapeDuplicateRequested(m_shapeCtrlPendingHit);
+                int hit = m_activeShapeIndex;
+                if (hit >= 0 && hit < m_shapeMarkers.size()) {
+                    m_shapeDrag = ShapeDrag::Moving;
+                    m_shapeDragStartTopLeft = m_shapeMarkers[hit].rect.topLeft();
+                    m_shapeDragStartP1 = m_shapeMarkers[hit].p1;
+                    m_shapeDragStartP2 = m_shapeMarkers[hit].p2;
+                }
+            }
+            update();
+        }
+        return;
+    }
     if (m_shapeMode && m_shapeDrag == ShapeDrag::Creating) {
         m_shapeCreateP1 = ev->pos();
         update();
+        return;
+    }
+    if (m_shapeMode && m_shapeDrag == ShapeDrag::MovingGroup) {
+        QPointF delta = (QPointF(ev->pos()) - QPointF(m_shapeDragStartMouse)) / m_scale;
+        emit shapeGroupMoveRequested(m_shapeGroupIndices, delta);
+        return;
+    }
+    if (m_shapeMode && m_shapeDrag == ShapeDrag::ResizingGroup) {
+        QPointF mouseImg = (QPointF(ev->pos()) - m_topLeft) / m_scale;
+        const QRectF &r = m_shapeGroupResizeStartBounds;
+        QPointF fixedCorner;
+        switch (m_shapeGroupResizeCorner) {
+            case Handle::TopLeft:     fixedCorner = r.bottomRight(); break;
+            case Handle::TopRight:    fixedCorner = r.bottomLeft(); break;
+            case Handle::BottomLeft:  fixedCorner = r.topRight(); break;
+            case Handle::BottomRight: fixedCorner = r.topLeft(); break;
+            default:                  fixedCorner = r.topLeft(); break;
+        }
+        double newW = std::abs(mouseImg.x() - fixedCorner.x());
+        double newH = std::abs(mouseImg.y() - fixedCorner.y());
+        if ((ev->modifiers() & Qt::ShiftModifier) && r.width() > 0 && r.height() > 0) {
+            double aspect = r.width() / r.height();
+            if (newW > newH * aspect) newH = newW / aspect;
+            else newW = newH * aspect;
+        }
+        double scaleX = r.width() > 1e-6 ? std::max(0.02, newW / r.width()) : 1.0;
+        double scaleY = r.height() > 1e-6 ? std::max(0.02, newH / r.height()) : 1.0;
+        emit shapeGroupResizeRequested(m_shapeGroupIndices, fixedCorner, scaleX, scaleY);
         return;
     }
     if (m_shapeMode && m_shapeDrag != ShapeDrag::None &&
@@ -1627,7 +1785,11 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         setCursor(c);
     } else if (m_shapeMode) {
         Qt::CursorShape c = Qt::CrossCursor;
-        if (m_activeShapeIndex >= 0 && m_activeShapeIndex < m_shapeMarkers.size()) {
+        if (m_selectedShapeIndices.size() > 1 && shapeGroupCornerHandleAt(ev->pos()) != Handle::None) {
+            Handle h = shapeGroupCornerHandleAt(ev->pos());
+            c = (h == Handle::TopRight || h == Handle::BottomLeft) ? Qt::SizeBDiagCursor
+                                                                    : Qt::SizeFDiagCursor;
+        } else if (m_activeShapeIndex >= 0 && m_activeShapeIndex < m_shapeMarkers.size()) {
             const ShapeMarker &am = m_shapeMarkers[m_activeShapeIndex];
             if (am.type == ShapeType::Line && shapeEndpointAt(ev->pos()) >= 0) {
                 c = Qt::SizeAllCursor;
@@ -1670,6 +1832,14 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
 }
 
 void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
+    if (m_shapeCtrlPending && ev->button() == Qt::LeftButton) {
+        // Released without moving past the duplicate-drag threshold: a plain
+        // Ctrl+click, toggling multi-selection membership.
+        m_shapeCtrlPending = false;
+        emit shapeToggleSelectRequested(m_shapeCtrlPendingHit);
+        update();
+        return;
+    }
     if (m_shapeDrag == ShapeDrag::Creating && ev->button() == Qt::LeftButton) {
         m_shapeDrag = ShapeDrag::None;
         QRect box = QRect(m_shapeCreateP0, m_shapeCreateP1).normalized();
@@ -1863,6 +2033,15 @@ void ImageCanvas::keyPressEvent(QKeyEvent *ev) {
         int idx = m_activeTextIndex;
         m_activeTextIndex = -1;
         emit textDeleteRequested(idx);
+        ev->accept();
+        return;
+    }
+    if (m_shapeMode && (ev->key() == Qt::Key_Delete || ev->key() == Qt::Key_Backspace) &&
+        m_selectedShapeIndices.size() > 1) {
+        QList<int> indices = m_selectedShapeIndices.values();
+        m_activeShapeIndex = -1;
+        m_selectedShapeIndices.clear();
+        emit shapeGroupDeleteRequested(indices);
         ev->accept();
         return;
     }

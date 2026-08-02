@@ -8,6 +8,8 @@
 #include <QPointF>
 #include <QColor>
 #include <QElapsedTimer>
+#include <QSet>
+#include <QList>
 
 #include "edit/Adjustments.h"
 
@@ -76,6 +78,10 @@ public:
     };
     void setShapeMarkers(const QVector<ShapeMarker> &markers);
     void setActiveShapeIndex(int index); // -1 = none; shows resize/rotate handles
+    // Full multi-selection (superset of the active index); every member gets
+    // a selection outline, but only the active one gets resize/rotate
+    // handles. Pushed down whenever RetouchTab's selection set changes.
+    void setSelectedShapeIndices(const QSet<int> &indices);
 
     void setEraseMode(bool on); // erase brush: punches transparency into the selected image layer
     void setZoomMode(bool on); // zoom tool: enables marquee-drag zoom + Ctrl+wheel
@@ -136,12 +142,30 @@ signals:
     void shapeLineEndpointsChanged(int index, const QPointF &p1, const QPointF &p2);
     void shapeRotated(int index, double newRotationDegrees);
     void shapeDeleteRequested(int index);
+    void shapeGroupDeleteRequested(const QList<int> &indices); // Delete with a multi-selection
     // Ctrl+drag on an existing shape: duplicate it in place (same geometry
     // and style), select the copy, and continue the drag as a move of the
     // copy — the original is left untouched.
     void shapeDuplicateRequested(int index);
+    void shapeGroupDuplicateRequested(const QList<int> &indices); // Ctrl+drag with a multi-selection
     void shapeRaiseRequested(int index); // '+': move one level up the stack
     void shapeLowerRequested(int index); // '-': move one level down the stack
+    // Ctrl+click (no drag) on a shape: toggle its multi-selection membership.
+    void shapeToggleSelectRequested(int index);
+    // Press on a shape that's already part of a >1-member selection: the
+    // whole group is about to be dragged together. RetouchTab captures each
+    // member's start geometry here (same pattern as shapeSelected does for a
+    // single-shape move) so shapeGroupMoveRequested's delta can be applied as
+    // an absolute offset instead of compounding across move events.
+    void shapeGroupMoveStarted(const QList<int> &indices);
+    void shapeGroupMoveRequested(const QList<int> &indices, const QPointF &deltaImage);
+    // Dragging a corner handle of the multi-selection's combined bounding
+    // box: every selected shape scales together about the fixed opposite
+    // corner. `shapeGroupResizeStarted` reuses the same start-capture as a
+    // group move (position AND size both need a fixed reference point).
+    void shapeGroupResizeStarted(const QList<int> &indices);
+    void shapeGroupResizeRequested(const QList<int> &indices, const QPointF &anchorImage,
+                                   double scaleX, double scaleY);
     void eraseAt(const QPointF &ptNorm); // one erase-stroke sample (width-normalized)
     void eraseFinished();                // drag released -> commit history
     void zoomChanged(double percent);
@@ -205,6 +229,8 @@ private:
     Handle shapeCornerHandleAt(const QPoint &pos) const; // which corner of the active shape
     QPointF shapeEndpointScreenPos(const ShapeMarker &m, bool first) const; // Line p1/p2
     int shapeEndpointAt(const QPoint &pos) const; // 0=p1, 1=p2, -1=none, for the active Line
+    QRectF shapeGroupBounds() const; // union of every selected shape's (rotated) bounding box, marker space
+    Handle shapeGroupCornerHandleAt(const QPoint &pos) const; // corner of shapeGroupBounds() under pos
 
     void relayoutFit();  // recompute scale/offset to fit + centre
     void zoomTo(double newScale, const QPointF &anchorWidgetPos);
@@ -244,7 +270,8 @@ private:
     ShapeType m_activeShapeType = ShapeType::Rectangle;
     QVector<ShapeMarker> m_shapeMarkers; // display-image-space, index-aligned with Adjustments::shapes
     int m_activeShapeIndex = -1;
-    enum class ShapeDrag { None, Creating, Moving, Rotating, Resizing, EndpointDrag };
+    QSet<int> m_selectedShapeIndices; // multi-selection outline set; superset of m_activeShapeIndex
+    enum class ShapeDrag { None, Creating, Moving, MovingGroup, Rotating, Resizing, ResizingGroup, EndpointDrag };
     ShapeDrag m_shapeDrag = ShapeDrag::None;
     QPoint m_shapeDragStartMouse;      // widget px
     QPointF m_shapeDragStartTopLeft;   // marker rect top-left at drag start (image px)
@@ -254,6 +281,16 @@ private:
     QSizeF m_shapeResizeStartSize; // active shape's rect size at resize-drag start (for Shift aspect-lock)
     int m_shapeEndpointDragging = -1; // 0=p1, 1=p2, while dragging a Line endpoint
     QPoint m_shapeCreateP0, m_shapeCreateP1; // rubber-band corners while creating (widget coords)
+
+    // Ctrl+press on a shape body is ambiguous until release: a plain click
+    // toggles multi-selection, a drag past a small threshold duplicates the
+    // shape and continues as a move of the copy (see mousePressEvent).
+    bool m_shapeCtrlPending = false;
+    int m_shapeCtrlPendingHit = -1;
+    bool m_shapeCtrlPendingGroup = false; // true if the pending hit is part of a >1-member selection
+    QList<int> m_shapeGroupIndices; // members being dragged together, captured at MovingGroup press
+    Handle m_shapeGroupResizeCorner = Handle::None;
+    QRectF m_shapeGroupResizeStartBounds; // shapeGroupBounds() at ResizingGroup drag start (marker space)
 
     bool m_eraseMode = false;
     bool m_eraseDragging = false;

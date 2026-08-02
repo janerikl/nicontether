@@ -138,6 +138,7 @@ void applyShapes(QImage &img, const QVector<ShapeOp> &shapes, const QPoint &crop
     QImage work = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 
     for (const ShapeOp &op : shapes) {
+        if (!op.visible) continue;
         ShapeOp local = op;
         local.rect = QRectF((op.rect.topLeft() - QPointF(cropOffset)) * scale,
                              op.rect.size() * scale);

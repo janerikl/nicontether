@@ -263,6 +263,8 @@ bool save(const QString &imagePath, const Adjustments &a) {
             j["strokeColor"] = s.strokeColor.name(QColor::HexArgb);
             j["strokeWidth"] = s.strokeWidth;
             j["opacity"] = s.opacity;
+            j["visible"] = s.visible;
+            j["groupId"] = s.groupId;
             shapes.append(j);
         }
         o["shapes"] = shapes;
@@ -448,6 +450,8 @@ bool load(const QString &imagePath, Adjustments &out) {
         s.strokeColor = QColor(j["strokeColor"].toString(QStringLiteral("#ff000000")));
         s.strokeWidth = j["strokeWidth"].toDouble(4.0);
         s.opacity = j["opacity"].toDouble(1.0);
+        s.visible = j["visible"].toBool(true);
+        s.groupId = j["groupId"].toString();
         a.shapes.append(s);
     }
     out = a;
