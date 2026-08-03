@@ -51,6 +51,8 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QFileInfo>
 #include <QDir>
 #include <QSignalBlocker>
@@ -496,6 +498,9 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     connect(m_copyEditsAction, &QAction::triggered, this, &RetouchWindow::onCopyEdits);
     connect(m_pasteEditsAction, &QAction::triggered, this, &RetouchWindow::onPasteEdits);
     connect(m_syncEditsAction, &QAction::triggered, this, &RetouchWindow::onSyncEdits);
+
+    m_presetsMenu = menuBar()->addMenu("Presets");
+    rebuildPresetsMenu();
 
     editMenu->addSeparator();
     m_groupShapesAction = editMenu->addAction("Group Shapes");
@@ -1955,6 +1960,85 @@ void RetouchWindow::onSyncEdits() {
         QString("Synced edits to %1 of %2 selected")
             .arg(changed)
             .arg(targets.size()));
+}
+
+// Repopulate the Presets menu: built-in templates, then custom presets, then
+// the Save/Delete management actions. Called at startup and whenever a
+// custom preset is added or removed.
+void RetouchWindow::rebuildPresetsMenu() {
+    if (!m_presetsMenu) return;
+    m_presetsMenu->clear();
+    m_presetActions.clear();
+
+    const QList<AdjustmentPreset> builtins = AdjustmentPresetStore::builtins();
+    for (const AdjustmentPreset &preset : builtins) {
+        auto *act = m_presetsMenu->addAction(preset.name);
+        connect(act, &QAction::triggered, this,
+                [this, preset] { applyAdjustmentPreset(preset); });
+        m_presetActions.append(act);
+    }
+
+    const QList<AdjustmentPreset> &custom = m_adjustmentPresetStore.custom();
+    if (!custom.isEmpty()) {
+        m_presetsMenu->addSeparator();
+        for (const AdjustmentPreset &preset : custom) {
+            auto *act = m_presetsMenu->addAction(preset.name);
+            connect(act, &QAction::triggered, this,
+                    [this, preset] { applyAdjustmentPreset(preset); });
+            m_presetActions.append(act);
+        }
+    }
+
+    m_presetsMenu->addSeparator();
+    auto *saveAct = m_presetsMenu->addAction("Save Current as Preset…");
+    connect(saveAct, &QAction::triggered, this, &RetouchWindow::onSaveAdjustmentPreset);
+    if (!custom.isEmpty()) {
+        auto *deleteAct = m_presetsMenu->addAction("Delete Preset…");
+        connect(deleteAct, &QAction::triggered, this, &RetouchWindow::onDeleteAdjustmentPreset);
+    }
+}
+
+// Apply a preset's portable fields to the current tab, the same way
+// Paste Edits applies the clipboard (routes through setAdjustments so
+// history/dirty state stay consistent).
+void RetouchWindow::applyAdjustmentPreset(const AdjustmentPreset &preset) {
+    RetouchTab *tab = currentTab();
+    if (!tab || !tab->isReady()) return;
+    Adjustments a = tab->adjustments();
+    mergePortable(preset.adj, a);
+    if (a == tab->adjustments()) return;
+    tab->setAdjustments(a);
+    m_statusLabel->setText(QString("Applied preset \"%1\"").arg(preset.name));
+}
+
+void RetouchWindow::onSaveAdjustmentPreset() {
+    RetouchTab *tab = currentTab();
+    if (!tab || !tab->isReady()) return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, "Save Preset", "Preset name:",
+                                                QLineEdit::Normal, QString(), &ok);
+    if (!ok || name.trimmed().isEmpty()) return;
+
+    AdjustmentPreset preset;
+    preset.name = name.trimmed();
+    preset.adj = tab->adjustments();
+    m_adjustmentPresetStore.addOrUpdate(preset);
+    rebuildPresetsMenu();
+    m_statusLabel->setText(QString("Saved preset \"%1\"").arg(preset.name));
+}
+
+void RetouchWindow::onDeleteAdjustmentPreset() {
+    const QList<AdjustmentPreset> &custom = m_adjustmentPresetStore.custom();
+    if (custom.isEmpty()) return;
+    QStringList names;
+    for (const AdjustmentPreset &p : custom) names << p.name;
+    bool ok = false;
+    const QString name = QInputDialog::getItem(this, "Delete Preset", "Preset:", names, 0,
+                                                false, &ok);
+    if (!ok || name.isEmpty()) return;
+    m_adjustmentPresetStore.remove(name);
+    rebuildPresetsMenu();
+    m_statusLabel->setText(QString("Deleted preset \"%1\"").arg(name));
 }
 
 RetouchTab *RetouchWindow::currentTab() const {

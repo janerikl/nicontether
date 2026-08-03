@@ -7,6 +7,7 @@
 #include <QString>
 
 #include "edit/Adjustments.h"
+#include "edit/AdjustmentPreset.h"
 #include "edit/ExportPreset.h"
 #include "ui/ColorSwatchWidget.h"
 
@@ -218,6 +219,17 @@ private:
     // Apply the clipboard to one photo (open tab or closed sidecar). Returns
     // true if the photo changed. Reports counts to the caller.
     bool applyClipboardTo(const QString &path);
+
+    // Develop presets: built-in templates + user-saved snapshots of the
+    // portable adjustment fields, applied to the current tab from the
+    // "Presets" menu.
+    class QMenu *m_presetsMenu = nullptr;
+    QList<class QAction *> m_presetActions;
+    AdjustmentPresetStore m_adjustmentPresetStore;
+    void rebuildPresetsMenu();
+    void applyAdjustmentPreset(const AdjustmentPreset &preset);
+    void onSaveAdjustmentPreset();
+    void onDeleteAdjustmentPreset();
 
     // Contextual per-tool options row (shown under the main toolbar only while
     // a left-bar tool is selected).

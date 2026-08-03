@@ -45,6 +45,7 @@ add_executable(nikontether
     src/edit/RetouchTab.cpp
     src/edit/RetouchWindow.cpp
     src/edit/ExportPreset.cpp
+    src/edit/AdjustmentPreset.cpp
     src/edit/RecentSessions.cpp
     src/edit/ExportDialog.cpp
     src/edit/CurveEditor.cpp
