@@ -140,6 +140,7 @@ void AdjustmentPresetStore::load() {
         a.clarity = s.value("clarity").toInt();
         a.sharpen = s.value("sharpen").toInt();
         a.vignette = s.value("vignette").toInt();
+        a.flatStyle = s.value("flatStyle").toInt();
         a.curve = curveFromString(s.value("curve").toString());
         a.levels.rgb.inBlack = s.value("levels.rgb.inBlack", 0).toInt();
         a.levels.rgb.inWhite = s.value("levels.rgb.inWhite", 255).toInt();
@@ -189,6 +190,7 @@ void AdjustmentPresetStore::save() const {
         s.setValue("clarity", a.clarity);
         s.setValue("sharpen", a.sharpen);
         s.setValue("vignette", a.vignette);
+        s.setValue("flatStyle", a.flatStyle);
         s.setValue("curve", curveToString(a.curve));
         s.setValue("levels.rgb.inBlack", a.levels.rgb.inBlack);
         s.setValue("levels.rgb.inWhite", a.levels.rgb.inWhite);

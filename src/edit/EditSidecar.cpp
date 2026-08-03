@@ -91,6 +91,7 @@ bool save(const QString &imagePath, const Adjustments &a) {
     o["clarity"] = a.clarity;
     o["sharpen"] = a.sharpen;
     o["vignette"] = a.vignette;
+    o["flatStyle"] = a.flatStyle;
     o["rotationQuadrants"] = a.rotationQuadrants;
     o["flipH"] = a.flipH;
     o["flipV"] = a.flipV;
@@ -300,6 +301,7 @@ bool load(const QString &imagePath, Adjustments &out) {
     a.clarity = o["clarity"].toInt();
     a.sharpen = o["sharpen"].toInt();
     a.vignette = o["vignette"].toInt();
+    a.flatStyle = o["flatStyle"].toInt();
     a.rotationQuadrants = o["rotationQuadrants"].toInt();
     a.flipH = o["flipH"].toBool();
     a.flipV = o["flipV"].toBool();

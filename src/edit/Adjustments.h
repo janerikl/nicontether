@@ -299,6 +299,24 @@ struct HealOp {
     }
 };
 
+// A single object-removal: a brush stroke (oriented-image coords, pre-crop,
+// same convention as HealOp) marking an unwanted object, plus the
+// content-aware fill computed once (via InpaintTool::inpaint) when the stroke
+// was released. Non-destructive: `mask`/`fill` are cached so redisplay never
+// recomputes the (expensive) inpaint; `rect` is `fill`'s placement.
+struct RemoveObjectOp {
+    QVector<QPointF> stroke; // brush path, for display/re-editing only
+    double radius = 20.0;    // brush radius used for this stroke
+    QRect rect;              // placement of `fill` (oriented-image coords)
+    QImage mask;             // full-oriented-image-size coverage mask
+    QImage fill;             // cached content-aware fill, sized to `rect`
+    bool visible = true;
+    bool operator==(const RemoveObjectOp &o) const {
+        return stroke == o.stroke && radius == o.radius && rect == o.rect &&
+               visible == o.visible; // mask/fill compared by identity is meaningless; rect+stroke suffice
+    }
+};
+
 // One text overlay. `pos` is in oriented-image pixel space, pre-crop (same
 // convention as HealOp), so text stays anchored to photo content across crop
 // changes. Font/outline/shadow metrics are absolute image-space pixels, same
@@ -430,6 +448,12 @@ struct Adjustments {
     int sharpen = 0;         // 0..100 unsharp amount
     int vignette = 0;        // darken (-) / lighten (+) the corners
 
+    // Flat-color painterly/posterize stylization: blurs away fine detail,
+    // then quantizes the image to a small palette (fewer colours as the
+    // amount increases), producing a flat, geometric-illustration look.
+    // 0 = off. Global-only (not available per-layer).
+    int flatStyle = 0;
+
     // Tone curve: control points in [0,1]×[0,1], monotonic in x. Empty/identity
     // means no curve. Applied to all channels via a 65536-entry LUT.
     QVector<QPointF> curve;
@@ -455,6 +479,10 @@ struct Adjustments {
     // Shape overlays (oriented-image coords, pre-crop; see ShapeOp comment).
     QVector<ShapeOp> shapes;
 
+    // Object-removal ops (oriented-image coords; applied before crop, same
+    // stage as heals). See RemoveObjectOp comment.
+    QVector<RemoveObjectOp> removals;
+
     // Geometry
     int rotationQuadrants = 0; // clockwise 90° turns (0..3)
     bool flipH = false;
@@ -466,6 +494,11 @@ struct Adjustments {
     // in the sidecar like everything else here, so it's just carried along.
     QColor backgroundColor = QColor(30, 30, 30);
 
+    // Background (base) layer visibility/deletion — view/composite-only like
+    // backgroundColor above, persisted per-image in the sidecar.
+    bool backgroundHidden = false;
+    bool backgroundDeleted = false;
+
     bool hasCurve() const;     // true if curve is set and not the identity
 
     bool operator==(const Adjustments &o) const {
@@ -476,13 +509,16 @@ struct Adjustments {
                wbR == o.wbR && wbG == o.wbG && wbB == o.wbB &&
                denoise == o.denoise && clarity == o.clarity &&
                sharpen == o.sharpen && vignette == o.vignette &&
+               flatStyle == o.flatStyle &&
                curve == o.curve && levels == o.levels &&
                colorRanges == o.colorRanges &&
                masks == o.masks && heals == o.heals && texts == o.texts &&
-               shapes == o.shapes &&
+               shapes == o.shapes && removals == o.removals &&
                rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
                flipV == o.flipV && cropRect == o.cropRect &&
-               backgroundColor == o.backgroundColor;
+               backgroundColor == o.backgroundColor &&
+               backgroundHidden == o.backgroundHidden &&
+               backgroundDeleted == o.backgroundDeleted;
     }
     bool operator!=(const Adjustments &o) const { return !(*this == o); }
 };

@@ -131,6 +131,7 @@ private:
     QSlider *m_clarity = nullptr;
     QSlider *m_sharpen = nullptr;
     QSlider *m_vignette = nullptr;
+    QSlider *m_flatStyle = nullptr;
     CurveEditor *m_curve = nullptr;
     QPushButton *m_wbPick = nullptr;
     QToolButton *m_beforeAfter = nullptr; // curtain icon beside the filmstrip: hold to reveal the original

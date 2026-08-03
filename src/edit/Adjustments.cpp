@@ -9,6 +9,7 @@
 #include <QStringList>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -735,6 +736,95 @@ void applyVignette(QImage &img, int vignette) {
     }
 }
 
+// Flat-color painterly/posterize stylization. Blurs away fine detail/noise
+// (so regions merge into flat shapes rather than posterizing pixel noise),
+// then quantizes the image to a small palette via k-means, mapping every
+// pixel to its nearest palette color.
+void applyFlatStyle(QImage &img, int amount) {
+    if (amount <= 0) return;
+    amount = std::clamp(amount, 0, 100);
+    const int w = img.width(), h = img.height();
+    if (w <= 0 || h <= 0) return;
+
+    int blurRadius = 2 + amount / 6; // up to ~18px at amount=100
+    QImage blurred = boxBlur(img, blurRadius);
+
+    // Fewer palette colors as amount increases -> more graphic/flat look.
+    int paletteSize = std::clamp(28 - amount / 4, 4, 24);
+
+    // k-means on a stride-sampled subset of pixels for speed.
+    struct Rgb { double r, g, b; };
+    std::vector<Rgb> samples;
+    int stride = std::max(1, int(std::sqrt(double(w) * h) / 100.0));
+    for (int y = 0; y < h; y += stride) {
+        const QRgba64 *line = reinterpret_cast<const QRgba64 *>(blurred.scanLine(y));
+        for (int x = 0; x < w; x += stride)
+            samples.push_back({double(line[x].red()), double(line[x].green()),
+                               double(line[x].blue())});
+    }
+    if (samples.empty()) return;
+
+    auto dist2 = [](const Rgb &a, const Rgb &b) {
+        double dr = a.r - b.r, dg = a.g - b.g, db = a.b - b.b;
+        return dr * dr + dg * dg + db * db;
+    };
+
+    // Farthest-point (k-means++-style) seeding: spreads initial centroids
+    // across the color space instead of clumping on one dominant color.
+    std::vector<Rgb> centroids;
+    centroids.push_back(samples[0]);
+    while (int(centroids.size()) < paletteSize && centroids.size() < samples.size()) {
+        double bestDist = -1.0;
+        int bestIdx = 0;
+        for (int i = 0; i < int(samples.size()); ++i) {
+            double d = std::numeric_limits<double>::max();
+            for (const Rgb &c : centroids) d = std::min(d, dist2(samples[i], c));
+            if (d > bestDist) { bestDist = d; bestIdx = i; }
+        }
+        centroids.push_back(samples[bestIdx]);
+    }
+
+    for (int iter = 0; iter < 6; ++iter) {
+        std::vector<double> sumR(centroids.size(), 0), sumG(centroids.size(), 0),
+            sumB(centroids.size(), 0);
+        std::vector<int> count(centroids.size(), 0);
+        for (const Rgb &s : samples) {
+            int bestIdx = 0;
+            double bestDist = std::numeric_limits<double>::max();
+            for (int i = 0; i < int(centroids.size()); ++i) {
+                double d = dist2(s, centroids[i]);
+                if (d < bestDist) { bestDist = d; bestIdx = i; }
+            }
+            sumR[bestIdx] += s.r; sumG[bestIdx] += s.g; sumB[bestIdx] += s.b;
+            count[bestIdx]++;
+        }
+        for (int i = 0; i < int(centroids.size()); ++i) {
+            if (count[i] > 0)
+                centroids[i] = {sumR[i] / count[i], sumG[i] / count[i], sumB[i] / count[i]};
+        }
+    }
+
+    // Map every pixel of the blurred image to its nearest palette color.
+    for (int y = 0; y < h; ++y) {
+        QRgba64 *line = reinterpret_cast<QRgba64 *>(blurred.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            const QRgba64 p = line[x];
+            Rgb s{double(p.red()), double(p.green()), double(p.blue())};
+            int bestIdx = 0;
+            double bestDist = std::numeric_limits<double>::max();
+            for (int i = 0; i < int(centroids.size()); ++i) {
+                double d = dist2(s, centroids[i]);
+                if (d < bestDist) { bestDist = d; bestIdx = i; }
+            }
+            const Rgb &c = centroids[bestIdx];
+            line[x] = qRgba64(clamp16(int(std::lround(c.r))), clamp16(int(std::lround(c.g))),
+                              clamp16(int(std::lround(c.b))), p.alpha());
+        }
+    }
+
+    img = blurred;
+}
+
 // Full per-layer content: the same tone/colour/detail pipeline as the global
 // pass, applied to `src` in isolation. Used both for the base's global fields
 // (via applyAdjustments) and for each additional layer's MaskAdjust — layers
@@ -879,6 +969,7 @@ bool hasToneEdits(const Adjustments &adj) {
     return adj.brightness || adj.contrast || adj.highlights || adj.shadows ||
            adj.saturation || adj.vibrance || adj.temperature || adj.tint ||
            adj.denoise || adj.clarity || adj.sharpen || adj.vignette ||
+           adj.flatStyle ||
            std::abs(adj.wbR - 1.0) > 1e-4 || std::abs(adj.wbG - 1.0) > 1e-4 ||
            std::abs(adj.wbB - 1.0) > 1e-4 || adj.hasCurve() ||
            !adj.levels.isIdentity() || !adj.colorRanges.isEmpty() ||
@@ -927,6 +1018,7 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
     applyClarity(img, adj.clarity);
     applySharpen(img, adj.sharpen);
     applyVignette(img, adj.vignette);
+    applyFlatStyle(img, adj.flatStyle);
 
     return img;
 }
@@ -947,6 +1039,7 @@ QString historyStepLabel(const Adjustments &prev, const Adjustments &curr) {
     if (curr.clarity != prev.clarity)         return QStringLiteral("Clarity");
     if (curr.sharpen != prev.sharpen)         return QStringLiteral("Sharpen");
     if (curr.vignette != prev.vignette)       return QStringLiteral("Vignette");
+    if (curr.flatStyle != prev.flatStyle)     return QStringLiteral("Style");
     if (curr.curve != prev.curve)             return QStringLiteral("Curve");
     if (curr.levels != prev.levels)           return QStringLiteral("Levels");
     if (curr.colorRanges != prev.colorRanges) return QStringLiteral("Color Range");

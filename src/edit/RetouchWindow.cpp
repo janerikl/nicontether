@@ -1556,6 +1556,7 @@ void RetouchWindow::buildDock() {
     m_clarity = makeSlider(fxForm, "Clarity");
     m_sharpen = makeSlider(fxForm, "Sharpen", 0, 100);
     m_vignette = makeSlider(fxForm, "Vignette");
+    m_flatStyle = makeSlider(fxForm, "Style (flat/posterize)", 0, 100);
     outer->addLayout(fxForm);
 
     outer->addSpacing(8);
@@ -1892,6 +1893,7 @@ void RetouchWindow::mergePortable(const Adjustments &src, Adjustments &dst) {
     dst.clarity = src.clarity;
     dst.sharpen = src.sharpen;
     dst.vignette = src.vignette;
+    dst.flatStyle = src.flatStyle;
     dst.curve = src.curve;
     dst.levels = src.levels;
 }
@@ -2458,6 +2460,7 @@ void RetouchWindow::syncDockFromTab() {
     set(m_clarity, a.clarity);
     set(m_sharpen, a.sharpen);
     set(m_vignette, a.vignette);
+    set(m_flatStyle, a.flatStyle);
     m_curve->setCurve(a.curve);
     m_syncing = false;
 }
@@ -2479,6 +2482,7 @@ void RetouchWindow::onToneChanged() {
     a.clarity = m_clarity->value();
     a.sharpen = m_sharpen->value();
     a.vignette = m_vignette->value();
+    a.flatStyle = m_flatStyle->value();
     tab->setAdjustments(a);
 }
 
@@ -2486,6 +2490,7 @@ void RetouchWindow::setDockEnabled(bool enabled) {
     const QList<QWidget *> widgets = {
         m_brightness, m_contrast, m_highlights, m_shadows, m_saturation,
         m_vibrance, m_temperature, m_tint, m_denoise, m_clarity, m_sharpen, m_vignette,
+        m_flatStyle,
         m_curve, m_wbPick, m_beforeAfter,
         m_zoomSlider, m_zoomFit, m_toolZoom,
         m_rotLeft, m_rotRight, m_flipH, m_flipV,
