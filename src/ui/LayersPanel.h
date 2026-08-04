@@ -42,7 +42,8 @@ class LayersPanel : public QWidget {
 public:
     explicit LayersPanel(QWidget *parent = nullptr);
 
-    // previewImage is the tab's current composited render, used only for the
+    // previewImage is the tab's base photo with just the global/base tone
+    // adjustments applied - no mask layers composited - used only for the
     // pinned Background row's thumbnail; passing a null image leaves
     // whatever thumbnail is already cached (e.g. between renders) in place.
     void setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground,

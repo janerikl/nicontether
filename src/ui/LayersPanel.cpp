@@ -984,9 +984,10 @@ QIcon LayersPanel::groupThumbnail() const {
     return QIcon(pm);
 }
 
-// Pinned Background row: a scaled copy of the tab's current composited
-// render (see setMasks()'s previewImage parameter), same scale-to-fit
-// treatment as an image layer's own thumbnail.
+// Pinned Background row: a scaled copy of the tab's base-photo-plus-global-
+// tone render, excluding all mask layers (see setMasks()'s previewImage
+// parameter), same scale-to-fit treatment as an image layer's own thumbnail.
+// Deliberately independent of other layers' visibility.
 QIcon LayersPanel::backgroundThumbnail() const {
     if (m_backgroundPreview.isNull()) {
         QPixmap pm(kThumbPx, kThumbPx);

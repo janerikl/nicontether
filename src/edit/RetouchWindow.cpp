@@ -1977,7 +1977,7 @@ void RetouchWindow::refreshMaskPanel() {
         if (ready) {
             m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex(),
                                     tab->hasBackgroundLayer(), tab->isBackgroundHidden(),
-                                    tab->previewImage());
+                                    tab->backgroundOnlyPreview());
             m_layersPanel->setRemovals(tab->removals(), tab->activeRemovalIndex());
         } else {
             m_layersPanel->clear();

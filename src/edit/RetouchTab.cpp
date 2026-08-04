@@ -519,6 +519,21 @@ void RetouchTab::updateRemovalMarkers() {
     m_canvas->setActiveRemovalIndex(m_activeRemoval);
 }
 
+QImage RetouchTab::backgroundOnlyPreview() const {
+    if (m_scaled.isNull()) return QImage();
+    // Downscale first so the tone pass below (and any convolutions it runs)
+    // stays cheap regardless of how often the Layers panel refreshes.
+    constexpr int kBgPreviewMaxDim = 200;
+    QImage small = m_scaled;
+    if (qMax(small.width(), small.height()) > kBgPreviewMaxDim) {
+        small = small.scaled(kBgPreviewMaxDim, kBgPreviewMaxDim, Qt::KeepAspectRatio,
+                             Qt::SmoothTransformation);
+    }
+    Adjustments t = toneOnly(m_adj);
+    t.masks.clear(); // exclude every mask layer, static and interactive alike
+    return applyAdjustments(small, t);
+}
+
 void RetouchTab::retone() {
     if (m_scaled.isNull()) return;
     // Fast interactive path: skip the clarity/sharpen blur convolutions (the

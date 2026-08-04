@@ -193,6 +193,15 @@ public:
     // Latest toned preview render (display-scaled). Empty until first render.
     QImage previewImage() const { return m_lastEdited; }
 
+    // Small render of JUST the base photo with JUST the global/base tone
+    // adjustments applied - no masks composited at all (not even the
+    // static-tier Radial/Linear/Image ones). Used for the Layers panel's
+    // pinned Background row thumbnail, which must NOT change when other
+    // layers' visibility is toggled. Computed on a downscaled copy so it's
+    // cheap to call on every panel refresh. Returns a null QImage before the
+    // first geometry pass has run.
+    QImage backgroundOnlyPreview() const;
+
     // Per-layer Levels histogram feed: while enabled (Layers dock visible),
     // the render pipeline additionally produces the cumulative composite
     // through the active mask, pushed to whoever wants to draw its histogram.
