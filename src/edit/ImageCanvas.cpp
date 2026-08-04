@@ -5,14 +5,15 @@
 #include <QWheelEvent>
 #include <QKeyEvent>
 #include <QCursor>
+#include <QMenu>
+#include <QActionGroup>
+#include <QContextMenuEvent>
 #include <QPixmap>
 #include <QPainterPath>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDropEvent>
 #include <QMimeData>
-#include <QContextMenuEvent>
-#include <QMenu>
 #include <QColorDialog>
 #include <QPlainTextEdit>
 #include <QFont>
@@ -21,6 +22,7 @@
 #include <QPolygonF>
 #include <QLineF>
 #include <QEvent>
+#include <QSettings>
 #include <cmath>
 #include <algorithm>
 
@@ -122,7 +124,10 @@ ImageCanvas::ImageCanvas(QWidget *parent) : QWidget(parent) {
     setFocusPolicy(Qt::StrongFocus);
     setAcceptDrops(true);
     QPalette pal = palette();
-    pal.setColor(QPalette::Window, QColor(30, 30, 30));
+    QSettings settings;
+    m_backgroundColor = settings.value("edit/canvasBackgroundColor",
+                                       QColor(30, 30, 30)).value<QColor>();
+    pal.setColor(QPalette::Window, m_backgroundColor);
     setPalette(pal);
 }
 
@@ -2305,6 +2310,10 @@ void ImageCanvas::dropEvent(QDropEvent *ev) {
 void ImageCanvas::setBackgroundColor(const QColor &color) {
     if (!color.isValid() || color == m_backgroundColor) return;
     m_backgroundColor = color;
+    QPalette pal = palette();
+    pal.setColor(QPalette::Window, m_backgroundColor);
+    setPalette(pal);
+    QSettings().setValue("edit/canvasBackgroundColor", m_backgroundColor);
     update();
     emit backgroundColorChanged(m_backgroundColor);
 }
@@ -2316,23 +2325,38 @@ void ImageCanvas::setShowCheckerboard(bool on) {
 }
 
 void ImageCanvas::contextMenuEvent(QContextMenuEvent *ev) {
+    QRect target = targetRect();
+    if (target.contains(ev->pos())) {
+        ev->ignore();
+        return;
+    }
+
     static const QColor kDefaultBackground(30, 30, 30);
     QMenu menu(this);
-    QAction *black = menu.addAction(tr("Black"));
-    QAction *white = menu.addAction(tr("White"));
-    QAction *gray = menu.addAction(tr("Gray"));
+    auto *group = new QActionGroup(&menu);
+    group->setExclusive(true);
+    struct Item { const char *label; QColor color; };
+    const Item items[] = {
+        {"White", QColor(255, 255, 255)},
+        {"Light Gray", QColor(200, 200, 200)},
+        {"Gray", QColor(128, 128, 128)},
+        {"Dark Gray", QColor(64, 64, 64)},
+        {"Black", QColor(0, 0, 0)},
+    };
+    for (const auto &it : items) {
+        QAction *a = menu.addAction(it.label);
+        a->setCheckable(true);
+        a->setChecked(m_backgroundColor == it.color);
+        group->addAction(a);
+        QColor c = it.color;
+        connect(a, &QAction::triggered, this, [this, c]() { setBackgroundColor(c); });
+    }
     menu.addSeparator();
     QAction *custom = menu.addAction(tr("Custom..."));
     QAction *reset = menu.addAction(tr("Reset to Default"));
 
     QAction *chosen = menu.exec(ev->globalPos());
-    if (chosen == black) {
-        setBackgroundColor(Qt::black);
-    } else if (chosen == white) {
-        setBackgroundColor(Qt::white);
-    } else if (chosen == gray) {
-        setBackgroundColor(QColor(0x80, 0x80, 0x80));
-    } else if (chosen == custom) {
+    if (chosen == custom) {
         QColor c = QColorDialog::getColor(m_backgroundColor, this, tr("Canvas Background Color"));
         if (c.isValid()) setBackgroundColor(c);
     } else if (chosen == reset) {
