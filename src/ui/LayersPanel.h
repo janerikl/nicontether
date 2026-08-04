@@ -42,12 +42,10 @@ class LayersPanel : public QWidget {
 public:
     explicit LayersPanel(QWidget *parent = nullptr);
 
-    // previewImage is the tab's base photo with just the global/base tone
-    // adjustments applied - no mask layers composited - used only for the
-    // pinned Background row's thumbnail; passing a null image leaves
-    // whatever thumbnail is already cached (e.g. between renders) in place.
-    void setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground,
-                  bool backgroundHidden = false, const QImage &previewImage = QImage());
+    // The Background layer (the tab's own base photo) is just a normal
+    // MaskType::Background entry in `masks` now — no separate pinned row or
+    // extra parameters, same as every other layer.
+    void setMasks(const QVector<Mask> &masks, int activeIndex);
     // Remove Object section: a flat list of Adjustments::removals, one row
     // per content-aware fill (visibility checkbox + Delete button), mirroring
     // the Shapes section's per-row eye toggle. Top of the list = most
@@ -122,28 +120,22 @@ private:
     void rebuildList();
     void doRebuildList();
     void updateCurrentItemHighlight();
-    bool masksContentEqual(const QVector<Mask> &masks, bool hasBackground, bool backgroundHidden) const;
+    bool masksContentEqual(const QVector<Mask> &masks) const;
     void rebuildRemovalList();
 
     // Row thumbnails (see doRebuildList()). Each returns an icon sized to
     // m_maskList's iconSize().
     QIcon maskThumbnail(const Mask &m) const;
     QIcon groupThumbnail() const;
-    QIcon backgroundThumbnail() const;
 
     QVector<Mask> m_masks;
     int m_active = -1;
-    bool m_hasBackground = false;
-    bool m_backgroundHidden = false;
     QVector<RemoveObjectOp> m_removals;
     int m_activeRemoval = -1;
     bool m_syncing = false;
     // True while a coalesced doRebuildList() call is pending on the event
     // loop (see rebuildList()).
     bool m_rebuildScheduled = false;
-    // Cached for the pinned Background row's thumbnail; updated opportunistically
-    // by setMasks() (see its previewImage parameter) without forcing a rebuild.
-    QImage m_backgroundPreview;
     MaskAdjust m_curAdjust; // last-loaded active layer's adjustment, patched per-section
 
     QTreeWidget *m_maskList = nullptr;

@@ -131,7 +131,13 @@ struct MaskAdjust {
     bool operator!=(const MaskAdjust &o) const { return !(*this == o); }
 };
 
-enum class MaskType { Radial, Linear, Brush, Paint, Text, None, Shape, TextBox };
+// Background: the tab's own loaded base photo, represented as a normal Mask
+// entry so it goes through the exact same visibility/delete/reorder/thumbnail
+// code paths as every other layer (see RetouchTab::ensureBackgroundMask).
+// Full-frame, non-repositionable content sourced from `sourceImageCache`
+// (populated by RetouchTab from its base image, never from an external file
+// — `sourceImagePath` stays empty so isImageLayer() does not also match it).
+enum class MaskType { Radial, Linear, Brush, Paint, Text, None, Shape, TextBox, Background };
 
 enum class ShapeType { Rectangle, Ellipse, Line, Polygon, Star, Heart };
 
@@ -301,6 +307,10 @@ struct Mask {
     QImage sourceImageCache;
     bool sourceMissing = false;
     bool isImageLayer() const { return !sourceImagePath.isEmpty(); }
+    // Background layer: content is the tab's own loaded base photo (see
+    // MaskType::Background comment above), sourced via `sourceImageCache`
+    // like an image layer but never from an external file/path.
+    bool isBackgroundLayer() const { return type == MaskType::Background; }
 
     // Erase-tool strokes (image layers only): canvas-normalized dabs that
     // punch feathered transparency into this layer's alpha at composite
@@ -596,14 +606,6 @@ struct Adjustments {
     // in the sidecar like everything else here, so it's just carried along.
     QColor backgroundColor = QColor(30, 30, 30);
 
-    // Base (background) layer visibility/deletion, toggled from the Layers
-    // panel's pinned Background row. `backgroundDeleted` is a permanent,
-    // one-way version of hidden — once set, the base photo is dropped from
-    // compositing entirely (rendered transparent) and the Background row
-    // stops appearing, leaving only whatever mask/shape/text layers remain.
-    bool backgroundHidden = false;
-    bool backgroundDeleted = false;
-
     bool hasCurve() const;     // true if curve is set and not the identity
 
     bool operator==(const Adjustments &o) const {
@@ -623,9 +625,7 @@ struct Adjustments {
                rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
                flipV == o.flipV && cropRect == o.cropRect &&
                std::abs(cropAngle - o.cropAngle) < 1e-9 &&
-               backgroundColor == o.backgroundColor &&
-               backgroundHidden == o.backgroundHidden &&
-               backgroundDeleted == o.backgroundDeleted;
+               backgroundColor == o.backgroundColor;
     }
     bool operator!=(const Adjustments &o) const { return !(*this == o); }
 };

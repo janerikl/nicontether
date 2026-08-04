@@ -163,13 +163,14 @@ public:
                m_adj.masks[m_activeMask].type == requiredType;
     }
 
-    // Base (background) layer. `hasBackgroundLayer` is false once the base
-    // has been permanently deleted (a document with only a blank/untitled
-    // canvas never had one either — see the QSize constructor).
-    bool hasBackgroundLayer() const { return !m_path.isEmpty() && !m_adj.backgroundDeleted; }
-    bool isBackgroundHidden() const { return m_adj.backgroundHidden; }
-    void setBackgroundVisible(bool visible);
-    void deleteBackground(); // permanent: drops the base photo, keeps other layers
+    // The Background layer (the tab's own loaded base photo) is a normal
+    // MaskType::Background entry in m_adj.masks now — no separate
+    // hidden/deleted bookkeeping. These are thin convenience lookups; hiding/
+    // deleting/reordering it goes through the exact same generic
+    // selectMask()/deleteActiveMask()/Mask::visible flow as any other layer.
+    int backgroundMaskIndex() const;
+    bool hasBackgroundLayer() const { return backgroundMaskIndex() >= 0; }
+    bool backgroundLayerVisible() const;
     void showOriginal(bool on); // press-and-hold before/after
     void zoomFit();
     void setZoomPercent(double percent);
@@ -192,15 +193,6 @@ public:
 
     // Latest toned preview render (display-scaled). Empty until first render.
     QImage previewImage() const { return m_lastEdited; }
-
-    // Small render of JUST the base photo with JUST the global/base tone
-    // adjustments applied - no masks composited at all (not even the
-    // static-tier Radial/Linear/Image ones). Used for the Layers panel's
-    // pinned Background row thumbnail, which must NOT change when other
-    // layers' visibility is toggled. Computed on a downscaled copy so it's
-    // cheap to call on every panel refresh. Returns a null QImage before the
-    // first geometry pass has run.
-    QImage backgroundOnlyPreview() const;
 
     // Per-layer Levels histogram feed: while enabled (Layers dock visible),
     // the render pipeline additionally produces the cumulative composite
@@ -311,6 +303,13 @@ private:
     void kickoffImageLayerDecode(const QString &path); // async-decode an image layer's source
     QString copyImageLayerAsset(const QString &sourcePath); // copy a layer source next to m_path so it survives move/delete
     void setupCanvasAndWiring(); // shared canvas creation + connect()s for both constructors
+    // Inserts a MaskType::Background entry (sourced from this tab's own base
+    // photo) at the bottom of m_adj.masks if one isn't already there —
+    // called once, right after the sidecar is loaded/a blank canvas is
+    // created, before the undo history is seeded, so it never itself counts
+    // as an "edit". A no-op for a sidecar that already restored one (fresh
+    // open) or that explicitly had it migrated in (see EditSidecar::load).
+    void ensureBackgroundMask();
 
     QString m_path;
     QImage m_base;   // full-res decoded RAW (immutable)

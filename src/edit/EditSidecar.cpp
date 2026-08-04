@@ -126,8 +126,9 @@ bool save(const QString &imagePath, const Adjustments &a) {
     o["flipH"] = a.flipH;
     o["flipV"] = a.flipV;
     o["backgroundColor"] = a.backgroundColor.name(QColor::HexRgb);
-    o["backgroundHidden"] = a.backgroundHidden;
-    o["backgroundDeleted"] = a.backgroundDeleted;
+    // Background layer visibility/presence is no longer tracked separately —
+    // it's just a normal masks[] entry (MaskType::Background) now, written
+    // through the generic masks loop below like any other layer.
     if (!a.cropRect.isNull()) {
         QJsonObject c;
         c["x"] = a.cropRect.x();
@@ -355,8 +356,6 @@ bool load(const QString &imagePath, Adjustments &out) {
     a.flipV = o["flipV"].toBool();
     a.backgroundColor = QColor(o["backgroundColor"].toString(QStringLiteral("#1e1e1e")));
     if (!a.backgroundColor.isValid()) a.backgroundColor = QColor(30, 30, 30);
-    a.backgroundHidden = o["backgroundHidden"].toBool();
-    a.backgroundDeleted = o["backgroundDeleted"].toBool();
     if (o.contains("crop")) {
         QJsonObject c = o["crop"].toObject();
         a.cropRect = QRect(c["x"].toInt(), c["y"].toInt(),
@@ -633,6 +632,29 @@ bool load(const QString &imagePath, Adjustments &out) {
         }
         for (int i = 0; i < migrated.size(); ++i)
             a.masks.insert(insertAt + i, migrated[i]);
+    }
+
+    // Load-time migration: sidecars written before the Background layer
+    // became a normal masks[] entry carry the old standalone
+    // "backgroundHidden"/"backgroundDeleted" fields instead. Synthesize an
+    // equivalent MaskType::Background entry at the bottom of the stack (its
+    // old pinned visual position) so the rest of the app never has to know
+    // the difference. `backgroundDeleted` was a permanent one-way flag, so a
+    // deleted background simply gets no entry synthesized (matching the old
+    // "row disappears forever" behaviour) — the user can always add a fresh
+    // one being genuinely reorderable from here on is moot since it no
+    // longer exists, same as before.
+    {
+        bool hasBackgroundMask = false;
+        for (const Mask &m : a.masks)
+            if (m.type == MaskType::Background) { hasBackgroundMask = true; break; }
+        if (!hasBackgroundMask && !o["backgroundDeleted"].toBool(false)) {
+            Mask bg;
+            bg.type = MaskType::Background;
+            bg.name = QStringLiteral("Background");
+            bg.visible = !o["backgroundHidden"].toBool(false);
+            a.masks.append(bg);
+        }
     }
 
     out = a;

@@ -53,6 +53,7 @@ QString maskTypeLabel(MaskType t) {
     case MaskType::Text:    return "Text Mask";
     case MaskType::Shape:   return "Shape";
     case MaskType::TextBox: return "Text";
+    case MaskType::Background: return "Background";
     }
     return "Layer";
 }
@@ -562,7 +563,7 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 // first child instead.
                 if (idx == -1 && item->childCount() > 0)
                     idx = item->child(0)->data(0, Qt::UserRole).toInt();
-                emit selectMaskRequested(idx == -2 ? -1 : idx); // -2 = Background row
+                emit selectMaskRequested(idx);
             });
     connect(m_maskList, &QTreeWidget::itemChanged, this,
             [this](QTreeWidgetItem *item, int) {
@@ -573,12 +574,11 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 const bool wasChecked = item->data(0, Qt::UserRole + 2).toBool();
                 if (checked != wasChecked) {
                     item->setData(0, Qt::UserRole + 2, checked);
-                    const int emitIdx = idx == -2 ? -1 : idx; // -2 = Background row
                     QPointer<LayersPanel> self(this);
                     QMetaObject::invokeMethod(
                         this,
-                        [self, emitIdx, checked] {
-                            if (self) emit self->maskVisibleChanged(emitIdx, checked);
+                        [self, idx, checked] {
+                            if (self) emit self->maskVisibleChanged(idx, checked);
                         },
                         Qt::QueuedConnection);
                     return;
@@ -590,15 +590,14 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 if (m_syncing) return;
                 // Flatten the tree back into a full masks() order: a group's
                 // parent row expands to its members' original indices, a
-                // plain row is its own index. Background (idx == -2) isn't
-                // part of masks() and is skipped.
+                // plain row is its own index. Background is a normal row
+                // now, included in the flattened order like everything else.
                 QVector<int> order;
                 QVector<int> leftGroup; // original indices no longer nested under a group
                 QVector<QPair<int, QString>> joinGroup; // original indices that joined/switched group
                 for (int i = 0; i < m_maskList->topLevelItemCount(); ++i) {
                     QTreeWidgetItem *item = m_maskList->topLevelItem(i);
                     int idx = item->data(0, Qt::UserRole).toInt();
-                    if (idx == -2) continue; // Background
                     if (idx == -1) { // group parent: append its members in order
                         const QString groupId = item->data(0, Qt::UserRole + 1).toString();
                         for (int c = 0; c < item->childCount(); ++c) {
@@ -755,8 +754,7 @@ void LayersPanel::clear() {
     setEnabled(false);
 }
 
-void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground,
-                            bool backgroundHidden, const QImage &previewImage) {
+void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex) {
     // A plain click to select a row round-trips through RetouchTab::selectMask
     // -> masksChanged -> here with the mask list content completely unchanged
     // (only activeIndex differs). Rebuilding the tree in that case destroys
@@ -766,17 +764,9 @@ void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex, bool has
     // since the pressed row no longer exists by the time the mouse moves far
     // enough to cross the drag-start threshold. So: only rebuild when the
     // content actually changed; otherwise just move the highlighted row.
-    const bool sameContent = masksContentEqual(masks, hasBackground, backgroundHidden);
+    const bool sameContent = masksContentEqual(masks);
     m_masks = masks;
     m_active = activeIndex;
-    m_hasBackground = hasBackground;
-    m_backgroundHidden = backgroundHidden;
-    // Stored opportunistically, independent of sameContent: the preview
-    // image changes on essentially every render, and forcing a tree rebuild
-    // whenever it does would defeat the whole point of masksContentEqual()
-    // above. It's simply picked up next time a real (structural) rebuild
-    // happens to run.
-    if (!previewImage.isNull()) m_backgroundPreview = previewImage;
     setEnabled(true);
     if (sameContent) updateCurrentItemHighlight();
     else rebuildList();
@@ -817,11 +807,6 @@ void LayersPanel::resetSections() {
         if (d) d->show();
 }
 
-// True when `masks`/hasBackground/backgroundHidden describe exactly the same
-// layer stack already shown in the tree (m_masks et al) — the only thing
-// that may differ is which one is active/selected. Mask::operator== covers
-// every layer-identity/content field except sourceImageCache and
-// sourceMissing (both transient decode results, deliberately excluded from
 namespace {
 constexpr int kThumbPx = 40;
 const QColor kThumbBg(46, 46, 46);
@@ -837,7 +822,7 @@ const QColor kThumbFg(225, 225, 225);
 // here. Same drawn-not-loaded-asset style as drawChevronIcon/drawCloseIcon
 // above.
 QIcon LayersPanel::maskThumbnail(const Mask &m) const {
-    if (m.isImageLayer()) {
+    if (m.isImageLayer() || m.isBackgroundLayer()) {
         if (!m.sourceImageCache.isNull()) {
             QPixmap pm = QPixmap::fromImage(m.sourceImageCache)
                              .scaled(kThumbPx, kThumbPx, Qt::KeepAspectRatio, Qt::SmoothTransformation);
@@ -901,6 +886,8 @@ QIcon LayersPanel::maskThumbnail(const Mask &m) const {
     }
     case MaskType::None:
         break;
+    case MaskType::Background:
+        break; // unreachable: isBackgroundLayer() returns early above
     case MaskType::Shape: {
         // Simple schematic outline of the shape's kind, tinted with its own
         // fill/stroke colors so the row gives some hint of the actual layer
@@ -984,31 +971,15 @@ QIcon LayersPanel::groupThumbnail() const {
     return QIcon(pm);
 }
 
-// Pinned Background row: a scaled copy of the tab's base-photo-plus-global-
-// tone render, excluding all mask layers (see setMasks()'s previewImage
-// parameter), same scale-to-fit treatment as an image layer's own thumbnail.
-// Deliberately independent of other layers' visibility.
-QIcon LayersPanel::backgroundThumbnail() const {
-    if (m_backgroundPreview.isNull()) {
-        QPixmap pm(kThumbPx, kThumbPx);
-        pm.fill(kThumbBg);
-        return QIcon(pm);
-    }
-    QPixmap pm = QPixmap::fromImage(m_backgroundPreview)
-                     .scaled(kThumbPx, kThumbPx, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    QPixmap canvas(kThumbPx, kThumbPx);
-    canvas.fill(kThumbBg);
-    QPainter p(&canvas);
-    p.drawPixmap((kThumbPx - pm.width()) / 2, (kThumbPx - pm.height()) / 2, pm);
-    return QIcon(canvas);
-}
-
-// operator== elsewhere), so those two are compared separately here since
-// they affect the tree row's " (loading…)"/" (missing)" label text.
-bool LayersPanel::masksContentEqual(const QVector<Mask> &masks, bool hasBackground,
-                                     bool backgroundHidden) const {
+// True when `masks` describes exactly the same layer stack already shown in
+// the tree (m_masks) — the only thing that may differ is which one is
+// active/selected. Mask::operator== covers every layer-identity/content
+// field except sourceImageCache and sourceMissing (both transient decode
+// results, deliberately excluded from operator== elsewhere), so those two
+// are compared separately here since they affect the tree row's
+// " (loading…)"/" (missing)" label text.
+bool LayersPanel::masksContentEqual(const QVector<Mask> &masks) const {
     if (masks.size() != m_masks.size()) return false;
-    if (hasBackground != m_hasBackground || backgroundHidden != m_backgroundHidden) return false;
     if (masks != m_masks) return false;
     for (int i = 0; i < masks.size(); ++i) {
         if (masks[i].sourceImageCache.isNull() != m_masks[i].sourceImageCache.isNull()) return false;
@@ -1094,20 +1065,6 @@ void LayersPanel::doRebuildList() {
     }
     for (auto it = groupItems.constBegin(); it != groupItems.constEnd(); ++it)
         it.value()->setExpanded(!m_collapsedMaskGroups.contains(it.key()));
-    if (m_hasBackground) {
-        // Pinned to the bottom of the stack, like Photoshop's Background layer.
-        // Unlike other rows it can't be dragged or grouped, but it can be
-        // hidden (eye checkbox) and deleted (see loadActive()'s isBackground
-        // handling).
-        auto *bg = new QTreeWidgetItem(m_maskList, {QStringLiteral("Background \xF0\x9F\x94\x92")}); // trailing lock emoji
-        bg->setIcon(0, backgroundThumbnail());
-        bg->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
-        bg->setData(0, Qt::UserRole, -2);
-        bg->setCheckState(0, m_backgroundHidden ? Qt::Unchecked : Qt::Checked);
-        bg->setData(0, Qt::UserRole + 2, !m_backgroundHidden);
-        if (m_active == -1) m_maskList->setCurrentItem(bg);
-        if (selectedIndices.contains(-2)) bg->setSelected(true);
-    }
     m_syncing = false;
 }
 
@@ -1117,9 +1074,8 @@ void LayersPanel::doRebuildList() {
 // disturbing Qt's own in-flight drag/press bookkeeping. Group members are
 // nested, so search every level via QTreeWidgetItemIterator.
 void LayersPanel::updateCurrentItemHighlight() {
-    const int wantRole = (m_active == -1 && m_hasBackground) ? -2 : m_active;
     for (QTreeWidgetItemIterator it(m_maskList); *it; ++it) {
-        if ((*it)->data(0, Qt::UserRole).toInt() == wantRole) {
+        if ((*it)->data(0, Qt::UserRole).toInt() == m_active) {
             m_syncing = true;
             m_maskList->setCurrentItem(*it);
             m_syncing = false;
@@ -1148,13 +1104,12 @@ void LayersPanel::rebuildRemovalList() {
 
 void LayersPanel::loadActive() {
     const bool has = m_active >= 0 && m_active < m_masks.size();
-    const bool isBackground = m_hasBackground && m_active == -1;
     m_syncing = true;
     for (QWidget *w : std::initializer_list<QWidget *>{
              m_name, m_opacity, m_blend, m_levelsPanel})
         w->setEnabled(has);
-    m_duplicate->setEnabled(has || isBackground);
-    m_delete->setEnabled(has || isBackground); // background delete handled specially, see deleteMaskRequested
+    m_duplicate->setEnabled(has);
+    m_delete->setEnabled(has);
     if (has) {
         const Mask &m = m_masks[m_active];
         m_name->setText(m.name);

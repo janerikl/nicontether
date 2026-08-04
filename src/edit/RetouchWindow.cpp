@@ -1848,8 +1848,7 @@ void RetouchWindow::buildLayersDock() {
     connect(m_layersPanel, &LayersPanel::deleteMaskRequested, this, [this] {
         RetouchTab *tab = currentTab();
         if (tab) {
-            if (tab->activeMaskIndex() == -1) tab->deleteBackground();
-            else tab->deleteActiveMask();
+            tab->deleteActiveMask(); // Background is a normal mask now, same delete path
             refreshMaskPanel();
         }
     });
@@ -1870,14 +1869,17 @@ void RetouchWindow::buildLayersDock() {
     connect(m_layersPanel, &LayersPanel::duplicateMaskRequested, this, [this] {
         RetouchTab *tab = currentTab();
         if (!tab) return;
-        if (tab->activeMaskIndex() == -1 && !tab->path().isEmpty()) {
-            // Duplicating the locked Background row: add a real, unlocked
-            // image layer sourced from the same photo, placed at the
-            // bottom of the stack (directly above Background).
-            int idx = tab->addImageLayer(tab->path());
-            tab->setMaskName(idx, QStringLiteral("Background copy"));
-            tab->moveMask(idx, 0);
-            tab->selectMask(0);
+        const int idx = tab->activeMaskIndex();
+        const bool isBackground = idx >= 0 && idx < tab->masks().size() &&
+                                  tab->masks()[idx].type == MaskType::Background;
+        if (isBackground && !tab->path().isEmpty()) {
+            // Only one Background-type layer is ever allowed per image (it's
+            // auto-created once, not user-creatable) — "duplicating" it
+            // instead adds a real, independent image layer sourced from the
+            // same photo, placed just above Background.
+            int newIdx = tab->addImageLayer(tab->path());
+            tab->setMaskName(newIdx, QStringLiteral("Background copy"));
+            tab->selectMask(newIdx);
         } else {
             tab->duplicateActiveMask();
         }
@@ -1924,8 +1926,7 @@ void RetouchWindow::buildLayersDock() {
             [this](int index, bool visible) {
                 RetouchTab *tab = currentTab();
                 if (tab) {
-                    if (index == -1) tab->setBackgroundVisible(visible);
-                    else tab->setMaskVisible(index, visible);
+                    tab->setMaskVisible(index, visible); // Background is a normal mask now
                     refreshMaskPanel();
                 }
             });
@@ -1975,9 +1976,7 @@ void RetouchWindow::refreshMaskPanel() {
     const bool ready = tab && tab->isReady();
     if (m_layersPanel) {
         if (ready) {
-            m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex(),
-                                    tab->hasBackgroundLayer(), tab->isBackgroundHidden(),
-                                    tab->backgroundOnlyPreview());
+            m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex());
             m_layersPanel->setRemovals(tab->removals(), tab->activeRemovalIndex());
         } else {
             m_layersPanel->clear();
@@ -2919,7 +2918,7 @@ void RetouchWindow::onSave() {
         // they want it in the strip.
     }
     tab->saveEdits();
-    refreshMaskPanel(); // the tab now has a path -> Background row should appear
+    refreshMaskPanel(); // the tab's path (and Background layer's name) changed
     m_statusLabel->setText("Saved edits: " + QFileInfo(tab->path()).fileName());
 }
 

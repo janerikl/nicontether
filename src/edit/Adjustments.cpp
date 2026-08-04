@@ -600,7 +600,12 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             continue;
         }
         const bool imageLayer = m.isImageLayer();
+        const bool backgroundLayer = m.isBackgroundLayer();
         if (imageLayer && (m.sourceMissing || m.sourceImageCache.isNull())) {
+            if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
+            continue;
+        }
+        if (backgroundLayer && m.sourceImageCache.isNull()) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
@@ -608,8 +613,8 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         const bool textLayer = m.type == MaskType::Text;
         const bool shapeLayer = m.type == MaskType::Shape;
         const bool textBoxLayer = m.type == MaskType::TextBox;
-        if (!imageLayer && !paintLayer && !textLayer && !shapeLayer && !textBoxLayer &&
-            m.adj.isZero()) {
+        if (!imageLayer && !backgroundLayer && !paintLayer && !textLayer && !shapeLayer &&
+            !textBoxLayer && m.adj.isZero()) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
@@ -669,6 +674,14 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                 }
             }
             loc = applyLayerContent(loc, m.adj);
+        } else if (backgroundLayer) {
+            // Full-frame, non-repositionable: just the tab's base photo
+            // (already sized to the canvas), tone-adjusted by this layer's
+            // own `adj` like any other layer's content.
+            QImage src = m.sourceImageCache;
+            if (src.width() != w || src.height() != h)
+                src = src.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+            loc = applyLayerContent(src, m.adj);
         } else if (paintLayer) {
             loc = QImage(w, h, QImage::Format_RGBA64);
             loc.fill(m.paintColor); // fallback fill; per-dab colors applied below
@@ -720,7 +733,7 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             const QRgba64 *locLine = reinterpret_cast<const QRgba64 *>(loc.scanLine(y));
             for (int x = 0; x < w; ++x) {
                 double wgt;
-                if (m.type == MaskType::None)
+                if (m.type == MaskType::None || backgroundLayer)
                     wgt = 1.0;
                 else if (m.type == MaskType::Radial)
                     wgt = radialWeight(m, x / W, y / W);
@@ -1140,6 +1153,11 @@ static bool hasMaskEdits(const Adjustments &adj) {
             if (m.sourceMissing || m.sourceImageCache.isNull()) continue;
             return true;
         }
+        // Background layer: unlike an external image layer, its content is
+        // just the tab's own base photo, which is already accounted for
+        // outside of the mask stack — so an untouched (default) Background
+        // entry contributes no edit of its own; only a non-identity `adj`
+        // does (falls through to the generic check below).
         if (m.type == MaskType::Paint) {
             if (m.stroke.isEmpty()) continue;
             return true;
@@ -1285,7 +1303,7 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
             img = img.copy(r);
     }
 
-    if (!hasToneEdits(adj)) {
+    if (!hasToneEdits(adj) && adj.masks.isEmpty()) {
         if (maskSnapshotOut && maskSnapshotIndex >= 0) *maskSnapshotOut = img;
         return img;
     }
@@ -1295,6 +1313,11 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
 
     // --- Per-pixel: white balance, curve, levels, contrast, brightness,
     //     highlights/shadows, saturation/vibrance ---
+    // (This is the tab's "global" grade — it has always applied only to the
+    // base photo's own pixels, same as before the Background layer became a
+    // normal Mask entry: it's baked into `img` here and handed to the
+    // Background mask below as its content, exactly like any other layer's
+    // content is computed before compositing.)
     ToneParams tp = makeToneParams(adj.contrast, adj.brightness, adj.highlights,
                                    adj.shadows, adj.saturation, adj.vibrance,
                                    adj.temperature, adj.tint, adj.wbR, adj.wbG,
@@ -1311,9 +1334,29 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
     // buffer (see applyPaintMasks and the MaskPass comment above it), so
     // dragging/painting one of them doesn't re-run this full tone/static-
     // mask pass on every frame.
-    if (!adj.masks.isEmpty())
-        applyMasks(img, adj.masks, brushCache, maskSnapshotIndex, maskSnapshotOut,
-                  MaskPass::StaticOnly);
+    if (!adj.masks.isEmpty()) {
+        // The Background mask (if present) has no content of its own beyond
+        // "this tab's base photo" — feed it the globally-toned base computed
+        // above so it composites like any other layer, at whatever position
+        // it currently occupies in the stack (genuinely reorderable/
+        // hideable/deletable, no pinned bottom slot).
+        bool hasBackgroundMask = false;
+        for (const Mask &m : adj.masks)
+            if (m.type == MaskType::Background) { hasBackgroundMask = true; break; }
+        if (hasBackgroundMask) {
+            QVector<Mask> stack = adj.masks;
+            for (Mask &m : stack)
+                if (m.type == MaskType::Background) m.sourceImageCache = img;
+            QImage composite(w, h, QImage::Format_RGBA64);
+            composite.fill(Qt::transparent);
+            applyMasks(composite, stack, brushCache, maskSnapshotIndex, maskSnapshotOut,
+                      MaskPass::StaticOnly);
+            img = composite;
+        } else {
+            applyMasks(img, adj.masks, brushCache, maskSnapshotIndex, maskSnapshotOut,
+                      MaskPass::StaticOnly);
+        }
+    }
 
     // --- Denoise / clarity / sharpen / vignette (base layer only; layers have their own) ---
     applyDenoise(img, adj.denoise);

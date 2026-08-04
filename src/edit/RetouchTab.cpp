@@ -58,6 +58,7 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     // decoded again — the cache is never persisted.
     for (const Mask &m : m_adj.masks)
         if (m.isImageLayer()) kickoffImageLayerDecode(m.sourceImagePath);
+    ensureBackgroundMask();
 
     setupCanvasAndWiring();
 
@@ -72,6 +73,7 @@ RetouchTab::RetouchTab(const QSize &blankSize, QWidget *parent)
     : QWidget(parent), m_path(QString()) {
     m_base = QImage(blankSize, QImage::Format_ARGB32);
     m_base.fill(Qt::transparent);
+    ensureBackgroundMask();
 
     setupCanvasAndWiring();
 
@@ -331,15 +333,13 @@ QImage RetouchTab::orientedPreCropSource() const {
     orientAdj.rotationQuadrants = m_adj.rotationQuadrants;
     orientAdj.flipH = m_adj.flipH;
     orientAdj.flipV = m_adj.flipV;
-    QImage baseSrc = m_base;
-    if (m_adj.backgroundHidden || m_adj.backgroundDeleted) {
-        // Hidden/deleted base: composite a fully transparent image of the
-        // same size in its place so mask/shape/text layers above it (and the
-        // canvas checkerboard) still render correctly.
-        baseSrc = QImage(m_base.size(), QImage::Format_RGBA64);
-        baseSrc.fill(Qt::transparent);
-    }
-    QImage oriented = applyAdjustments(baseSrc, orientAdj);
+    // The Background layer's own visibility/presence now lives in m_adj.masks
+    // (MaskType::Background) like any other layer, so `base` here is always
+    // just the tab's raw loaded photo — applyAdjustments composites the
+    // masks stack (including Background, wherever it sits) on top of a blank
+    // canvas, so a hidden/deleted Background renders as transparent through
+    // the normal generic mask-visibility code path.
+    QImage oriented = applyAdjustments(m_base, orientAdj);
     if (!m_adj.heals.isEmpty()) applyHeal(oriented, m_adj.heals);
 
     if (!m_adj.removals.isEmpty()) {
@@ -404,7 +404,7 @@ void RetouchTab::rebuildGeom() {
         }
     }
 
-    m_canvas->setShowCheckerboard(m_adj.backgroundHidden || m_adj.backgroundDeleted);
+    m_canvas->setShowCheckerboard(!backgroundLayerVisible());
 
     if (qMax(m_geomImg.width(), m_geomImg.height()) > kDisplayMaxDim) {
         m_scaled = m_geomImg.scaled(kDisplayMaxDim, kDisplayMaxDim,
@@ -415,6 +415,14 @@ void RetouchTab::rebuildGeom() {
     m_scaleFromGeom = m_geomImg.width() > 0
                           ? double(m_scaled.width()) / m_geomImg.width()
                           : 1.0;
+    // Keep the Background mask's thumbnail source in sync with the current
+    // geometry (crop/rotate/flip) — only used by LayersPanel's generic
+    // maskThumbnail(); actual rendering always sources fresh content from
+    // `m_base` inside applyAdjustments (see applyAdjustments in
+    // Adjustments.cpp), so this never causes spurious history/dirty churn
+    // (Mask::operator== ignores sourceImageCache).
+    for (Mask &m : m_adj.masks)
+        if (m.type == MaskType::Background) m.sourceImageCache = m_scaled;
     updateHealSpots();
     updateTextMarkers();
     updateShapeMarkers();
@@ -517,21 +525,6 @@ void RetouchTab::updateRemovalMarkers() {
     }
     m_canvas->setRemovalMarkers(markers);
     m_canvas->setActiveRemovalIndex(m_activeRemoval);
-}
-
-QImage RetouchTab::backgroundOnlyPreview() const {
-    if (m_scaled.isNull()) return QImage();
-    // Downscale first so the tone pass below (and any convolutions it runs)
-    // stays cheap regardless of how often the Layers panel refreshes.
-    constexpr int kBgPreviewMaxDim = 200;
-    QImage small = m_scaled;
-    if (qMax(small.width(), small.height()) > kBgPreviewMaxDim) {
-        small = small.scaled(kBgPreviewMaxDim, kBgPreviewMaxDim, Qt::KeepAspectRatio,
-                             Qt::SmoothTransformation);
-    }
-    Adjustments t = toneOnly(m_adj);
-    t.masks.clear(); // exclude every mask layer, static and interactive alike
-    return applyAdjustments(small, t);
 }
 
 void RetouchTab::retone() {
@@ -1993,22 +1986,23 @@ void RetouchTab::deleteActiveMask() {
     emit masksChanged();
 }
 
-void RetouchTab::setBackgroundVisible(bool visible) {
-    if (m_adj.backgroundDeleted || m_adj.backgroundHidden == !visible) return;
-    m_adj.backgroundHidden = !visible;
-    rebuildGeom();
-    retone();
-    markEdited();
-    emit masksChanged();
+int RetouchTab::backgroundMaskIndex() const {
+    for (int i = 0; i < m_adj.masks.size(); ++i)
+        if (m_adj.masks[i].type == MaskType::Background) return i;
+    return -1;
 }
 
-void RetouchTab::deleteBackground() {
-    if (m_adj.backgroundDeleted) return;
-    m_adj.backgroundDeleted = true;
-    rebuildGeom();
-    retone();
-    markEdited();
-    emit masksChanged();
+bool RetouchTab::backgroundLayerVisible() const {
+    const int idx = backgroundMaskIndex();
+    return idx < 0 || m_adj.masks[idx].visible;
+}
+
+void RetouchTab::ensureBackgroundMask() {
+    if (backgroundMaskIndex() >= 0) return;
+    Mask bg;
+    bg.type = MaskType::Background;
+    bg.name = QStringLiteral("Background");
+    m_adj.masks.append(bg);
 }
 
 void RetouchTab::setActiveMaskType(MaskType type) {

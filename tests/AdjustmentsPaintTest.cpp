@@ -239,7 +239,11 @@ int main(int argc, char **argv) {
 
         Adjustments loaded;
         assert(EditSidecar::load(path, loaded));
-        assert(loaded.masks.size() == 1);
+        // +1: a sidecar with no MaskType::Background entry and no legacy
+        // backgroundHidden/backgroundDeleted fields gets one synthesized on
+        // load (see EditSidecar::load's Background migration), appended
+        // after this test's own single mask.
+        assert(loaded.masks.size() == 2);
         assert(loaded.masks[0].sourceImageOffset == QPointF(0.25, -0.5));
         assert(loaded.masks[0].sourceImageScale == QPointF(0.75, 0.5));
         assert(!loaded.masks[0].sourceImageLockRatio);
@@ -263,7 +267,7 @@ int main(int argc, char **argv) {
 
         Adjustments loaded;
         assert(EditSidecar::load(path, loaded));
-        assert(loaded.masks.size() == 1);
+        assert(loaded.masks.size() == 2); // +1 synthesized Background, see above
         assert(loaded.masks[0].eraseStrokes.size() == 2);
         assert(loaded.masks[0].eraseStrokes[0].pt == QPointF(0.3, 0.4));
         assert(std::abs(loaded.masks[0].eraseStrokes[0].radius - 0.1) < 1e-9);
@@ -287,7 +291,7 @@ int main(int argc, char **argv) {
 
         Adjustments loaded;
         assert(EditSidecar::load(path, loaded));
-        assert(loaded.masks.size() == 1);
+        assert(loaded.masks.size() == 2); // +1 synthesized Background, see above
         assert(loaded.masks[0].eraseStrokes.isEmpty());
     }
 
@@ -628,6 +632,98 @@ int main(int argc, char **argv) {
         tbEmpty.textBoxText = QStringLiteral("   "); // whitespace-only -> no edit
         b.masks.append(tbEmpty);
         assert(!hasToneEdits(b));
+    }
+
+    // MaskType::Background: the tab's base photo, represented as a normal
+    // Mask entry (see RetouchTab::ensureBackgroundMask), goes through the
+    // exact same generic compositing/visibility/z-order code path as every
+    // other layer in applyMasks — no pinned bottom slot, no special hide/
+    // delete flag. This is the core regression coverage for that migration.
+    {
+        QImage base(4, 4, QImage::Format_ARGB32);
+        base.fill(QColor(0, 0, 255)); // blue
+
+        Mask bg;
+        bg.type = MaskType::Background;
+        bg.name = QStringLiteral("Background");
+
+        Mask paint;
+        paint.type = MaskType::Paint;
+        paint.paintColor = QColor(255, 0, 0); // red
+        paint.brushRadius = 2.0;
+        paint.hardness = 1.0;
+        paint.opacity = 1.0;
+        paint.blend = BlendMode::Normal;
+        paint.stroke.append(BrushStrokePoint{QPointF(0.5, 0.5), false, paint.brushRadius,
+                                             paint.hardness, paint.paintColor.rgb()});
+
+        // Standard order: Paint above Background (index 0 = top of stack) ->
+        // the paint layer wins.
+        {
+            Adjustments adj;
+            adj.masks.append(paint);
+            adj.masks.append(bg);
+            QImage out = applyAdjustments(base, adj);
+            applyPaintMasks(out, adj.masks);
+            QRgb center = out.pixel(2, 2);
+            assert(qRed(center) > 250 && qGreen(center) < 5 && qBlue(center) < 5);
+        }
+
+        // Reordered: Background dragged above another full-frame (static-
+        // tier) layer -> Background is fully opaque and composites last, so
+        // it now hides that layer entirely. Proves Background is genuinely
+        // reorderable, not pinned to the bottom of the stack. (Uses an image
+        // layer rather than Paint here: Paint/Shape/TextBox are the
+        // "interactive tier", always composited as a block on top of the
+        // static tier regardless of stack order — a pre-existing, documented
+        // rendering-pipeline trade-off unrelated to Background specifically,
+        // see the MaskPass comment in Adjustments.cpp.)
+        {
+            QImage red(4, 4, QImage::Format_ARGB32);
+            red.fill(QColor(255, 0, 0));
+            Mask imageLayer;
+            imageLayer.type = MaskType::None;
+            imageLayer.sourceImagePath = QStringLiteral("layer.png");
+            imageLayer.sourceImageCache = red;
+
+            Adjustments adj;
+            adj.masks.append(bg);
+            adj.masks.append(imageLayer);
+            QImage out = applyAdjustments(base, adj);
+            QRgb center = out.pixel(2, 2);
+            assert(qBlue(center) > 250 && qRed(center) < 5);
+        }
+
+        // Hiding Background (Mask::visible = false, the same generic flag
+        // every other layer uses) renders it as transparent, same as any
+        // other hidden full-frame layer -- no separate backgroundHidden flag.
+        {
+            Adjustments adj;
+            Mask hiddenBg = bg;
+            hiddenBg.visible = false;
+            adj.masks.append(hiddenBg);
+            QImage out = applyAdjustments(base, adj);
+            assert(qAlpha(out.pixel(2, 2)) == 0);
+        }
+
+        // A default (untouched) Background entry alone must not itself count
+        // as an "edit" -- otherwise every freshly-opened image would show as
+        // dirty/edited purely because Background always exists in masks[].
+        {
+            Adjustments adj;
+            adj.masks.append(bg);
+            assert(!hasToneEdits(adj));
+        }
+
+        // But a Background layer with a real per-layer adjustment (or one
+        // that's hidden) does count, same as any other mask.
+        {
+            Adjustments adj;
+            Mask editedBg = bg;
+            editedBg.adj.brightness = 20;
+            adj.masks.append(editedBg);
+            assert(hasToneEdits(adj));
+        }
     }
 
     std::printf("AdjustmentsPaintTest: all assertions passed\n");
