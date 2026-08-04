@@ -167,6 +167,10 @@ private:
     QPushButton *m_healClear = nullptr;
     QToolButton *m_brushToggle = nullptr; // left icon bar: paint-brush tool
     QSlider *m_paintSize = nullptr;
+    QLabel *m_paintSizePx = nullptr; // live "NNpx" readout next to m_paintSize
+    bool m_paintSizeCustomized = false; // once the user drags m_paintSize, stop auto-defaulting it
+    bool m_syncingPaintSize = false; // true while auto-defaulting m_paintSize (not a user edit)
+    void updatePaintSizePxLabel();
     QSlider *m_paintHardness = nullptr;
     QSlider *m_paintOpacity = nullptr;
     FlyoutToolButton *m_maskToggle = nullptr; // left icon bar: local-mask tool

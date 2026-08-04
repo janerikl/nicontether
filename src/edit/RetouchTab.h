@@ -51,6 +51,7 @@ public:
     void assignPath(const QString &path); // File > New's first save: adopt a real backing path
     Adjustments adjustments() const { return m_adj; }
     bool isReady() const { return !m_base.isNull(); }
+    int imageWidth() const { return m_base.isNull() ? 0 : m_base.width(); }
 
     void setAdjustments(const Adjustments &a); // from the dock
     void setCropMode(bool on);

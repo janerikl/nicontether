@@ -76,7 +76,13 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     m_brushSize = new QSlider(Qt::Horizontal);
     m_brushSize->setRange(1, 40); // percent of image width
     m_brushSizeLabel = new QLabel("Brush size:");
-    shape->addRow(m_brushSizeLabel, m_brushSize);
+    m_brushSizePx = new QLabel;
+    m_brushSizePx->setMinimumWidth(40);
+    m_brushSizePx->setStyleSheet("color: #999;");
+    auto *brushSizeRow = new QHBoxLayout;
+    brushSizeRow->addWidget(m_brushSize);
+    brushSizeRow->addWidget(m_brushSizePx);
+    shape->addRow(m_brushSizeLabel, brushSizeRow);
     m_autoMask = new QCheckBox("Auto Mask (stop at edges)");
     shape->addRow(m_autoMask);
     root->addLayout(shape);
@@ -107,6 +113,21 @@ void MaskPanel::setBrushRadius(double radiusNorm) {
     m_syncing = true;
     m_brushSize->setValue(int(std::lround(radiusNorm * 100)));
     m_syncing = false;
+    updateBrushSizePxLabel();
+}
+
+void MaskPanel::setImageWidth(int width) {
+    m_imageWidth = width;
+    updateBrushSizePxLabel();
+}
+
+void MaskPanel::updateBrushSizePxLabel() {
+    if (m_imageWidth <= 0) {
+        m_brushSizePx->clear();
+        return;
+    }
+    const int px = int(std::lround(m_brushSize->value() / 100.0 * m_imageWidth));
+    m_brushSizePx->setText(QString("%1px").arg(px));
 }
 
 void MaskPanel::clear() {
@@ -140,8 +161,8 @@ void MaskPanel::loadMask() {
     if (!maskable) {
         for (QWidget *w : std::initializer_list<QWidget *>{
                  m_invert, m_feather, m_hardnessLabel, m_hardness, m_brushSizeLabel,
-                 m_brushSize, m_autoMask, m_textContent, m_textFont, m_textSize,
-                 m_textBold, m_textItalic})
+                 m_brushSize, m_brushSizePx, m_autoMask, m_textContent, m_textFont,
+                 m_textSize, m_textBold, m_textItalic})
             w->setVisible(false);
         m_syncing = false;
         return;
@@ -152,6 +173,7 @@ void MaskPanel::loadMask() {
     m_feather->setValue(int(m_mask.feather * 100));
     m_hardness->setValue(int(m_mask.hardness * 100));
     m_brushSize->setValue(int(m_mask.brushRadius * 100));
+    updateBrushSizePxLabel();
     m_autoMask->setChecked(m_mask.autoMask);
     m_textContent->setText(m_mask.text);
     m_textFont->setCurrentFont(QFont(m_mask.textFamily));
@@ -167,6 +189,7 @@ void MaskPanel::loadMask() {
     m_hardness->setVisible(brush);
     m_brushSizeLabel->setVisible(brush);
     m_brushSize->setVisible(brush);
+    m_brushSizePx->setVisible(brush);
     m_autoMask->setVisible(brush);
     m_invert->setVisible(geometric);
     m_feather->setVisible(geometric);
@@ -187,6 +210,7 @@ void MaskPanel::emitText() {
 }
 
 void MaskPanel::emitShape() {
+    updateBrushSizePxLabel();
     if (m_syncing) return;
     emit maskShapeChanged(m_invert->isChecked(), m_feather->value() / 100.0,
                           m_hardness->value() / 100.0,

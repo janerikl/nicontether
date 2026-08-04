@@ -48,6 +48,14 @@ bool geometryDiffers(const Adjustments &a, const Adjustments &b) {
     return a.rotationQuadrants != b.rotationQuadrants || a.flipH != b.flipH ||
            a.flipV != b.flipV || a.cropRect != b.cropRect;
 }
+
+// Brush/Paint radius is stored normalized (fraction of image width) so
+// strokes stay resolution-independent; this converts the desired 20px
+// default into that normalization for the image at hand.
+constexpr double kDefaultBrushRadiusPx = 20.0;
+double defaultBrushRadiusNorm(int imageWidth) {
+    return imageWidth > 0 ? kDefaultBrushRadiusPx / imageWidth : Mask().brushRadius;
+}
 } // namespace
 
 RetouchTab::RetouchTab(const QString &path, QWidget *parent)
@@ -1890,6 +1898,8 @@ int RetouchTab::addMask(MaskType type, ShapeType shapeType) {
     m.type = type;
     m.name = QStringLiteral("Layer %1").arg(m_adj.masks.size() + 1);
     if (type == MaskType::Shape) m.shapeType = shapeType;
+    if (type == MaskType::Brush || type == MaskType::Paint)
+        m.brushRadius = defaultBrushRadiusNorm(m_base.width());
     m_adj.masks.insert(0, m);
     m_activeMask = 0;
     m_maskMode = (type != MaskType::None);
@@ -2059,6 +2069,12 @@ void RetouchTab::setActiveMaskType(MaskType type) {
     Mask &m = m_adj.masks[m_activeMask];
     if (m.type == type) return;
     m.type = type;
+    // Brush strokes default to a 20px-equivalent radius the first time a
+    // mask enters Brush/Paint; leave it alone once the user has picked
+    // their own size.
+    if ((type == MaskType::Brush || type == MaskType::Paint) &&
+        std::abs(m.brushRadius - Mask().brushRadius) < 1e-9)
+        m.brushRadius = defaultBrushRadiusNorm(m_base.width());
     m_maskMode = (type != MaskType::None);
     m_canvas->setMaskMode(type, m_maskMode);
     pushMaskGizmo();

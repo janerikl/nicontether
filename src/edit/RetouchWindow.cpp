@@ -1051,6 +1051,13 @@ void RetouchWindow::buildToolPanel() {
             m_toolOptionsStack->setCurrentIndex(3);
             m_toolOptionsBar->setVisible(true);
             tab->setPaintColor(m_colorSwatch->foregroundColor());
+            if (!m_paintSizeCustomized && tab->imageWidth() > 0) {
+                m_syncingPaintSize = true;
+                m_paintSize->setValue(std::clamp(
+                    int(std::lround(20.0 / tab->imageWidth() * 100.0)), 1, 40));
+                m_syncingPaintSize = false;
+            }
+            updatePaintSizePxLabel();
             tab->setActiveMaskShape(false, 0.0, m_paintHardness->value() / 100.0,
                                     m_paintSize->value() / 100.0, false);
             tab->setActiveMaskOpacity(m_paintOpacity->value() / 100.0);
@@ -1263,8 +1270,11 @@ void RetouchWindow::buildToolOptionsBar() {
     brushRow->setContentsMargins(4, 2, 4, 2);
     m_paintSize = new QSlider(Qt::Horizontal);
     m_paintSize->setRange(1, 40); // percent of image width, same scale as MaskPanel::m_brushSize
-    m_paintSize->setValue(6);
+    m_paintSize->setValue(6); // placeholder until updatePaintSizePxLabel() picks a real default from the image
     m_paintSize->setMinimumWidth(120);
+    m_paintSizePx = new QLabel;
+    m_paintSizePx->setMinimumWidth(40);
+    m_paintSizePx->setStyleSheet("color: #999;");
     m_paintHardness = new QSlider(Qt::Horizontal);
     m_paintHardness->setRange(0, 100);
     m_paintHardness->setValue(100);
@@ -1275,6 +1285,7 @@ void RetouchWindow::buildToolOptionsBar() {
     m_paintOpacity->setMinimumWidth(100);
     brushRow->addWidget(new QLabel("Size:"));
     brushRow->addWidget(m_paintSize);
+    brushRow->addWidget(m_paintSizePx);
     brushRow->addWidget(new QLabel("Hardness:"));
     brushRow->addWidget(m_paintHardness);
     brushRow->addWidget(new QLabel("Opacity:"));
@@ -1283,6 +1294,8 @@ void RetouchWindow::buildToolOptionsBar() {
     m_toolOptionsStack->addWidget(brushPage);
 
     connect(m_paintSize, &QSlider::valueChanged, this, [this](int v) {
+        if (!m_syncingPaintSize) m_paintSizeCustomized = true;
+        updatePaintSizePxLabel();
         RetouchTab *tab = currentTab();
         if (tab) tab->setActiveMaskShape(false, 0.0, m_paintHardness->value() / 100.0,
                                          v / 100.0, false);
@@ -1987,6 +2000,18 @@ void RetouchWindow::buildLayersDock() {
     });
 }
 
+void RetouchWindow::updatePaintSizePxLabel() {
+    if (!m_paintSizePx) return;
+    RetouchTab *tab = currentTab();
+    const int w = tab ? tab->imageWidth() : 0;
+    if (w <= 0) {
+        m_paintSizePx->clear();
+        return;
+    }
+    const int px = int(std::lround(m_paintSize->value() / 100.0 * w));
+    m_paintSizePx->setText(QString("%1px").arg(px));
+}
+
 void RetouchWindow::refreshMaskPanel() {
     RetouchTab *tab = currentTab();
     const bool ready = tab && tab->isReady();
@@ -1994,10 +2019,12 @@ void RetouchWindow::refreshMaskPanel() {
         if (ready) {
             m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex());
             m_layersPanel->setRemovals(tab->removals(), tab->activeRemovalIndex());
+            m_layersPanel->setImageWidth(tab->imageWidth());
         } else {
             m_layersPanel->clear();
         }
     }
+    updatePaintSizePxLabel();
     const int idx = ready ? tab->activeMaskIndex() : -1;
     const bool isImageLayer = ready && idx >= 0 && idx < tab->masks().size() &&
                               tab->masks()[idx].isImageLayer();

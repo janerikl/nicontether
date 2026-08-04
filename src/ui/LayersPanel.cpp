@@ -788,6 +788,10 @@ void LayersPanel::setMaskBrushRadius(double radiusNorm) {
     if (m_maskPanel) m_maskPanel->setBrushRadius(radiusNorm);
 }
 
+void LayersPanel::setImageWidth(int width) {
+    if (m_maskPanel) m_maskPanel->setImageWidth(width);
+}
+
 QVector<QDockWidget *> LayersPanel::sectionDocks() const {
     return {m_toneSectionDock, m_colorSectionDock, m_toneCurveSectionDock,
             m_levelsSectionDock, m_detailEffectsSectionDock, m_masksSectionDock,

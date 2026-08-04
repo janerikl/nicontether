@@ -1148,8 +1148,12 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
             p.setBrush(line);
             p.drawEllipse(a, 3, 3);
             p.drawEllipse(b, 3, 3);
-        } else if (m.type == MaskType::Brush) { // show painted coverage plus the brush cursor
-            if (!m_maskOverlay.isNull())
+        } else if (m.type == MaskType::Brush || m.type == MaskType::Paint) {
+            // Brush (mask selection) shows its painted coverage; Paint
+            // (direct color fill) paints straight into the composited
+            // image, so it has no overlay to preview. Both share the same
+            // brush cursor circle at the current radius.
+            if (m.type == MaskType::Brush && !m_maskOverlay.isNull())
                 p.drawImage(tr, m_maskOverlay);
             double rad = m.brushRadius * W * m_scale;
             // While Alt is held the brush erases instead of paints; tint the
@@ -1163,10 +1167,10 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
             }
             p.drawEllipse(QPointF(m_mousePos), rad, rad);
         }
-        // Paint/Image/None/Text/Shape/TextBox: no local-mask gizmo of their
-        // own to draw here (Shape/TextBox use their own marker-based gizmo
-        // drawn elsewhere in this function; Paint/Image/None have no
-        // localized region to visualize).
+        // Image/None/Text/Shape/TextBox: no local-mask gizmo of their own to
+        // draw here (Shape/TextBox use their own marker-based gizmo drawn
+        // elsewhere in this function; Image/None have no localized region
+        // to visualize).
     }
 
     // Targeted color-range drag feedback: a swatch of the picked color (border

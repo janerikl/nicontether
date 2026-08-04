@@ -60,6 +60,9 @@ public:
     // Reflect a brush radius change (e.g. ctrl+wheel on the canvas) without
     // a full resync.
     void setMaskBrushRadius(double radiusNorm);
+    // Current tab's image width in px, so the mask panel can show the brush
+    // size slider's equivalent pixel value.
+    void setImageWidth(int width);
 
     // The six per-section dock widgets, for RetouchWindow to expose reopen
     // actions (toggleViewAction()) in a View menu submenu.

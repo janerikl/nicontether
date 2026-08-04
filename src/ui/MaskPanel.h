@@ -30,6 +30,9 @@ public:
     // Reflect a brush radius change (e.g. ctrl+wheel on the canvas) without
     // a full resync.
     void setBrushRadius(double radiusNorm);
+    // Current tab's image width in px, so the brush size readout can convert
+    // the (width-normalized) slider value into an actual pixel size.
+    void setImageWidth(int width);
 
 signals:
     void maskTypeChanged(MaskType type);
@@ -43,10 +46,12 @@ signals:
 private:
     void emitShape();
     void loadMask();
+    void updateBrushSizePxLabel();
 
     Mask m_mask;
     bool m_hasSelection = false;
     bool m_syncing = false;
+    int m_imageWidth = 0;
 
     QLabel *m_hint = nullptr;
     QWidget *m_typeSection = nullptr; // the "Mask:" combo row; hidden for Shape/TextBox layers
@@ -58,6 +63,7 @@ private:
     QSlider *m_hardness = nullptr;
     QLabel *m_brushSizeLabel = nullptr;
     QSlider *m_brushSize = nullptr;
+    QLabel *m_brushSizePx = nullptr; // live "NNpx" readout next to m_brushSize
     QCheckBox *m_autoMask = nullptr;
 
     QLineEdit *m_textContent = nullptr;
