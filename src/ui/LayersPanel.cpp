@@ -389,9 +389,13 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     props->addRow("Blend:", m_blend);
     root->addLayout(props);
 
+    m_imageSection = new QWidget;
+    auto *imageSectionLayout = new QVBoxLayout(m_imageSection);
+    imageSectionLayout->setContentsMargins(0, 0, 0, 0);
     auto *imageHeader = new QLabel("<b>Image Layer</b>");
-    root->addWidget(imageHeader);
+    imageSectionLayout->addWidget(imageHeader);
     auto *imageForm = new QFormLayout;
+    imageSectionLayout->addLayout(imageForm);
     auto mkPos = [&](const QString &label) {
         auto *s = new QSlider(Qt::Horizontal);
         s->setRange(-100, 100);
@@ -435,7 +439,7 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
         }
         emitImageTransform();
     });
-    root->addLayout(imageForm);
+    root->addWidget(m_imageSection);
 
     // Each editing section is its own QDockWidget nested inside a small
     // inner QMainWindow, so it gets a real collapse/float/close title bar
@@ -746,6 +750,7 @@ void LayersPanel::clear() {
     m_imageScaleX->setEnabled(false);
     m_imageScaleY->setEnabled(false);
     m_imageLockRatio->setEnabled(false);
+    m_imageSection->setVisible(false);
     m_syncing = false;
     setEnabled(false);
 }
@@ -1164,6 +1169,10 @@ void LayersPanel::loadActive() {
                                               m_curAdjust.lightIntensity);
         m_maskPanel->setMask(m, true);
         const bool imageLayer = m.isImageLayer();
+        // Only image layers have any use for Position/Scale/Lock-ratio —
+        // hide the whole section for Text/Shape/mask layers instead of just
+        // graying it out, so it doesn't read as applicable-but-disabled.
+        m_imageSection->setVisible(imageLayer);
         m_imagePosX->setEnabled(imageLayer);
         m_imagePosY->setEnabled(imageLayer);
         m_imageScaleX->setEnabled(imageLayer);
@@ -1182,6 +1191,7 @@ void LayersPanel::loadActive() {
         m_levelsPanel->clear();
         m_detailEffectsPanel->clear();
         m_maskPanel->clear();
+        m_imageSection->setVisible(false);
         m_imagePosX->setEnabled(false);
         m_imagePosY->setEnabled(false);
         m_imageScaleX->setEnabled(false);

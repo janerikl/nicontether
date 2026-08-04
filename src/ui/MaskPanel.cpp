@@ -25,6 +25,9 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     m_hint->setStyleSheet("color: #999;");
     root->addWidget(m_hint);
 
+    m_typeSection = new QWidget;
+    auto *typeSectionLayout = new QVBoxLayout(m_typeSection);
+    typeSectionLayout->setContentsMargins(0, 0, 0, 0);
     auto *form = new QFormLayout;
     m_type = new QComboBox;
     m_type->addItem("None (whole image)", int(MaskType::None));
@@ -33,7 +36,8 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     m_type->addItem("Brush", int(MaskType::Brush));
     m_type->addItem("Text (clip)", int(MaskType::Text));
     form->addRow("Mask:", m_type);
-    root->addLayout(form);
+    typeSectionLayout->addLayout(form);
+    root->addWidget(m_typeSection);
 
     auto *textForm = new QFormLayout;
     m_textContent = new QLineEdit;
@@ -121,7 +125,27 @@ void MaskPanel::setMask(const Mask &mask, bool hasSelection) {
 
 void MaskPanel::loadMask() {
     m_syncing = true;
-    m_hint->setVisible(!m_hasSelection);
+    // Shape and TextBox layers have no maskable "kind" of their own — their
+    // `type` field is the layer's own identity (what to draw), not a mask
+    // applied on top of something else, so the type combo (and every
+    // mask-shape control below) doesn't apply to them at all.
+    const bool maskable = m_hasSelection && m_mask.type != MaskType::Shape &&
+                          m_mask.type != MaskType::TextBox;
+    m_hint->setVisible(!m_hasSelection ||
+                       (m_hasSelection && !maskable));
+    m_hint->setText(m_hasSelection && !maskable
+                        ? "This layer doesn't use a mask."
+                        : "Select a layer in the Layers panel to edit its mask.");
+    m_typeSection->setVisible(maskable);
+    if (!maskable) {
+        for (QWidget *w : std::initializer_list<QWidget *>{
+                 m_invert, m_feather, m_hardnessLabel, m_hardness, m_brushSizeLabel,
+                 m_brushSize, m_autoMask, m_textContent, m_textFont, m_textSize,
+                 m_textBold, m_textItalic})
+            w->setVisible(false);
+        m_syncing = false;
+        return;
+    }
     int typeIdx = m_type->findData(int(m_mask.type));
     m_type->setCurrentIndex(typeIdx >= 0 ? typeIdx : 0);
     m_invert->setChecked(m_mask.inverted);

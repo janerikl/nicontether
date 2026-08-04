@@ -163,6 +163,11 @@ private:
     QSlider *m_imageScaleX = nullptr;
     QSlider *m_imageScaleY = nullptr;
     QCheckBox *m_imageLockRatio = nullptr;
+    // Wraps the "Image Layer" header + Position/Scale/Lock-ratio form so the
+    // whole section can be hidden (not just disabled) when the selected
+    // layer isn't an image layer — e.g. a Text/Shape layer, which have no
+    // use for these fields at all.
+    QWidget *m_imageSection = nullptr;
 
     QMainWindow *m_inner = nullptr; // hosts the six per-section docks
 

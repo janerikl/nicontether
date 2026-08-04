@@ -1834,7 +1834,17 @@ void RetouchTab::onRemoveObjectFinished() {
 void RetouchTab::pushMaskGizmo() {
     if (m_activeMask >= 0 && m_activeMask < m_adj.masks.size()) {
         const Mask &m = m_adj.masks[m_activeMask];
-        m_canvas->setMaskMode(m.type, m_maskMode);
+        // Shape and TextBox layers are driven by the canvas's own
+        // setShapeMode()/setTextMode() (their own tool, own gizmo, own
+        // cursor) rather than the local-mask gizmo — routing them through
+        // setMaskMode() here would stomp whatever cursor the actually
+        // active tool just set (e.g. the Text tool's I-beam getting reset
+        // back to an arrow/cross cursor the instant a Text layer is simply
+        // selected in the Layers panel) and would make the canvas paint the
+        // Brush-mask gizmo circle over a layer that isn't a brush mask at
+        // all. Only route mask-gizmo types through here.
+        if (m.type != MaskType::Shape && m.type != MaskType::TextBox)
+            m_canvas->setMaskMode(m.type, m_maskMode);
         m_canvas->setActiveMask(true, m);
     } else {
         m_canvas->setActiveMask(false, Mask{});

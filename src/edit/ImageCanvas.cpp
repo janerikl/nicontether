@@ -1143,7 +1143,7 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
             p.setBrush(line);
             p.drawEllipse(a, 3, 3);
             p.drawEllipse(b, 3, 3);
-        } else { // Brush: show painted coverage plus the brush cursor
+        } else if (m.type == MaskType::Brush) { // show painted coverage plus the brush cursor
             if (!m_maskOverlay.isNull())
                 p.drawImage(tr, m_maskOverlay);
             double rad = m.brushRadius * W * m_scale;
@@ -1158,6 +1158,10 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
             }
             p.drawEllipse(QPointF(m_mousePos), rad, rad);
         }
+        // Paint/Image/None/Text/Shape/TextBox: no local-mask gizmo of their
+        // own to draw here (Shape/TextBox use their own marker-based gizmo
+        // drawn elsewhere in this function; Paint/Image/None have no
+        // localized region to visualize).
     }
 
     // Targeted color-range drag feedback: a swatch of the picked color (border
