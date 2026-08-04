@@ -49,6 +49,7 @@ private:
     bool m_syncing = false;
 
     QLabel *m_hint = nullptr;
+    QWidget *m_typeSection = nullptr; // the "Mask:" combo row; hidden for Shape/TextBox layers
     QComboBox *m_type = nullptr;
 
     QCheckBox *m_invert = nullptr;

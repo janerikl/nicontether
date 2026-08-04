@@ -970,6 +970,21 @@ void RetouchWindow::buildToolPanel() {
     });
     connect(m_maskToggle, &QToolButton::toggled, this, [this](bool on) {
         RetouchTab *tab = currentTab();
+        // Radial and Linear subtools operate against the currently selected
+        // mask (must already be that type); "Brush" (mask-brush) and "Layer"
+        // (None) subtools keep the prior always-create-a-new-layer behaviour,
+        // since they aren't part of this gating (see canActivateTool docs).
+        const bool isGatedSubtool = m_activeMaskSubtool == MaskType::Radial ||
+                                    m_activeMaskSubtool == MaskType::Linear;
+        if (on && isGatedSubtool && (!tab || !tab->isReady() ||
+                                     !tab->canActivateTool(m_activeMaskSubtool))) {
+            // Defensive guard: the toggle should already be disabled unless
+            // the selection matches the active subtool (see refreshMaskPanel);
+            // this only fires from a stale keyboard shortcut or similar.
+            QSignalBlocker b(m_maskToggle);
+            m_maskToggle->setChecked(false);
+            return;
+        }
         if (on) {
             { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
             { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
@@ -988,13 +1003,24 @@ void RetouchWindow::buildToolPanel() {
         // Layers/Masks panels stay visible when the K tool is toggled off —
         // they're persistent docks, not transient tool-options popups.
         if (tab && tab->isReady()) tab->setMaskMode(on);
-        // A plain click on the tool creates a mask of the active subtool.
-        if (on) addActiveMask();
+        // A plain click on the tool creates a mask of the active subtool,
+        // except for the gated Radial/Linear subtools: those activate against
+        // the existing (already-verified-matching) selection instead.
+        if (on && !isGatedSubtool) addActiveMask();
         refreshMaskPanel();
     });
     connect(m_brushToggle, &QToolButton::toggled, this, [this](bool on) {
         RetouchTab *tab = currentTab();
         if (on) {
+            // Defensive guard: the toggle should already be disabled unless
+            // the current selection is a Paint layer (see refreshMaskPanel);
+            // this only fires if something enabled it anyway (e.g. a stale
+            // keyboard shortcut) or triggered it before selection existed.
+            if (!tab || !tab->isReady() || !tab->canActivateTool(MaskType::Paint)) {
+                QSignalBlocker b(m_brushToggle);
+                m_brushToggle->setChecked(false);
+                return;
+            }
             { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
             { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
             { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
@@ -1004,17 +1030,15 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
             { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
+            tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false);
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(3);
             m_toolOptionsBar->setVisible(true);
-            if (tab && tab->isReady()) {
-                tab->addMask(MaskType::Paint);
-                tab->setPaintColor(m_colorSwatch->foregroundColor());
-                tab->setActiveMaskShape(false, 0.0, m_paintHardness->value() / 100.0,
-                                        m_paintSize->value() / 100.0, false);
-                tab->setActiveMaskOpacity(m_paintOpacity->value() / 100.0);
-            }
+            tab->setPaintColor(m_colorSwatch->foregroundColor());
+            tab->setActiveMaskShape(false, 0.0, m_paintHardness->value() / 100.0,
+                                    m_paintSize->value() / 100.0, false);
+            tab->setActiveMaskOpacity(m_paintOpacity->value() / 100.0);
+            tab->setMaskMode(true);
             if (m_layersDock) { m_layersDock->show(); m_layersDock->raise(); }
             refreshMaskPanel();
         } else {
@@ -1824,15 +1848,19 @@ void RetouchWindow::buildLayersDock() {
     connect(m_layersPanel, &LayersPanel::deleteMaskRequested, this, [this] {
         RetouchTab *tab = currentTab();
         if (tab) {
-            if (tab->activeMaskIndex() == -1) tab->deleteBackground();
-            else tab->deleteActiveMask();
+            tab->deleteActiveMask(); // Background is a normal mask now, same delete path
             refreshMaskPanel();
         }
     });
-    connect(m_layersPanel, &LayersPanel::addMaskRequested, this, [this] {
+    connect(m_layersPanel, &LayersPanel::addMaskRequested, this, [this](MaskType type) {
         RetouchTab *tab = currentTab();
-        if (tab && tab->isReady()) { tab->addMask(MaskType::None); refreshMaskPanel(); }
+        if (tab && tab->isReady()) { tab->addMask(type); refreshMaskPanel(); }
     });
+    connect(m_layersPanel, &LayersPanel::addLayerRequested, this,
+            [this](MaskType type, ShapeType shapeType) {
+                RetouchTab *tab = currentTab();
+                if (tab && tab->isReady()) { tab->addMask(type, shapeType); refreshMaskPanel(); }
+            });
     connect(m_layersPanel, &LayersPanel::addImageLayerRequested, this,
             [this](const QString &path) {
                 RetouchTab *tab = currentTab();
@@ -1841,14 +1869,17 @@ void RetouchWindow::buildLayersDock() {
     connect(m_layersPanel, &LayersPanel::duplicateMaskRequested, this, [this] {
         RetouchTab *tab = currentTab();
         if (!tab) return;
-        if (tab->activeMaskIndex() == -1 && !tab->path().isEmpty()) {
-            // Duplicating the locked Background row: add a real, unlocked
-            // image layer sourced from the same photo, placed at the
-            // bottom of the stack (directly above Background).
-            int idx = tab->addImageLayer(tab->path());
-            tab->setMaskName(idx, QStringLiteral("Background copy"));
-            tab->moveMask(idx, 0);
-            tab->selectMask(0);
+        const int idx = tab->activeMaskIndex();
+        const bool isBackground = idx >= 0 && idx < tab->masks().size() &&
+                                  tab->masks()[idx].type == MaskType::Background;
+        if (isBackground && !tab->path().isEmpty()) {
+            // Only one Background-type layer is ever allowed per image (it's
+            // auto-created once, not user-creatable) — "duplicating" it
+            // instead adds a real, independent image layer sourced from the
+            // same photo, placed just above Background.
+            int newIdx = tab->addImageLayer(tab->path());
+            tab->setMaskName(newIdx, QStringLiteral("Background copy"));
+            tab->selectMask(newIdx);
         } else {
             tab->duplicateActiveMask();
         }
@@ -1895,8 +1926,7 @@ void RetouchWindow::buildLayersDock() {
             [this](int index, bool visible) {
                 RetouchTab *tab = currentTab();
                 if (tab) {
-                    if (index == -1) tab->setBackgroundVisible(visible);
-                    else tab->setMaskVisible(index, visible);
+                    tab->setMaskVisible(index, visible); // Background is a normal mask now
                     refreshMaskPanel();
                 }
             });
@@ -1926,23 +1956,6 @@ void RetouchWindow::buildLayersDock() {
                 RetouchTab *tab = currentTab();
                 if (tab) { tab->ungroupMasks(indices); refreshMaskPanel(); }
             });
-    connect(m_layersPanel, &LayersPanel::selectShapeRequested, this, [this](int index) {
-        RetouchTab *tab = currentTab();
-        if (tab) { tab->selectShape(index); refreshMaskPanel(); }
-    });
-    connect(m_layersPanel, &LayersPanel::shapeVisibleChanged, this,
-            [this](int index, bool visible) {
-                RetouchTab *tab = currentTab();
-                if (tab) { tab->setShapeVisible(index, visible); refreshMaskPanel(); }
-            });
-    connect(m_layersPanel, &LayersPanel::groupShapesRequested, this, [this] {
-        RetouchTab *tab = currentTab();
-        if (tab) { tab->groupSelectedShapes(); refreshMaskPanel(); }
-    });
-    connect(m_layersPanel, &LayersPanel::ungroupShapesRequested, this, [this] {
-        RetouchTab *tab = currentTab();
-        if (tab) { tab->ungroupSelectedShapes(); refreshMaskPanel(); }
-    });
     connect(m_layersPanel, &LayersPanel::selectRemovalRequested, this, [this](int index) {
         RetouchTab *tab = currentTab();
         if (tab) { tab->selectRemoval(index); refreshMaskPanel(); }
@@ -1963,10 +1976,7 @@ void RetouchWindow::refreshMaskPanel() {
     const bool ready = tab && tab->isReady();
     if (m_layersPanel) {
         if (ready) {
-            m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex(),
-                                    tab->hasBackgroundLayer(), tab->isBackgroundHidden(),
-                                    tab->previewImage());
-            m_layersPanel->setShapes(tab->shapes(), tab->activeShapeIndex());
+            m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex());
             m_layersPanel->setRemovals(tab->removals(), tab->activeRemovalIndex());
         } else {
             m_layersPanel->clear();
@@ -1991,6 +2001,29 @@ void RetouchWindow::refreshMaskPanel() {
         if (!ready && m_removeObjectToggle->isChecked())
             m_removeObjectToggle->setChecked(false);
     }
+    // Brush/Paint, Radial, and Linear only operate against a matching
+    // existing selection (they no longer auto-create a layer on toggle-on),
+    // so gray them out whenever the selection doesn't match. With nothing
+    // selected (idx == -1, e.g. no image loaded yet) all three stay disabled.
+    if (m_brushToggle) {
+        const bool canPaint = ready && tab->canActivateTool(MaskType::Paint);
+        m_brushToggle->setEnabled(canPaint);
+        if (!canPaint && m_brushToggle->isChecked())
+            m_brushToggle->setChecked(false);
+    }
+    if (m_maskToggle) {
+        // The K tool's "Layer"/"Brush" (mask-brush) subtools aren't gated —
+        // they keep the always-create-a-new-layer behaviour — so the shared
+        // toggle button stays enabled for those regardless of selection.
+        // Only the Radial/Linear subtools require a matching selection.
+        const bool isGatedSubtool = m_activeMaskSubtool == MaskType::Radial ||
+                                    m_activeMaskSubtool == MaskType::Linear;
+        const bool canActivate = !isGatedSubtool ||
+                                 (ready && tab->canActivateTool(m_activeMaskSubtool));
+        m_maskToggle->setEnabled(canActivate);
+        if (!canActivate && m_maskToggle->isChecked())
+            m_maskToggle->setChecked(false);
+    }
 }
 
 void RetouchWindow::openMaskFlyout() {
@@ -2003,12 +2036,27 @@ void RetouchWindow::openMaskFlyout() {
     auto *flyout = new ToolFlyout(tools, int(m_activeMaskSubtool), this);
     connect(flyout, &ToolFlyout::chosen, this, [this](int id) {
         setMaskSubtool(MaskType(id));
+        const bool isGatedSubtool = m_activeMaskSubtool == MaskType::Radial ||
+                                    m_activeMaskSubtool == MaskType::Linear;
         // Picking a subtool activates the mask tool (creating a mask via the
-        // toggle handler) or, if already active, creates one directly.
-        if (m_maskToggle->isChecked())
-            addActiveMask();
-        else
+        // toggle handler) or, if already active, creates one directly — except
+        // for the gated Radial/Linear subtools, which only activate against a
+        // matching existing selection rather than creating a new layer.
+        if (m_maskToggle->isChecked()) {
+            if (isGatedSubtool) {
+                RetouchTab *tab = currentTab();
+                if (!tab || !tab->isReady() || !tab->canActivateTool(m_activeMaskSubtool)) {
+                    QSignalBlocker b(m_maskToggle);
+                    m_maskToggle->setChecked(false);
+                    if (tab && tab->isReady()) tab->setMaskMode(false);
+                }
+            } else {
+                addActiveMask();
+            }
+        } else {
             m_maskToggle->setChecked(true);
+        }
+        refreshMaskPanel();
     });
     // Just to the right of the mask button, vertically aligned with it.
     const QPoint tl = m_maskToggle->mapToGlobal(QPoint(m_maskToggle->width() + 4, 0));
@@ -2870,7 +2918,7 @@ void RetouchWindow::onSave() {
         // they want it in the strip.
     }
     tab->saveEdits();
-    refreshMaskPanel(); // the tab now has a path -> Background row should appear
+    refreshMaskPanel(); // the tab's path (and Background layer's name) changed
     m_statusLabel->setText("Saved edits: " + QFileInfo(tab->path()).fileName());
 }
 

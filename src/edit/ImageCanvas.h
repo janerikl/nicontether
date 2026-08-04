@@ -172,8 +172,6 @@ signals:
     // copy — the original is left untouched.
     void shapeDuplicateRequested(int index);
     void shapeGroupDuplicateRequested(const QList<int> &indices); // Ctrl+drag with a multi-selection
-    void shapeRaiseRequested(int index); // '+': move one level up the stack
-    void shapeLowerRequested(int index); // '-': move one level down the stack
     // Ctrl+click (no drag) on a shape: toggle its multi-selection membership.
     void shapeToggleSelectRequested(int index);
     // Press on a shape that's already part of a >1-member selection: the

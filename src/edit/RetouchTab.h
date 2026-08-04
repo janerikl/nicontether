@@ -108,7 +108,6 @@ public:
     void setShapeInnerRadiusRatio(double ratio);
     void setShapeFill(bool enabled, const QColor &color);
     void setShapeStroke(bool enabled, const QColor &color, double width);
-    const QVector<ShapeOp> &shapes() const { return m_adj.shapes; }
     const QSet<int> &selectedShapes() const { return m_selectedShapes; }
     // Select a shape (e.g. a Layers-panel row click). If it belongs to a
     // group, the whole group is selected, matching a canvas click on a
@@ -120,7 +119,9 @@ public:
 
     // Local adjustment masks.
     void setMaskMode(bool on);              // enter/leave mask editing on the canvas
-    int addMask(MaskType type);             // append + select; returns its index
+    // append + select; returns its index. shapeType only applies when
+    // type == MaskType::Shape (sets Mask::shapeType on the new layer).
+    int addMask(MaskType type, ShapeType shapeType = ShapeType::Rectangle);
     int addImageLayer(const QString &path); // append an image layer; returns its index
     int duplicateActiveMask();              // copy + insert above; returns its index
     void selectMask(int index);             // -1 = none
@@ -152,13 +153,24 @@ public:
     const QVector<Mask> &masks() const { return m_adj.masks; }
     int activeMaskIndex() const { return m_activeMask; }
 
-    // Base (background) layer. `hasBackgroundLayer` is false once the base
-    // has been permanently deleted (a document with only a blank/untitled
-    // canvas never had one either — see the QSize constructor).
-    bool hasBackgroundLayer() const { return !m_path.isEmpty() && !m_adj.backgroundDeleted; }
-    bool isBackgroundHidden() const { return m_adj.backgroundHidden; }
-    void setBackgroundVisible(bool visible);
-    void deleteBackground(); // permanent: drops the base photo, keeps other layers
+    // True when there is a currently-selected layer and its mask type matches
+    // requiredType exactly. Used to gate the Brush/Paint, Radial, and Linear
+    // tool toggles: those tools operate on the existing selection rather than
+    // always creating a new layer, so they must only be enabled when the
+    // selection is of the matching type.
+    bool canActivateTool(MaskType requiredType) const {
+        return m_activeMask >= 0 && m_activeMask < m_adj.masks.size() &&
+               m_adj.masks[m_activeMask].type == requiredType;
+    }
+
+    // The Background layer (the tab's own loaded base photo) is a normal
+    // MaskType::Background entry in m_adj.masks now — no separate
+    // hidden/deleted bookkeeping. These are thin convenience lookups; hiding/
+    // deleting/reordering it goes through the exact same generic
+    // selectMask()/deleteActiveMask()/Mask::visible flow as any other layer.
+    int backgroundMaskIndex() const;
+    bool hasBackgroundLayer() const { return backgroundMaskIndex() >= 0; }
+    bool backgroundLayerVisible() const;
     void showOriginal(bool on); // press-and-hold before/after
     void zoomFit();
     void setZoomPercent(double percent);
@@ -241,8 +253,6 @@ private slots:
     void onShapeGroupDeleteRequested(const QList<int> &indices);
     void onShapeDuplicateRequested(int index);
     void onShapeGroupDuplicateRequested(const QList<int> &indices);
-    void onShapeRaiseRequested(int index);
-    void onShapeLowerRequested(int index);
     void onShapeToggleSelectRequested(int index);
     void onShapeGroupMoveStarted(const QList<int> &indices);
     void onShapeGroupMoveRequested(const QList<int> &indices, const QPointF &deltaImage);
@@ -274,6 +284,14 @@ private:
     void updateHealSpots();   // push heal-op markers (display coords) to the canvas
     void updateTextMarkers(); // push text-op markers (display coords) to the canvas
     void updateShapeMarkers(); // push shape-op markers (display coords) to the canvas
+    // Marker index (position within the Shape-filtered view ImageCanvas sees)
+    // -> real index into m_adj.masks, rebuilt every updateShapeMarkers() call.
+    // Returns -1 for an out-of-range marker index.
+    int shapeMaskIndex(int markerIndex) const;
+    // Marker index (position within the TextBox-filtered view ImageCanvas
+    // sees) -> real index into m_adj.masks, rebuilt every updateTextMarkers()
+    // call. Returns -1 for an out-of-range marker index.
+    int textMaskIndex(int markerIndex) const;
     void updateRemovalMarkers(); // push removal-op markers (display coords) to the canvas
     // Oriented (rotate/flip), pre-crop image with heals AND already-committed
     // removals baked in — the "source" a new removal's inpaint reads from,
@@ -283,6 +301,13 @@ private:
     void kickoffImageLayerDecode(const QString &path); // async-decode an image layer's source
     QString copyImageLayerAsset(const QString &sourcePath); // copy a layer source next to m_path so it survives move/delete
     void setupCanvasAndWiring(); // shared canvas creation + connect()s for both constructors
+    // Inserts a MaskType::Background entry (sourced from this tab's own base
+    // photo) at the bottom of m_adj.masks if one isn't already there —
+    // called once, right after the sidecar is loaded/a blank canvas is
+    // created, before the undo history is seeded, so it never itself counts
+    // as an "edit". A no-op for a sidecar that already restored one (fresh
+    // open) or that explicitly had it migrated in (see EditSidecar::load).
+    void ensureBackgroundMask();
 
     QString m_path;
     QImage m_base;   // full-res decoded RAW (immutable)
@@ -292,14 +317,20 @@ private:
     bool m_maskMode = false;
     int m_activeMask = -1; // index into m_adj.masks, or -1
     bool m_textMode = false;
-    int m_activeText = -1;   // index into m_adj.texts, or -1
-    int m_newTextIndex = -1; // index of a just-placed, not-yet-committed draft, or -1
-    int m_textEditIndex = -1; // index currently open in the inline editor, or -1
+    int m_activeText = -1;   // marker index (position within the TextBox-filtered
+                              // view of m_adj.masks, see m_textMaskIndices), or -1
+    int m_newTextIndex = -1; // marker index of a just-placed, not-yet-committed draft, or -1
+    int m_textEditIndex = -1; // marker index currently open in the inline editor, or -1
+    // marker index -> m_adj.masks index, rebuilt each updateTextMarkers() call.
+    QVector<int> m_textMaskIndices;
     TextOp m_textDefaults;   // style applied to the next newly-placed text
     double m_textResizeStartPixelSize = 48.0; // captured at corner-drag start
 
     bool m_shapeMode = false;
-    int m_activeShape = -1;   // index into m_adj.shapes, or -1
+    int m_activeShape = -1;   // marker index (position within the Shape-filtered
+                               // view of m_adj.masks, see m_shapeMaskIndices), or -1
+    // marker index -> m_adj.masks index, rebuilt each updateShapeMarkers() call.
+    QVector<int> m_shapeMaskIndices;
     ShapeOp m_shapeDefaults;  // style/type applied to the next newly-created shape
     QRectF m_shapeMoveStartRect;   // active shape's rect at move-drag start
     QPointF m_shapeMoveStartP1, m_shapeMoveStartP2; // active Line's endpoints at move-drag start

@@ -1,13 +1,19 @@
 #include "edit/Adjustments.h"
 #include "edit/EditSidecar.h"
 
+#include <QGuiApplication>
 #include <QImage>
 #include <QTemporaryDir>
 #include <QFile>
 #include <cassert>
 #include <cstdio>
 
-int main() {
+int main(int argc, char **argv) {
+    // MaskType::TextBox rendering goes through TextTool.cpp's QPainter/QFont
+    // text-drawing path, which needs a QGuiApplication (font database) even
+    // off-screen; force the offscreen platform so this runs headless in CI.
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    QGuiApplication app(argc, argv);
     // A tiny black base image with one full-coverage red Paint layer should
     // come out red (opacity 1, Normal blend, hardness 1 covers the whole
     // frame from a single centered dab with a huge radius).
@@ -109,6 +115,50 @@ int main() {
         assert(qRed(resized.pixel(0, 0)) == 0);
     }
 
+    // masks[0] is documented as the topmost/frontmost entry: with two
+    // full-frame, fully-opaque image layers stacked, the rendered result
+    // must show whichever one sits at index 0, regardless of insertion
+    // order. Regression test for a Layers-panel display-order bug where a
+    // newly-added layer (always inserted at masks index 0) visually showed
+    // up at the bottom of the panel list -- the panel bug didn't affect
+    // this applyAdjustments/applyMasks compositing path itself, but this
+    // pins down the masks[0]-is-topmost contract those UI pieces rely on.
+    {
+        QImage base(4, 4, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        QImage redSrc(4, 4, QImage::Format_ARGB32);
+        redSrc.fill(QColor(255, 0, 0));
+        QImage greenSrc(4, 4, QImage::Format_ARGB32);
+        greenSrc.fill(QColor(0, 255, 0));
+
+        Mask red;
+        red.type = MaskType::None;
+        red.sourceImagePath = "red.png";
+        red.sourceImageCache = redSrc;
+        red.opacity = 1.0;
+
+        Mask green;
+        green.type = MaskType::None;
+        green.sourceImagePath = "green.png";
+        green.sourceImageCache = greenSrc;
+        green.opacity = 1.0;
+
+        Adjustments adjRedOnTop;
+        adjRedOnTop.masks.append(red);   // index 0: topmost
+        adjRedOnTop.masks.append(green); // index 1: bottom
+        QImage outRedOnTop = applyAdjustments(base, adjRedOnTop);
+        assert(qRed(outRedOnTop.pixel(2, 2)) > 200);
+        assert(qGreen(outRedOnTop.pixel(2, 2)) < 50);
+
+        Adjustments adjGreenOnTop;
+        adjGreenOnTop.masks.append(green); // index 0: topmost
+        adjGreenOnTop.masks.append(red);   // index 1: bottom
+        QImage outGreenOnTop = applyAdjustments(base, adjGreenOnTop);
+        assert(qGreen(outGreenOnTop.pixel(2, 2)) > 200);
+        assert(qRed(outGreenOnTop.pixel(2, 2)) < 50);
+    }
+
     // Erasing an image layer punches transparency through to the base below.
     {
         QImage base(8, 8, QImage::Format_ARGB32);
@@ -189,7 +239,11 @@ int main() {
 
         Adjustments loaded;
         assert(EditSidecar::load(path, loaded));
-        assert(loaded.masks.size() == 1);
+        // +1: a sidecar with no MaskType::Background entry and no legacy
+        // backgroundHidden/backgroundDeleted fields gets one synthesized on
+        // load (see EditSidecar::load's Background migration), appended
+        // after this test's own single mask.
+        assert(loaded.masks.size() == 2);
         assert(loaded.masks[0].sourceImageOffset == QPointF(0.25, -0.5));
         assert(loaded.masks[0].sourceImageScale == QPointF(0.75, 0.5));
         assert(!loaded.masks[0].sourceImageLockRatio);
@@ -213,7 +267,7 @@ int main() {
 
         Adjustments loaded;
         assert(EditSidecar::load(path, loaded));
-        assert(loaded.masks.size() == 1);
+        assert(loaded.masks.size() == 2); // +1 synthesized Background, see above
         assert(loaded.masks[0].eraseStrokes.size() == 2);
         assert(loaded.masks[0].eraseStrokes[0].pt == QPointF(0.3, 0.4));
         assert(std::abs(loaded.masks[0].eraseStrokes[0].radius - 0.1) < 1e-9);
@@ -237,7 +291,7 @@ int main() {
 
         Adjustments loaded;
         assert(EditSidecar::load(path, loaded));
-        assert(loaded.masks.size() == 1);
+        assert(loaded.masks.size() == 2); // +1 synthesized Background, see above
         assert(loaded.masks[0].eraseStrokes.isEmpty());
     }
 
@@ -422,6 +476,305 @@ int main() {
         assert(EditSidecar::load(path, loaded));
         assert(loaded.lightAngle == 275);
         assert(loaded.lightIntensity == -42);
+    }
+
+    // MaskType::Shape renders via the new masks-based interactive-tier path:
+    // a full-frame red rectangle over a black base should turn the whole
+    // frame red once both the (empty) static pass and the interactive pass
+    // (applyPaintMasks) run — mirroring how RetouchTab::onRenderDone
+    // composites applyAdjustments' cached buffer + applyPaintMasks. Built
+    // directly via `masks` (not the old `shapes` array) so this doesn't
+    // double-render.
+    {
+        QImage base(8, 8, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask shape;
+        shape.type = MaskType::Shape;
+        shape.shapeType = ShapeType::Rectangle;
+        shape.shapeRect = QRectF(0, 0, 8, 8); // raw oriented-image pixel space, matches base size
+        shape.shapeFillEnabled = true;
+        shape.shapeFillColor = QColor(255, 0, 0);
+        shape.shapeStrokeEnabled = false;
+        shape.opacity = 1.0;
+        shape.visible = true;
+
+        Adjustments adj;
+        adj.masks.append(shape);
+
+        QImage out = applyAdjustments(base, adj);   // static tier: Shape excluded, stays black
+        assert(qRed(out.pixel(4, 4)) == 0);
+        applyPaintMasks(out, adj.masks);             // interactive tier: Shape composited here
+        QRgb center = out.pixel(4, 4);
+        assert(qRed(center) > 250 && qGreen(center) < 5 && qBlue(center) < 5);
+    }
+
+    // A hidden Shape mask contributes nothing, same as other mask types.
+    {
+        QImage base(8, 8, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask shape;
+        shape.type = MaskType::Shape;
+        shape.shapeType = ShapeType::Rectangle;
+        shape.shapeRect = QRectF(0, 0, 8, 8);
+        shape.shapeFillEnabled = true;
+        shape.shapeFillColor = QColor(255, 0, 0);
+        shape.visible = false;
+
+        Adjustments adj;
+        adj.masks.append(shape);
+
+        QImage out = applyAdjustments(base, adj);
+        applyPaintMasks(out, adj.masks);
+        assert(qRed(out.pixel(4, 4)) == 0);
+    }
+
+    // MaskType::TextBox renders via the same new masks-based interactive-tier
+    // path: solid background-box color should show through where the text
+    // box is placed.
+    {
+        QImage base(20, 20, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask tb;
+        tb.type = MaskType::TextBox;
+        tb.textBoxPos = QPointF(0, 0);
+        tb.textBoxText = QStringLiteral("Hi");
+        tb.textBoxPixelSize = 12.0;
+        tb.textBoxColor = QColor(255, 255, 255);
+        tb.textBoxBgEnabled = true;
+        tb.textBoxBgColor = QColor(0, 255, 0);
+        tb.textBoxBgOpacity = 1.0;
+        tb.textBoxBgPadding = 2.0;
+        tb.opacity = 1.0;
+        tb.visible = true;
+
+        Adjustments adj;
+        adj.masks.append(tb);
+
+        QImage out = applyAdjustments(base, adj);
+        assert(qGreen(out.pixel(1, 1)) == 0); // static tier: TextBox excluded, stays black
+        applyPaintMasks(out, adj.masks);
+        // Just below/right of the origin should be inside the padded
+        // background box (text box top-left is (0,0), padding extends it).
+        QRgb p = out.pixel(1, 1);
+        assert(qGreen(p) > 200 && qRed(p) < 60 && qBlue(p) < 60);
+    }
+
+    // Paint, Shape, and TextBox composite together (true stack order) in a
+    // single applyPaintMasks call, replacing the old separate
+    // applyTexts/applyShapes/applyPaintMasks three-call sequence for masks-
+    // based layers. Stack order (index 0 = top): TextBox on top of Shape on
+    // top of Paint; each covers a distinct region so all three must appear.
+    {
+        QImage base(30, 10, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask paint;
+        paint.type = MaskType::Paint;
+        paint.paintColor = QColor(0, 0, 255);
+        paint.brushRadius = 0.05; // small dab, width-normalized against 30px width
+        paint.hardness = 1.0;
+        paint.opacity = 1.0;
+        // BrushStrokePoint coords are normalized by image WIDTH for both x
+        // and y (see Mask::stroke doc comment), not by height, so y=5px on
+        // a 30-wide image is 5/30 here, not 5/10.
+        paint.stroke.append(BrushStrokePoint{QPointF(2.0 / 30.0, 5.0 / 30.0), false,
+                                             paint.brushRadius, paint.hardness,
+                                             paint.paintColor.rgb()});
+
+        Mask shape;
+        shape.type = MaskType::Shape;
+        shape.shapeType = ShapeType::Rectangle;
+        shape.shapeRect = QRectF(12, 2, 6, 6);
+        shape.shapeFillEnabled = true;
+        shape.shapeFillColor = QColor(255, 0, 0);
+        shape.shapeStrokeEnabled = false;
+        shape.opacity = 1.0;
+
+        Mask tb;
+        tb.type = MaskType::TextBox;
+        tb.textBoxPos = QPointF(22, 0);
+        tb.textBoxText = QStringLiteral("X");
+        tb.textBoxBgEnabled = true;
+        tb.textBoxBgColor = QColor(0, 255, 0);
+        tb.textBoxBgOpacity = 1.0;
+        tb.textBoxBgPadding = 3.0;
+        tb.opacity = 1.0;
+
+        Adjustments adj;
+        // masks are top-of-stack-first; order here doesn't matter for this
+        // test since the three regions don't overlap.
+        adj.masks.append(tb);
+        adj.masks.append(shape);
+        adj.masks.append(paint);
+
+        QImage out = applyAdjustments(base, adj);
+        applyPaintMasks(out, adj.masks);
+        assert(qBlue(out.pixel(2, 5)) > 200);  // Paint region
+        assert(qRed(out.pixel(15, 5)) > 200);  // Shape region
+        assert(qGreen(out.pixel(23, 1)) > 200); // TextBox background region
+    }
+
+    // hasMaskEdits/hasToneEdits recognize Shape/TextBox masks.
+    {
+        Adjustments a;
+        Mask shape;
+        shape.type = MaskType::Shape;
+        shape.shapeRect = QRectF(0, 0, 4, 4);
+        a.masks.append(shape);
+        assert(hasToneEdits(a));
+
+        Adjustments b;
+        Mask tbEmpty;
+        tbEmpty.type = MaskType::TextBox;
+        tbEmpty.textBoxText = QStringLiteral("   "); // whitespace-only -> no edit
+        b.masks.append(tbEmpty);
+        assert(!hasToneEdits(b));
+    }
+
+    // MaskType::Background: the tab's base photo, represented as a normal
+    // Mask entry (see RetouchTab::ensureBackgroundMask), goes through the
+    // exact same generic compositing/visibility/z-order code path as every
+    // other layer in applyMasks — no pinned bottom slot, no special hide/
+    // delete flag. This is the core regression coverage for that migration.
+    {
+        QImage base(4, 4, QImage::Format_ARGB32);
+        base.fill(QColor(0, 0, 255)); // blue
+
+        Mask bg;
+        bg.type = MaskType::Background;
+        bg.name = QStringLiteral("Background");
+
+        Mask paint;
+        paint.type = MaskType::Paint;
+        paint.paintColor = QColor(255, 0, 0); // red
+        paint.brushRadius = 2.0;
+        paint.hardness = 1.0;
+        paint.opacity = 1.0;
+        paint.blend = BlendMode::Normal;
+        paint.stroke.append(BrushStrokePoint{QPointF(0.5, 0.5), false, paint.brushRadius,
+                                             paint.hardness, paint.paintColor.rgb()});
+
+        // Standard order: Paint above Background (index 0 = top of stack) ->
+        // the paint layer wins.
+        {
+            Adjustments adj;
+            adj.masks.append(paint);
+            adj.masks.append(bg);
+            QImage out = applyAdjustments(base, adj);
+            applyPaintMasks(out, adj.masks);
+            QRgb center = out.pixel(2, 2);
+            assert(qRed(center) > 250 && qGreen(center) < 5 && qBlue(center) < 5);
+        }
+
+        // Reordered: Background dragged above another full-frame (static-
+        // tier) layer -> Background is fully opaque and composites last, so
+        // it now hides that layer entirely. Proves Background is genuinely
+        // reorderable, not pinned to the bottom of the stack. (Uses an image
+        // layer rather than Paint here: Paint/Shape/TextBox are the
+        // "interactive tier", always composited as a block on top of the
+        // static tier regardless of stack order — a pre-existing, documented
+        // rendering-pipeline trade-off unrelated to Background specifically,
+        // see the MaskPass comment in Adjustments.cpp.)
+        {
+            QImage red(4, 4, QImage::Format_ARGB32);
+            red.fill(QColor(255, 0, 0));
+            Mask imageLayer;
+            imageLayer.type = MaskType::None;
+            imageLayer.sourceImagePath = QStringLiteral("layer.png");
+            imageLayer.sourceImageCache = red;
+
+            Adjustments adj;
+            adj.masks.append(bg);
+            adj.masks.append(imageLayer);
+            QImage out = applyAdjustments(base, adj);
+            QRgb center = out.pixel(2, 2);
+            assert(qBlue(center) > 250 && qRed(center) < 5);
+        }
+
+        // Hiding Background (Mask::visible = false, the same generic flag
+        // every other layer uses) renders it as transparent, same as any
+        // other hidden full-frame layer -- no separate backgroundHidden flag.
+        {
+            Adjustments adj;
+            Mask hiddenBg = bg;
+            hiddenBg.visible = false;
+            adj.masks.append(hiddenBg);
+            QImage out = applyAdjustments(base, adj);
+            assert(qAlpha(out.pixel(2, 2)) == 0);
+        }
+
+        // A default (untouched) Background entry alone must not itself count
+        // as an "edit" -- otherwise every freshly-opened image would show as
+        // dirty/edited purely because Background always exists in masks[].
+        {
+            Adjustments adj;
+            adj.masks.append(bg);
+            assert(!hasToneEdits(adj));
+        }
+
+        // But a Background layer with a real per-layer adjustment (or one
+        // that's hidden) does count, same as any other mask.
+        {
+            Adjustments adj;
+            Mask editedBg = bg;
+            editedBg.adj.brightness = 20;
+            adj.masks.append(editedBg);
+            assert(hasToneEdits(adj));
+        }
+    }
+
+    // Regression test: three OVERLAPPING same-tier (all MaskType::Shape)
+    // layers must composite in true masks-array index order among
+    // themselves, index 0 frontmost, exactly like any other same-tier set.
+    // The earlier "Paint, Shape, and TextBox composite together" test above
+    // only used non-overlapping regions, so it couldn't catch a same-tier
+    // relative-ordering regression -- this test closes that gap by covering
+    // the exact scenario from the user's bug report: three full-frame-ish
+    // Shape layers (blue on top, then white, then red), overlapping in the
+    // same region, where only the topmost (masks[0], blue) should show.
+    {
+        QImage base(10, 10, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask blue;
+        blue.type = MaskType::Shape;
+        blue.shapeType = ShapeType::Rectangle;
+        blue.shapeRect = QRectF(0, 0, 10, 10);
+        blue.shapeFillEnabled = true;
+        blue.shapeFillColor = QColor(0, 0, 255);
+        blue.shapeStrokeEnabled = false;
+        blue.opacity = 1.0;
+
+        Mask white;
+        white.type = MaskType::Shape;
+        white.shapeType = ShapeType::Rectangle;
+        white.shapeRect = QRectF(0, 0, 10, 10);
+        white.shapeFillEnabled = true;
+        white.shapeFillColor = QColor(255, 255, 255);
+        white.shapeStrokeEnabled = false;
+        white.opacity = 1.0;
+
+        Mask red;
+        red.type = MaskType::Shape;
+        red.shapeType = ShapeType::Rectangle;
+        red.shapeRect = QRectF(0, 0, 10, 10);
+        red.shapeFillEnabled = true;
+        red.shapeFillColor = QColor(255, 0, 0);
+        red.shapeStrokeEnabled = false;
+        red.opacity = 1.0;
+
+        Adjustments adj;
+        adj.masks.append(blue);  // index 0: topmost, matches Layers-panel row 0
+        adj.masks.append(white); // index 1
+        adj.masks.append(red);   // index 2: bottommost
+
+        QImage out = applyAdjustments(base, adj);
+        applyPaintMasks(out, adj.masks);
+        QRgb center = out.pixel(5, 5);
+        assert(qBlue(center) > 200 && qRed(center) < 20 && qGreen(center) < 20);
     }
 
     std::printf("AdjustmentsPaintTest: all assertions passed\n");

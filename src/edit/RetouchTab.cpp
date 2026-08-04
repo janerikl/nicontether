@@ -58,6 +58,7 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     // decoded again — the cache is never persisted.
     for (const Mask &m : m_adj.masks)
         if (m.isImageLayer()) kickoffImageLayerDecode(m.sourceImagePath);
+    ensureBackgroundMask();
 
     setupCanvasAndWiring();
 
@@ -72,6 +73,7 @@ RetouchTab::RetouchTab(const QSize &blankSize, QWidget *parent)
     : QWidget(parent), m_path(QString()) {
     m_base = QImage(blankSize, QImage::Format_ARGB32);
     m_base.fill(Qt::transparent);
+    ensureBackgroundMask();
 
     setupCanvasAndWiring();
 
@@ -121,8 +123,6 @@ void RetouchTab::setupCanvasAndWiring() {
             &RetouchTab::onShapeDuplicateRequested);
     connect(m_canvas, &ImageCanvas::shapeGroupDuplicateRequested, this,
             &RetouchTab::onShapeGroupDuplicateRequested);
-    connect(m_canvas, &ImageCanvas::shapeRaiseRequested, this, &RetouchTab::onShapeRaiseRequested);
-    connect(m_canvas, &ImageCanvas::shapeLowerRequested, this, &RetouchTab::onShapeLowerRequested);
     connect(m_canvas, &ImageCanvas::shapeGroupDeleteRequested, this,
             &RetouchTab::onShapeGroupDeleteRequested);
     connect(m_canvas, &ImageCanvas::shapeToggleSelectRequested, this,
@@ -238,8 +238,7 @@ void RetouchTab::onDecodeFinished() {
 
 bool RetouchTab::hasEdits() const {
     return hasToneEdits(m_adj) || m_adj.rotationQuadrants != 0 || m_adj.flipH ||
-           m_adj.flipV || !m_adj.cropRect.isNull() || !m_adj.heals.isEmpty() ||
-           !m_adj.texts.isEmpty() || !m_adj.shapes.isEmpty();
+           m_adj.flipV || !m_adj.cropRect.isNull() || !m_adj.heals.isEmpty();
 }
 
 void RetouchTab::assignPath(const QString &path) {
@@ -332,15 +331,13 @@ QImage RetouchTab::orientedPreCropSource() const {
     orientAdj.rotationQuadrants = m_adj.rotationQuadrants;
     orientAdj.flipH = m_adj.flipH;
     orientAdj.flipV = m_adj.flipV;
-    QImage baseSrc = m_base;
-    if (m_adj.backgroundHidden || m_adj.backgroundDeleted) {
-        // Hidden/deleted base: composite a fully transparent image of the
-        // same size in its place so mask/shape/text layers above it (and the
-        // canvas checkerboard) still render correctly.
-        baseSrc = QImage(m_base.size(), QImage::Format_RGBA64);
-        baseSrc.fill(Qt::transparent);
-    }
-    QImage oriented = applyAdjustments(baseSrc, orientAdj);
+    // The Background layer's own visibility/presence now lives in m_adj.masks
+    // (MaskType::Background) like any other layer, so `base` here is always
+    // just the tab's raw loaded photo — applyAdjustments composites the
+    // masks stack (including Background, wherever it sits) on top of a blank
+    // canvas, so a hidden/deleted Background renders as transparent through
+    // the normal generic mask-visibility code path.
+    QImage oriented = applyAdjustments(m_base, orientAdj);
     if (!m_adj.heals.isEmpty()) applyHeal(oriented, m_adj.heals);
 
     if (!m_adj.removals.isEmpty()) {
@@ -405,7 +402,7 @@ void RetouchTab::rebuildGeom() {
         }
     }
 
-    m_canvas->setShowCheckerboard(m_adj.backgroundHidden || m_adj.backgroundDeleted);
+    m_canvas->setShowCheckerboard(!backgroundLayerVisible());
 
     if (qMax(m_geomImg.width(), m_geomImg.height()) > kDisplayMaxDim) {
         m_scaled = m_geomImg.scaled(kDisplayMaxDim, kDisplayMaxDim,
@@ -416,6 +413,14 @@ void RetouchTab::rebuildGeom() {
     m_scaleFromGeom = m_geomImg.width() > 0
                           ? double(m_scaled.width()) / m_geomImg.width()
                           : 1.0;
+    // Keep the Background mask's thumbnail source in sync with the current
+    // geometry (crop/rotate/flip) — only used by LayersPanel's generic
+    // maskThumbnail(); actual rendering always sources fresh content from
+    // `m_base` inside applyAdjustments (see applyAdjustments in
+    // Adjustments.cpp), so this never causes spurious history/dirty churn
+    // (Mask::operator== ignores sourceImageCache).
+    for (Mask &m : m_adj.masks)
+        if (m.type == MaskType::Background) m.sourceImageCache = m_scaled;
     updateHealSpots();
     updateTextMarkers();
     updateShapeMarkers();
@@ -427,17 +432,32 @@ void RetouchTab::rebuildGeom() {
 // (m_scaled) pixel space so the canvas can draw/hit-test selection boxes.
 void RetouchTab::updateTextMarkers() {
     QVector<ImageCanvas::TextMarker> markers;
-    for (const TextOp &op : m_adj.texts) {
-        TextOp local = op;
-        local.pos = m_orientedToGeom.map(op.pos) * m_scaleFromGeom;
-        local.pixelSize *= m_scaleFromGeom;
+    m_textMaskIndices.clear();
+    for (int i = 0; i < m_adj.masks.size(); ++i) {
+        const Mask &mk = m_adj.masks[i];
+        if (mk.type != MaskType::TextBox) continue;
+        TextOp local;
+        local.pos = m_orientedToGeom.map(mk.textBoxPos) * m_scaleFromGeom;
+        local.text = mk.textBoxText;
+        local.family = mk.textBoxFamily;
+        local.pixelSize = mk.textBoxPixelSize * m_scaleFromGeom;
+        local.bold = mk.textBoxBold;
+        local.italic = mk.textBoxItalic;
         ImageCanvas::TextMarker m;
         m.rect = textOpBounds(local);
-        m.rotation = op.rotation + m_geomRotationDeg;
+        m.rotation = mk.textBoxRotation + m_geomRotationDeg;
         markers.append(m);
+        m_textMaskIndices.append(i);
     }
     m_canvas->setTextMarkers(markers);
     m_canvas->setActiveTextIndex(m_activeText);
+}
+
+// Marker index -> real m_adj.masks index (see m_textMaskIndices), or -1 if
+// markerIndex is out of range.
+int RetouchTab::textMaskIndex(int markerIndex) const {
+    if (markerIndex < 0 || markerIndex >= m_textMaskIndices.size()) return -1;
+    return m_textMaskIndices[markerIndex];
 }
 
 // Convert stored shape ops (oriented-image, pre-crop coords) into the
@@ -445,20 +465,32 @@ void RetouchTab::updateTextMarkers() {
 // boxes/handles.
 void RetouchTab::updateShapeMarkers() {
     QVector<ImageCanvas::ShapeMarker> markers;
-    for (const ShapeOp &op : m_adj.shapes) {
+    m_shapeMaskIndices.clear();
+    for (int i = 0; i < m_adj.masks.size(); ++i) {
+        const Mask &mk = m_adj.masks[i];
+        if (mk.type != MaskType::Shape) continue;
         ImageCanvas::ShapeMarker m;
-        m.type = op.type;
-        QPointF center = m_orientedToGeom.map(op.rect.center()) * m_scaleFromGeom;
-        m.rect = QRectF(QPointF(0, 0), op.rect.size() * m_scaleFromGeom);
+        m.type = mk.shapeType;
+        QPointF center = m_orientedToGeom.map(mk.shapeRect.center()) * m_scaleFromGeom;
+        m.rect = QRectF(QPointF(0, 0), mk.shapeRect.size() * m_scaleFromGeom);
         m.rect.moveCenter(center);
-        m.p1 = m_orientedToGeom.map(op.p1) * m_scaleFromGeom;
-        m.p2 = m_orientedToGeom.map(op.p2) * m_scaleFromGeom;
-        m.rotation = (op.type == ShapeType::Line) ? op.rotation : op.rotation + m_geomRotationDeg;
+        m.p1 = m_orientedToGeom.map(mk.shapeP1) * m_scaleFromGeom;
+        m.p2 = m_orientedToGeom.map(mk.shapeP2) * m_scaleFromGeom;
+        m.rotation = (mk.shapeType == ShapeType::Line) ? mk.shapeRotation
+                                                         : mk.shapeRotation + m_geomRotationDeg;
         markers.append(m);
+        m_shapeMaskIndices.append(i);
     }
     m_canvas->setShapeMarkers(markers);
     m_canvas->setActiveShapeIndex(m_activeShape);
     m_canvas->setSelectedShapeIndices(m_selectedShapes);
+}
+
+// Marker index -> real m_adj.masks index (see m_shapeMaskIndices), or -1 if
+// markerIndex is out of range.
+int RetouchTab::shapeMaskIndex(int markerIndex) const {
+    if (markerIndex < 0 || markerIndex >= m_shapeMaskIndices.size()) return -1;
+    return m_shapeMaskIndices[markerIndex];
 }
 
 // Convert stored heal ops (oriented-image, pre-crop coords) into the display
@@ -528,23 +560,9 @@ void RetouchTab::requestRender(const QImage &src, const Adjustments &adj, int ma
 
 void RetouchTab::onRenderDone(const QImage &result, const QImage &maskSnapshot) {
     m_lastEdited = result;
-    if (!m_adj.texts.isEmpty()) {
-        // The op currently open in the inline editor still composites
-        // normally — background/shadow/outline all preview live — but its
-        // glyph *fill* is hidden, since the editor widget already shows that
-        // live text itself; compositing the fill too would double it up.
-        if (m_textEditIndex >= 0 && m_textEditIndex < m_adj.texts.size()) {
-            QVector<TextOp> texts = m_adj.texts;
-            texts[m_textEditIndex].color.setAlpha(0);
-            applyTexts(m_lastEdited, texts, m_orientedToGeom, m_geomRotationDeg, m_scaleFromGeom);
-        } else {
-            applyTexts(m_lastEdited, m_adj.texts, m_orientedToGeom, m_geomRotationDeg, m_scaleFromGeom);
-        }
-    }
-    if (!m_adj.shapes.isEmpty())
-        applyShapes(m_lastEdited, m_adj.shapes, m_orientedToGeom, m_geomRotationDeg, m_scaleFromGeom);
     if (!m_adj.masks.isEmpty())
-        applyPaintMasks(m_lastEdited, m_adj.masks, &m_paintCache);
+        applyPaintMasks(m_lastEdited, m_adj.masks, &m_paintCache, m_orientedToGeom,
+                        m_geomRotationDeg, m_scaleFromGeom);
     if (!maskSnapshot.isNull()) m_maskPreviewImage = maskSnapshot;
     if (!m_showingOriginal) m_canvas->setImage(m_lastEdited);
     emit previewUpdated();
@@ -743,32 +761,64 @@ void RetouchTab::setTextMode(bool on) {
 // A click placed a new text op (point in display-image coords, pre-crop
 // stored per TextOp convention). Opens the inline editor immediately;
 // committing empty text (or cancelling) discards the draft.
+// Places a new text box: creates a brand-new Mask (MaskType::TextBox, always
+// via addMask() — see class comment) seeded from m_textDefaults, then opens
+// the inline editor on it immediately; committing empty text (or cancelling)
+// discards the draft. Mirrors onShapeCreateRequested's addMask() usage.
 void RetouchTab::onTextPlaceRequested(const QPoint &imgPoint) {
     if (m_scaleFromGeom <= 0) return;
     double inv = 1.0 / m_scaleFromGeom;
-    TextOp op = m_textDefaults;
-    op.pos = m_geomToOriented.map(QPointF(imgPoint.x() * inv, imgPoint.y() * inv));
-    op.text.clear();
-    m_adj.texts.append(op);
-    m_activeText = m_adj.texts.size() - 1;
+    int mi = addMask(MaskType::TextBox);
+    Mask &mk = m_adj.masks[mi];
+    mk.textBoxPos = m_geomToOriented.map(QPointF(imgPoint.x() * inv, imgPoint.y() * inv));
+    mk.textBoxRotation = m_textDefaults.rotation;
+    mk.textBoxText.clear();
+    mk.textBoxFamily = m_textDefaults.family;
+    mk.textBoxPixelSize = m_textDefaults.pixelSize;
+    mk.textBoxBold = m_textDefaults.bold;
+    mk.textBoxItalic = m_textDefaults.italic;
+    mk.textBoxColor = m_textDefaults.color;
+    mk.textBoxOutlineEnabled = m_textDefaults.outlineEnabled;
+    mk.textBoxOutlineColor = m_textDefaults.outlineColor;
+    mk.textBoxOutlineWidth = m_textDefaults.outlineWidth;
+    mk.textBoxShadowEnabled = m_textDefaults.shadowEnabled;
+    mk.textBoxShadowOffset = m_textDefaults.shadowOffset;
+    mk.textBoxShadowBlur = m_textDefaults.shadowBlur;
+    mk.textBoxShadowOpacity = m_textDefaults.shadowOpacity;
+    mk.textBoxShadowColor = m_textDefaults.shadowColor;
+    mk.textBoxBgEnabled = m_textDefaults.bgEnabled;
+    mk.textBoxBgColor = m_textDefaults.bgColor;
+    mk.textBoxBgOpacity = m_textDefaults.bgOpacity;
+    mk.textBoxBgPadding = m_textDefaults.bgPadding;
+    updateTextMarkers();
+    // addMask() always inserts at masks index 0 (front of stack), i.e. the
+    // last entry in the TextBox-filtered marker list built by
+    // updateTextMarkers() (which walks masks front-to-back).
+    m_activeText = m_textMaskIndices.indexOf(mi);
     m_newTextIndex = m_activeText;
     m_textEditIndex = m_activeText;
     updateTextMarkers();
     retone(); // suppress the (empty) baked-in text while the editor owns it
 
-    QFont font(op.family);
-    font.setPixelSize(std::max(1, int(std::lround(op.pixelSize * m_scaleFromGeom))));
-    font.setBold(op.bold);
-    font.setItalic(op.italic);
-    m_canvas->beginTextEdit(m_activeText, QPointF(imgPoint), font, op.color, QString());
+    QFont font(mk.textBoxFamily);
+    font.setPixelSize(std::max(1, int(std::lround(mk.textBoxPixelSize * m_scaleFromGeom))));
+    font.setBold(mk.textBoxBold);
+    font.setItalic(mk.textBoxItalic);
+    m_canvas->beginTextEdit(m_activeText, QPointF(imgPoint), font, mk.textBoxColor, QString());
     emit textsChanged();
 }
 
 void RetouchTab::onTextSelected(int index) {
-    if (index < 0 || index >= m_adj.texts.size()) return;
+    int mi = textMaskIndex(index);
+    if (mi < 0) return;
     m_activeText = index;
     m_newTextIndex = -1;
     m_canvas->setActiveTextIndex(index);
+    // See selectShape()'s comment: keep m_activeMask in sync with
+    // canvas-driven selection so the Layers panel highlight (and generic
+    // per-mask edits) follow whichever text box was actually just selected.
+    m_activeMask = mi;
+    pushMaskGizmo();
     emit textsChanged();
 }
 
@@ -778,9 +828,10 @@ void RetouchTab::onTextDeselected() {
 }
 
 void RetouchTab::onTextMoved(int index, const QPointF &newImgPos) {
-    if (index < 0 || index >= m_adj.texts.size() || m_scaleFromGeom <= 0) return;
+    int mi = textMaskIndex(index);
+    if (mi < 0 || m_scaleFromGeom <= 0) return;
     double inv = 1.0 / m_scaleFromGeom;
-    m_adj.texts[index].pos =
+    m_adj.masks[mi].textBoxPos =
         m_geomToOriented.map(QPointF(newImgPos.x() * inv, newImgPos.y() * inv));
     updateTextMarkers();
     retone();
@@ -788,35 +839,41 @@ void RetouchTab::onTextMoved(int index, const QPointF &newImgPos) {
 }
 
 void RetouchTab::onTextRotated(int index, double newRotationDegrees) {
-    if (index < 0 || index >= m_adj.texts.size()) return;
-    m_adj.texts[index].rotation = newRotationDegrees - m_geomRotationDeg;
+    int mi = textMaskIndex(index);
+    if (mi < 0) return;
+    m_adj.masks[mi].textBoxRotation = newRotationDegrees - m_geomRotationDeg;
     updateTextMarkers();
     retone();
     markEdited();
 }
 
 void RetouchTab::onTextEditRequested(int index) {
-    if (index < 0 || index >= m_adj.texts.size() || m_scaleFromGeom <= 0) return;
+    int mi = textMaskIndex(index);
+    if (mi < 0 || m_scaleFromGeom <= 0) return;
     m_activeText = index;
     m_newTextIndex = -1;
     m_textEditIndex = index;
-    const TextOp &op = m_adj.texts[index];
-    QPointF displayPos = m_orientedToGeom.map(op.pos) * m_scaleFromGeom;
-    QFont font(op.family);
-    font.setPixelSize(std::max(1, int(std::lround(op.pixelSize * m_scaleFromGeom))));
-    font.setBold(op.bold);
-    font.setItalic(op.italic);
-    m_canvas->beginTextEdit(index, displayPos, font, op.color, op.text);
+    m_activeMask = mi; // see selectShape()'s comment: keep selection in sync
+    const Mask &mk = m_adj.masks[mi];
+    QPointF displayPos = m_orientedToGeom.map(mk.textBoxPos) * m_scaleFromGeom;
+    QFont font(mk.textBoxFamily);
+    font.setPixelSize(std::max(1, int(std::lround(mk.textBoxPixelSize * m_scaleFromGeom))));
+    font.setBold(mk.textBoxBold);
+    font.setItalic(mk.textBoxItalic);
+    m_canvas->beginTextEdit(index, displayPos, font, mk.textBoxColor, mk.textBoxText);
     retone(); // suppress the stale baked-in text while the editor owns it
 }
 
 void RetouchTab::onTextEditCommitted(int index, const QString &text) {
-    if (index < 0 || index >= m_adj.texts.size()) return;
-    bool wasNewEmptyDraft = (index == m_newTextIndex) && m_adj.texts[index].text.isEmpty();
+    int mi = textMaskIndex(index);
+    if (mi < 0) return;
+    bool wasNewEmptyDraft = (index == m_newTextIndex) && m_adj.masks[mi].textBoxText.isEmpty();
     m_newTextIndex = -1;
     if (m_textEditIndex == index) m_textEditIndex = -1;
     if (text.trimmed().isEmpty()) {
-        m_adj.texts.removeAt(index);
+        m_adj.masks.removeAt(mi);
+        if (m_activeMask == mi) m_activeMask = -1;
+        else if (m_activeMask > mi) --m_activeMask;
         if (m_activeText == index) m_activeText = -1;
         else if (m_activeText > index) --m_activeText;
         updateTextMarkers();
@@ -824,17 +881,20 @@ void RetouchTab::onTextEditCommitted(int index, const QString &text) {
         if (!wasNewEmptyDraft) markEdited(); // clearing existing text is itself an edit
         return;
     }
-    m_adj.texts[index].text = text;
+    m_adj.masks[mi].textBoxText = text;
     updateTextMarkers();
     retone();
     markEdited();
 }
 
 void RetouchTab::onTextEditCancelled(int index) {
-    if (index < 0 || index >= m_adj.texts.size()) return;
+    int mi = textMaskIndex(index);
+    if (mi < 0) return;
     if (m_textEditIndex == index) m_textEditIndex = -1;
-    if (index == m_newTextIndex && m_adj.texts[index].text.isEmpty()) {
-        m_adj.texts.removeAt(index);
+    if (index == m_newTextIndex && m_adj.masks[mi].textBoxText.isEmpty()) {
+        m_adj.masks.removeAt(mi);
+        if (m_activeMask == mi) m_activeMask = -1;
+        else if (m_activeMask > mi) --m_activeMask;
         if (m_activeText == index) m_activeText = -1;
         else if (m_activeText > index) --m_activeText;
         m_newTextIndex = -1;
@@ -849,15 +909,19 @@ void RetouchTab::onTextEditCancelled(int index) {
 // shadow/outline/background style controls preview correctly while the
 // editor is still open — see onRenderDone's fill-only suppression.
 void RetouchTab::onTextLiveContentChanged(int index, const QString &text) {
-    if (index < 0 || index >= m_adj.texts.size()) return;
-    m_adj.texts[index].text = text;
+    int mi = textMaskIndex(index);
+    if (mi < 0) return;
+    m_adj.masks[mi].textBoxText = text;
     updateTextMarkers();
     retone();
 }
 
 void RetouchTab::onTextDeleteRequested(int index) {
-    if (index < 0 || index >= m_adj.texts.size()) return;
-    m_adj.texts.removeAt(index);
+    int mi = textMaskIndex(index);
+    if (mi < 0) return;
+    m_adj.masks.removeAt(mi);
+    if (m_activeMask == mi) m_activeMask = -1;
+    else if (m_activeMask > mi) --m_activeMask;
     if (m_activeText == index) m_activeText = -1;
     else if (m_activeText > index) --m_activeText;
     if (m_newTextIndex == index) m_newTextIndex = -1;
@@ -867,15 +931,17 @@ void RetouchTab::onTextDeleteRequested(int index) {
 }
 
 void RetouchTab::onTextResizeStarted(int index) {
-    if (index < 0 || index >= m_adj.texts.size()) return;
-    m_textResizeStartPixelSize = m_adj.texts[index].pixelSize;
+    int mi = textMaskIndex(index);
+    if (mi < 0) return;
+    m_textResizeStartPixelSize = m_adj.masks[mi].textBoxPixelSize;
 }
 
 // Corner-drag resize: uniformly scales font size relative to its value when
 // the drag began (`ratio` is cumulative from drag start, not incremental).
 void RetouchTab::onTextResized(int index, double ratio) {
-    if (index < 0 || index >= m_adj.texts.size()) return;
-    m_adj.texts[index].pixelSize = std::clamp(m_textResizeStartPixelSize * ratio, 1.0, 2000.0);
+    int mi = textMaskIndex(index);
+    if (mi < 0) return;
+    m_adj.masks[mi].textBoxPixelSize = std::clamp(m_textResizeStartPixelSize * ratio, 1.0, 2000.0);
     updateTextMarkers();
     retone();
     markEdited();
@@ -887,65 +953,121 @@ void RetouchTab::deleteActiveText() {
 }
 
 TextOp RetouchTab::activeTextStyle() const {
-    if (m_activeText >= 0 && m_activeText < m_adj.texts.size()) return m_adj.texts[m_activeText];
-    return m_textDefaults;
+    int mi = textMaskIndex(m_activeText);
+    if (mi < 0) return m_textDefaults;
+    const Mask &mk = m_adj.masks[mi];
+    TextOp op;
+    op.pos = mk.textBoxPos;
+    op.rotation = mk.textBoxRotation;
+    op.text = mk.textBoxText;
+    op.family = mk.textBoxFamily;
+    op.pixelSize = mk.textBoxPixelSize;
+    op.bold = mk.textBoxBold;
+    op.italic = mk.textBoxItalic;
+    op.color = mk.textBoxColor;
+    op.outlineEnabled = mk.textBoxOutlineEnabled;
+    op.outlineColor = mk.textBoxOutlineColor;
+    op.outlineWidth = mk.textBoxOutlineWidth;
+    op.shadowEnabled = mk.textBoxShadowEnabled;
+    op.shadowOffset = mk.textBoxShadowOffset;
+    op.shadowBlur = mk.textBoxShadowBlur;
+    op.shadowOpacity = mk.textBoxShadowOpacity;
+    op.shadowColor = mk.textBoxShadowColor;
+    op.bgEnabled = mk.textBoxBgEnabled;
+    op.bgColor = mk.textBoxBgColor;
+    op.bgOpacity = mk.textBoxBgOpacity;
+    op.bgPadding = mk.textBoxBgPadding;
+    return op;
 }
 
 void RetouchTab::setTextFont(const QString &family, double pixelSize, bool bold, bool italic) {
-    TextOp *target = (m_activeText >= 0 && m_activeText < m_adj.texts.size())
-                         ? &m_adj.texts[m_activeText] : &m_textDefaults;
-    target->family = family;
-    target->pixelSize = pixelSize;
-    target->bold = bold;
-    target->italic = italic;
-    if (target != &m_textDefaults) {
+    int mi = textMaskIndex(m_activeText);
+    if (mi >= 0) {
+        Mask &mk = m_adj.masks[mi];
+        mk.textBoxFamily = family;
+        mk.textBoxPixelSize = pixelSize;
+        mk.textBoxBold = bold;
+        mk.textBoxItalic = italic;
         updateTextMarkers();
         retone();
         markEdited();
+    } else {
+        m_textDefaults.family = family;
+        m_textDefaults.pixelSize = pixelSize;
+        m_textDefaults.bold = bold;
+        m_textDefaults.italic = italic;
     }
     emit textsChanged();
 }
 
 void RetouchTab::setTextColor(const QColor &color) {
-    TextOp *target = (m_activeText >= 0 && m_activeText < m_adj.texts.size())
-                         ? &m_adj.texts[m_activeText] : &m_textDefaults;
-    target->color = color;
-    if (target != &m_textDefaults) { retone(); markEdited(); }
+    int mi = textMaskIndex(m_activeText);
+    if (mi >= 0) {
+        m_adj.masks[mi].textBoxColor = color;
+        retone();
+        markEdited();
+    } else {
+        m_textDefaults.color = color;
+    }
     emit textsChanged();
 }
 
 void RetouchTab::setTextOutline(bool enabled, const QColor &color, double width) {
-    TextOp *target = (m_activeText >= 0 && m_activeText < m_adj.texts.size())
-                         ? &m_adj.texts[m_activeText] : &m_textDefaults;
-    target->outlineEnabled = enabled;
-    target->outlineColor = color;
-    target->outlineWidth = width;
-    if (target != &m_textDefaults) { retone(); markEdited(); }
+    int mi = textMaskIndex(m_activeText);
+    if (mi >= 0) {
+        Mask &mk = m_adj.masks[mi];
+        mk.textBoxOutlineEnabled = enabled;
+        mk.textBoxOutlineColor = color;
+        mk.textBoxOutlineWidth = width;
+        retone();
+        markEdited();
+    } else {
+        m_textDefaults.outlineEnabled = enabled;
+        m_textDefaults.outlineColor = color;
+        m_textDefaults.outlineWidth = width;
+    }
     emit textsChanged();
 }
 
 void RetouchTab::setTextShadow(bool enabled, const QPointF &offset, double blur, double opacity,
                                const QColor &color) {
-    TextOp *target = (m_activeText >= 0 && m_activeText < m_adj.texts.size())
-                         ? &m_adj.texts[m_activeText] : &m_textDefaults;
-    target->shadowEnabled = enabled;
-    target->shadowOffset = offset;
-    target->shadowBlur = blur;
-    target->shadowOpacity = opacity;
-    target->shadowColor = color;
-    if (target != &m_textDefaults) { retone(); markEdited(); }
+    int mi = textMaskIndex(m_activeText);
+    if (mi >= 0) {
+        Mask &mk = m_adj.masks[mi];
+        mk.textBoxShadowEnabled = enabled;
+        mk.textBoxShadowOffset = offset;
+        mk.textBoxShadowBlur = blur;
+        mk.textBoxShadowOpacity = opacity;
+        mk.textBoxShadowColor = color;
+        retone();
+        markEdited();
+    } else {
+        m_textDefaults.shadowEnabled = enabled;
+        m_textDefaults.shadowOffset = offset;
+        m_textDefaults.shadowBlur = blur;
+        m_textDefaults.shadowOpacity = opacity;
+        m_textDefaults.shadowColor = color;
+    }
     emit textsChanged();
 }
 
 void RetouchTab::setTextBackground(bool enabled, const QColor &color, double opacity,
                                    double padding) {
-    TextOp *target = (m_activeText >= 0 && m_activeText < m_adj.texts.size())
-                         ? &m_adj.texts[m_activeText] : &m_textDefaults;
-    target->bgEnabled = enabled;
-    target->bgColor = color;
-    target->bgOpacity = opacity;
-    target->bgPadding = padding;
-    if (target != &m_textDefaults) { retone(); markEdited(); }
+    int mi = textMaskIndex(m_activeText);
+    if (mi >= 0) {
+        Mask &mk = m_adj.masks[mi];
+        mk.textBoxBgEnabled = enabled;
+        mk.textBoxBgColor = color;
+        mk.textBoxBgOpacity = opacity;
+        mk.textBoxBgPadding = padding;
+        retone();
+        markEdited();
+    } else {
+        m_textDefaults.bgEnabled = enabled;
+        m_textDefaults.bgColor = color;
+        m_textDefaults.bgOpacity = opacity;
+        m_textDefaults.bgPadding = padding;
+    }
     emit textsChanged();
 }
 
@@ -960,8 +1082,9 @@ void RetouchTab::setShapeMode(bool on) {
 
 void RetouchTab::setActiveShapeType(ShapeType t) {
     m_canvas->setActiveShapeType(t);
-    if (m_activeShape >= 0 && m_activeShape < m_adj.shapes.size()) {
-        m_adj.shapes[m_activeShape].type = t;
+    int mi = shapeMaskIndex(m_activeShape);
+    if (mi >= 0) {
+        m_adj.masks[mi].shapeType = t;
         updateShapeMarkers();
         retone();
         markEdited();
@@ -976,22 +1099,39 @@ void RetouchTab::setActiveShapeType(ShapeType t) {
 void RetouchTab::onShapeCreateRequested(ShapeType type, const QRectF &imageRect) {
     if (m_scaleFromGeom <= 0) return;
     double inv = 1.0 / m_scaleFromGeom;
-    ShapeOp op = m_shapeDefaults;
-    op.type = type;
+    // addMask() inserts a brand-new Mask (MaskType::Shape) at masks index 0
+    // and points m_activeMask at it; seed its shape* fields from
+    // m_shapeDefaults (mirroring the old ShapeOp-from-m_shapeDefaults seed)
+    // then overwrite with this drag's final geometry.
+    int mi = addMask(MaskType::Shape, type);
+    Mask &mk = m_adj.masks[mi];
+    mk.shapeType = type;
+    mk.shapeSides = m_shapeDefaults.sides;
+    mk.shapeInnerRadiusRatio = m_shapeDefaults.innerRadiusRatio;
+    mk.shapeFillEnabled = m_shapeDefaults.fillEnabled;
+    mk.shapeFillColor = m_shapeDefaults.fillColor;
+    mk.shapeStrokeEnabled = m_shapeDefaults.strokeEnabled;
+    mk.shapeStrokeColor = m_shapeDefaults.strokeColor;
+    mk.shapeStrokeWidth = m_shapeDefaults.strokeWidth;
+    mk.opacity = m_shapeDefaults.opacity;
+    mk.visible = m_shapeDefaults.visible;
     if (type == ShapeType::Line) {
-        op.p1 = m_geomToOriented.map(imageRect.topLeft() * inv);
-        op.p2 = m_geomToOriented.map(imageRect.bottomRight() * inv);
+        mk.shapeP1 = m_geomToOriented.map(imageRect.topLeft() * inv);
+        mk.shapeP2 = m_geomToOriented.map(imageRect.bottomRight() * inv);
     } else {
         QPointF center = m_geomToOriented.map(imageRect.center() * inv);
         QSizeF size = imageRect.size() * inv;
-        op.rect = QRectF(center - QPointF(size.width() / 2.0, size.height() / 2.0), size);
-        // Drawn axis-aligned on screen; op.rotation + m_geomRotationDeg must
-        // net to 0 so it still shows axis-aligned (see updateShapeMarkers).
-        op.rotation = -m_geomRotationDeg;
+        mk.shapeRect = QRectF(center - QPointF(size.width() / 2.0, size.height() / 2.0), size);
+        // Drawn axis-aligned on screen; shapeRotation + m_geomRotationDeg
+        // must net to 0 so it still shows axis-aligned (see updateShapeMarkers).
+        mk.shapeRotation = -m_geomRotationDeg;
     }
-    m_adj.shapes.append(op);
-    m_activeShape = m_adj.shapes.size() - 1;
-    m_selectedShapes = {m_activeShape};
+    updateShapeMarkers();
+    // The new mask is always at masks index 0 (front of stack), i.e. the
+    // last entry in the Shape-filtered marker list built by
+    // updateShapeMarkers() (which walks masks front-to-back).
+    m_activeShape = m_shapeMaskIndices.indexOf(mi);
+    m_selectedShapes = (m_activeShape >= 0) ? QSet<int>{m_activeShape} : QSet<int>{};
     updateShapeMarkers();
     retone();
     markEdited();
@@ -1004,36 +1144,50 @@ void RetouchTab::onShapeCreateRequested(ShapeType type, const QRectF &imageRect)
 // ImageCanvas re-checks the (possibly just-expanded) selection right after
 // this returns and may switch the in-progress drag to a group move instead.
 void RetouchTab::onShapeSelected(int index) {
-    if (index < 0 || index >= m_adj.shapes.size()) return;
+    int mi = shapeMaskIndex(index);
+    if (mi < 0) return;
     selectShape(index);
-    m_shapeMoveStartRect = m_adj.shapes[index].rect;
-    m_shapeMoveStartP1 = m_adj.shapes[index].p1;
-    m_shapeMoveStartP2 = m_adj.shapes[index].p2;
+    const Mask &mk = m_adj.masks[mi];
+    m_shapeMoveStartRect = mk.shapeRect;
+    m_shapeMoveStartP1 = mk.shapeP1;
+    m_shapeMoveStartP2 = mk.shapeP2;
 }
 
 // Select a shape — from the canvas or the Layers panel. If it belongs to a
 // group, every shape sharing that groupId is selected too (grouped shapes
 // always act as one unit), matching Illustrator/Photoshop group semantics.
+// `index` is a marker index (position within the Shape-filtered view), not
+// a raw m_adj.masks index — see m_shapeMaskIndices.
 void RetouchTab::selectShape(int index) {
-    if (index < 0 || index >= m_adj.shapes.size()) return;
-    const QString groupId = m_adj.shapes[index].groupId;
+    int mi = shapeMaskIndex(index);
+    if (mi < 0) return;
+    const QString groupId = m_adj.masks[mi].groupId;
     if (groupId.isEmpty()) {
         m_selectedShapes = {index};
     } else {
         m_selectedShapes.clear();
-        for (int i = 0; i < m_adj.shapes.size(); ++i)
-            if (m_adj.shapes[i].groupId == groupId) m_selectedShapes.insert(i);
+        for (int mkIdx = 0; mkIdx < m_shapeMaskIndices.size(); ++mkIdx)
+            if (m_adj.masks[m_shapeMaskIndices[mkIdx]].groupId == groupId)
+                m_selectedShapes.insert(mkIdx);
     }
     m_activeShape = index;
+    // Keep m_activeMask (the Layers panel's highlighted row and the target
+    // of generic mask edits like opacity/blend/visibility) in lockstep with
+    // canvas-driven shape selection -- without this, clicking a shape on
+    // the canvas moved the shape gizmo/selection handles but left the
+    // Layers panel highlighting whatever mask was last active via
+    // selectMask()/addMask(), a stale-selection desync.
+    m_activeMask = mi;
     updateShapeMarkers();
-    const ShapeOp &op = m_adj.shapes[index];
+    pushMaskGizmo();
+    const Mask &mk = m_adj.masks[mi];
     QPointF center;
-    if (op.type == ShapeType::Line) {
-        QPointF p1 = m_orientedToGeom.map(op.p1) * m_scaleFromGeom;
-        QPointF p2 = m_orientedToGeom.map(op.p2) * m_scaleFromGeom;
+    if (mk.shapeType == ShapeType::Line) {
+        QPointF p1 = m_orientedToGeom.map(mk.shapeP1) * m_scaleFromGeom;
+        QPointF p2 = m_orientedToGeom.map(mk.shapeP2) * m_scaleFromGeom;
         center = (p1 + p2) / 2.0;
     } else {
-        center = m_orientedToGeom.map(op.rect.center()) * m_scaleFromGeom;
+        center = m_orientedToGeom.map(mk.shapeRect.center()) * m_scaleFromGeom;
     }
     m_canvas->centerOnImagePoint(center);
     emit shapesChanged();
@@ -1049,7 +1203,7 @@ void RetouchTab::onShapeDeselected() {
 // Ctrl+click (no drag) on a shape: toggle its multi-selection membership
 // without disturbing the rest of the selection.
 void RetouchTab::onShapeToggleSelectRequested(int index) {
-    if (index < 0 || index >= m_adj.shapes.size()) return;
+    if (index < 0 || index >= m_shapeMaskIndices.size()) return;
     if (m_selectedShapes.contains(index)) {
         m_selectedShapes.remove(index);
         if (m_activeShape == index)
@@ -1075,11 +1229,13 @@ void RetouchTab::onShapeGroupMoveStarted(const QList<int> &indices) {
     m_shapeGroupStartP2.clear();
     m_shapeGroupStartStrokeWidth.clear();
     for (int idx : indices) {
-        if (idx < 0 || idx >= m_adj.shapes.size()) continue;
-        m_shapeGroupStartRect[idx] = m_adj.shapes[idx].rect;
-        m_shapeGroupStartP1[idx] = m_adj.shapes[idx].p1;
-        m_shapeGroupStartP2[idx] = m_adj.shapes[idx].p2;
-        m_shapeGroupStartStrokeWidth[idx] = m_adj.shapes[idx].strokeWidth;
+        int mi = shapeMaskIndex(idx);
+        if (mi < 0) continue;
+        const Mask &mk = m_adj.masks[mi];
+        m_shapeGroupStartRect[idx] = mk.shapeRect;
+        m_shapeGroupStartP1[idx] = mk.shapeP1;
+        m_shapeGroupStartP2[idx] = mk.shapeP2;
+        m_shapeGroupStartStrokeWidth[idx] = mk.shapeStrokeWidth;
     }
 }
 
@@ -1087,13 +1243,14 @@ void RetouchTab::onShapeGroupMoveRequested(const QList<int> &indices, const QPoi
     if (m_scaleFromGeom <= 0) return;
     QPointF delta = orientedDelta(deltaImage / m_scaleFromGeom);
     for (int idx : indices) {
-        if (idx < 0 || idx >= m_adj.shapes.size() || !m_shapeGroupStartRect.contains(idx)) continue;
-        ShapeOp &op = m_adj.shapes[idx];
-        if (op.type == ShapeType::Line) {
-            op.p1 = m_shapeGroupStartP1[idx] + delta;
-            op.p2 = m_shapeGroupStartP2[idx] + delta;
+        int mi = shapeMaskIndex(idx);
+        if (mi < 0 || !m_shapeGroupStartRect.contains(idx)) continue;
+        Mask &mk = m_adj.masks[mi];
+        if (mk.shapeType == ShapeType::Line) {
+            mk.shapeP1 = m_shapeGroupStartP1[idx] + delta;
+            mk.shapeP2 = m_shapeGroupStartP2[idx] + delta;
         } else {
-            op.rect = m_shapeGroupStartRect[idx].translated(delta);
+            mk.shapeRect = m_shapeGroupStartRect[idx].translated(delta);
         }
     }
     updateShapeMarkers();
@@ -1124,17 +1281,18 @@ void RetouchTab::onShapeGroupResizeRequested(const QList<int> &indices, const QP
         return m_geomToOriented.map(scaled);
     };
     for (int idx : indices) {
-        if (idx < 0 || idx >= m_adj.shapes.size() || !m_shapeGroupStartRect.contains(idx)) continue;
-        ShapeOp &op = m_adj.shapes[idx];
-        if (op.type == ShapeType::Line) {
-            op.p1 = scalePoint(m_shapeGroupStartP1[idx]);
-            op.p2 = scalePoint(m_shapeGroupStartP2[idx]);
+        int mi = shapeMaskIndex(idx);
+        if (mi < 0 || !m_shapeGroupStartRect.contains(idx)) continue;
+        Mask &mk = m_adj.masks[mi];
+        if (mk.shapeType == ShapeType::Line) {
+            mk.shapeP1 = scalePoint(m_shapeGroupStartP1[idx]);
+            mk.shapeP2 = scalePoint(m_shapeGroupStartP2[idx]);
         } else {
             QRectF startRect = m_shapeGroupStartRect[idx];
-            op.rect = QRectF(scalePoint(startRect.topLeft()), scalePoint(startRect.bottomRight()))
+            mk.shapeRect = QRectF(scalePoint(startRect.topLeft()), scalePoint(startRect.bottomRight()))
                           .normalized();
         }
-        op.strokeWidth = std::max(0.0, m_shapeGroupStartStrokeWidth.value(idx, op.strokeWidth) * strokeScale);
+        mk.shapeStrokeWidth = std::max(0.0, m_shapeGroupStartStrokeWidth.value(idx, mk.shapeStrokeWidth) * strokeScale);
     }
     updateShapeMarkers();
     retone();
@@ -1146,14 +1304,15 @@ void RetouchTab::onShapeGroupResizeRequested(const QList<int> &indices, const QP
 // shape's position as of the drag start (captured in onShapeSelected), not
 // accumulate it onto the shape's current (already-moved) position.
 void RetouchTab::onShapeMoved(int index, const QPointF &deltaImage) {
-    if (index < 0 || index >= m_adj.shapes.size() || m_scaleFromGeom <= 0) return;
+    int mi = shapeMaskIndex(index);
+    if (mi < 0 || m_scaleFromGeom <= 0) return;
     QPointF delta = orientedDelta(deltaImage / m_scaleFromGeom);
-    ShapeOp &op = m_adj.shapes[index];
-    if (op.type == ShapeType::Line) {
-        op.p1 = m_shapeMoveStartP1 + delta;
-        op.p2 = m_shapeMoveStartP2 + delta;
+    Mask &mk = m_adj.masks[mi];
+    if (mk.shapeType == ShapeType::Line) {
+        mk.shapeP1 = m_shapeMoveStartP1 + delta;
+        mk.shapeP2 = m_shapeMoveStartP2 + delta;
     } else {
-        op.rect = m_shapeMoveStartRect.translated(delta);
+        mk.shapeRect = m_shapeMoveStartRect.translated(delta);
     }
     updateShapeMarkers();
     retone();
@@ -1161,44 +1320,50 @@ void RetouchTab::onShapeMoved(int index, const QPointF &deltaImage) {
 }
 
 void RetouchTab::onShapeResized(int index, const QRectF &newImageRect) {
-    if (index < 0 || index >= m_adj.shapes.size() || m_scaleFromGeom <= 0) return;
+    int mi = shapeMaskIndex(index);
+    if (mi < 0 || m_scaleFromGeom <= 0) return;
     double inv = 1.0 / m_scaleFromGeom;
     // newImageRect is unrotated local (marker.rotation is applied separately
     // by the renderer about its center) — map the center through the full
     // affine and keep the (unscaled) local size, mirroring updateShapeMarkers.
     QPointF center = m_geomToOriented.map(newImageRect.center() * inv);
     QSizeF size = newImageRect.size() * inv;
-    m_adj.shapes[index].rect = QRectF(center - QPointF(size.width() / 2.0, size.height() / 2.0), size);
+    m_adj.masks[mi].shapeRect = QRectF(center - QPointF(size.width() / 2.0, size.height() / 2.0), size);
     updateShapeMarkers();
     retone();
     markEdited();
 }
 
 void RetouchTab::onShapeLineEndpointsChanged(int index, const QPointF &p1, const QPointF &p2) {
-    if (index < 0 || index >= m_adj.shapes.size() || m_scaleFromGeom <= 0) return;
+    int mi = shapeMaskIndex(index);
+    if (mi < 0 || m_scaleFromGeom <= 0) return;
     double inv = 1.0 / m_scaleFromGeom;
-    m_adj.shapes[index].p1 = m_geomToOriented.map(p1 * inv);
-    m_adj.shapes[index].p2 = m_geomToOriented.map(p2 * inv);
+    m_adj.masks[mi].shapeP1 = m_geomToOriented.map(p1 * inv);
+    m_adj.masks[mi].shapeP2 = m_geomToOriented.map(p2 * inv);
     updateShapeMarkers();
     retone();
     markEdited();
 }
 
 void RetouchTab::onShapeRotated(int index, double newRotationDegrees) {
-    if (index < 0 || index >= m_adj.shapes.size()) return;
+    int mi = shapeMaskIndex(index);
+    if (mi < 0) return;
     // The rotate handle isn't offered for Line (see shapeRotateHandlePos's
     // type check), so only non-Line markers ever carry +m_geomRotationDeg
     // baked into the dragged value — matches updateShapeMarkers.
-    bool isLine = m_adj.shapes[index].type == ShapeType::Line;
-    m_adj.shapes[index].rotation = newRotationDegrees - (isLine ? 0.0 : m_geomRotationDeg);
+    bool isLine = m_adj.masks[mi].shapeType == ShapeType::Line;
+    m_adj.masks[mi].shapeRotation = newRotationDegrees - (isLine ? 0.0 : m_geomRotationDeg);
     updateShapeMarkers();
     retone();
     markEdited();
 }
 
 void RetouchTab::onShapeDeleteRequested(int index) {
-    if (index < 0 || index >= m_adj.shapes.size()) return;
-    m_adj.shapes.removeAt(index);
+    int mi = shapeMaskIndex(index);
+    if (mi < 0) return;
+    m_adj.masks.removeAt(mi);
+    if (m_activeMask == mi) m_activeMask = -1;
+    else if (m_activeMask > mi) --m_activeMask;
     if (m_activeShape == index) m_activeShape = -1;
     else if (m_activeShape > index) --m_activeShape;
     QSet<int> reselected;
@@ -1217,11 +1382,16 @@ void RetouchTab::onShapeDeleteRequested(int index) {
 // shape in one step (highest index first, so earlier removals don't shift
 // the indices of shapes still to be removed).
 void RetouchTab::onShapeGroupDeleteRequested(const QList<int> &indices) {
-    QList<int> sorted = indices;
-    std::sort(sorted.begin(), sorted.end(), std::greater<int>());
-    for (int idx : sorted) {
-        if (idx < 0 || idx >= m_adj.shapes.size()) continue;
-        m_adj.shapes.removeAt(idx);
+    QList<int> maskIndices;
+    for (int idx : indices) {
+        int mi = shapeMaskIndex(idx);
+        if (mi >= 0) maskIndices.append(mi);
+    }
+    std::sort(maskIndices.begin(), maskIndices.end(), std::greater<int>());
+    for (int mi : maskIndices) {
+        m_adj.masks.removeAt(mi);
+        if (m_activeMask == mi) m_activeMask = -1;
+        else if (m_activeMask > mi) --m_activeMask;
     }
     m_activeShape = -1;
     m_selectedShapes.clear();
@@ -1235,15 +1405,20 @@ void RetouchTab::onShapeGroupDeleteRequested(const QList<int> &indices) {
 // style) and select it, so ImageCanvas's already-in-progress move drag
 // continues by dragging the copy away from the untouched original.
 void RetouchTab::onShapeDuplicateRequested(int index) {
-    if (index < 0 || index >= m_adj.shapes.size()) return;
-    ShapeOp copy = m_adj.shapes[index];
+    int mi = shapeMaskIndex(index);
+    if (mi < 0) return;
+    Mask copy = m_adj.masks[mi];
     copy.groupId.clear(); // a lone duplicate leaves its group, even if the original had one
-    m_adj.shapes.append(copy);
-    m_activeShape = m_adj.shapes.size() - 1;
-    m_selectedShapes = {m_activeShape};
-    m_shapeMoveStartRect = copy.rect;
-    m_shapeMoveStartP1 = copy.p1;
-    m_shapeMoveStartP2 = copy.p2;
+    int insertAt = mi + 1;
+    m_adj.masks.insert(insertAt, copy);
+    if (m_activeMask >= insertAt) ++m_activeMask;
+    updateShapeMarkers();
+    int newIndex = m_shapeMaskIndices.indexOf(insertAt);
+    m_activeShape = newIndex;
+    m_selectedShapes = (newIndex >= 0) ? QSet<int>{newIndex} : QSet<int>{};
+    m_shapeMoveStartRect = copy.shapeRect;
+    m_shapeMoveStartP1 = copy.shapeP1;
+    m_shapeMoveStartP2 = copy.shapeP2;
     updateShapeMarkers();
     retone();
     markEdited();
@@ -1262,55 +1437,47 @@ void RetouchTab::onShapeGroupDuplicateRequested(const QList<int> &indices) {
     // If every duplicated shape shares the same (non-empty) group, the
     // copies form their own new group too, preserving that structure —
     // otherwise (an ad-hoc multi-selection) the copies stay ungrouped.
-    QString sourceGroupId = indices.isEmpty() || indices.first() < 0 ||
-                                    indices.first() >= m_adj.shapes.size()
-                                ? QString()
-                                : m_adj.shapes[indices.first()].groupId;
+    int firstMi = indices.isEmpty() ? -1 : shapeMaskIndex(indices.first());
+    QString sourceGroupId = firstMi < 0 ? QString() : m_adj.masks[firstMi].groupId;
     bool sameGroup = !sourceGroupId.isEmpty();
-    for (int idx : indices)
-        if (idx < 0 || idx >= m_adj.shapes.size() || m_adj.shapes[idx].groupId != sourceGroupId)
-            sameGroup = false;
+    for (int idx : indices) {
+        int mi = shapeMaskIndex(idx);
+        if (mi < 0 || m_adj.masks[mi].groupId != sourceGroupId) sameGroup = false;
+    }
     QString newGroupId = sameGroup ? QUuid::createUuid().toString() : QString();
 
-    QList<int> newIndices;
+    // Duplicate each source mask directly above its original, highest masks
+    // index first so earlier inserts don't shift the masks indices still to
+    // be processed.
+    QList<int> maskIndices;
     for (int idx : indices) {
-        if (idx < 0 || idx >= m_adj.shapes.size()) continue;
-        ShapeOp copy = m_adj.shapes[idx];
+        int mi = shapeMaskIndex(idx);
+        if (mi >= 0) maskIndices.append(mi);
+    }
+    QList<int> sortedDesc = maskIndices;
+    std::sort(sortedDesc.begin(), sortedDesc.end(), std::greater<int>());
+    QVector<int> newMaskIndices;
+    for (int mi : sortedDesc) {
+        Mask copy = m_adj.masks[mi];
         copy.groupId = newGroupId;
-        m_adj.shapes.append(copy);
-        int newIdx = m_adj.shapes.size() - 1;
+        int insertAt = mi + 1;
+        m_adj.masks.insert(insertAt, copy);
+        newMaskIndices.append(insertAt);
+        if (m_activeMask >= insertAt) ++m_activeMask;
+    }
+    updateShapeMarkers();
+    QList<int> newIndices;
+    for (int mi : newMaskIndices) {
+        int newIdx = m_shapeMaskIndices.indexOf(mi);
+        if (newIdx < 0) continue;
         newIndices.append(newIdx);
-        m_shapeGroupStartRect[newIdx] = copy.rect;
-        m_shapeGroupStartP1[newIdx] = copy.p1;
-        m_shapeGroupStartP2[newIdx] = copy.p2;
+        const Mask &mk = m_adj.masks[mi];
+        m_shapeGroupStartRect[newIdx] = mk.shapeRect;
+        m_shapeGroupStartP1[newIdx] = mk.shapeP1;
+        m_shapeGroupStartP2[newIdx] = mk.shapeP2;
     }
     m_selectedShapes = QSet<int>(newIndices.begin(), newIndices.end());
     m_activeShape = newIndices.isEmpty() ? -1 : newIndices.last();
-    updateShapeMarkers();
-    retone();
-    markEdited();
-    emit shapesChanged();
-}
-
-// '+': move one level toward the top of the stack (shapes render in vector
-// order, so "up" means a higher index — swap with the next entry).
-void RetouchTab::onShapeRaiseRequested(int index) {
-    if (index < 0 || index >= m_adj.shapes.size() - 1) return;
-    m_adj.shapes.swapItemsAt(index, index + 1);
-    if (m_selectedShapes.remove(index)) m_selectedShapes.insert(index + 1);
-    m_activeShape = index + 1;
-    updateShapeMarkers();
-    retone();
-    markEdited();
-    emit shapesChanged();
-}
-
-// '-': move one level toward the bottom of the stack.
-void RetouchTab::onShapeLowerRequested(int index) {
-    if (index <= 0 || index >= m_adj.shapes.size()) return;
-    m_adj.shapes.swapItemsAt(index, index - 1);
-    if (m_selectedShapes.remove(index)) m_selectedShapes.insert(index - 1);
-    m_activeShape = index - 1;
     updateShapeMarkers();
     retone();
     markEdited();
@@ -1323,8 +1490,9 @@ void RetouchTab::deleteActiveShape() {
 }
 
 void RetouchTab::setShapeVisible(int index, bool visible) {
-    if (index < 0 || index >= m_adj.shapes.size()) return;
-    m_adj.shapes[index].visible = visible;
+    int mi = shapeMaskIndex(index);
+    if (mi < 0) return;
+    m_adj.masks[mi].visible = visible;
     retone();
     markEdited();
     emit shapesChanged();
@@ -1336,25 +1504,34 @@ void RetouchTab::setShapeVisible(int index, bool visible) {
 // z-order stays a single contiguous block going forward.
 void RetouchTab::groupSelectedShapes() {
     if (m_selectedShapes.size() < 2) return;
-    QList<int> sorted = m_selectedShapes.values();
-    std::sort(sorted.begin(), sorted.end());
-    const int originalTop = sorted.last();
-
-    QVector<ShapeOp> members;
-    members.reserve(sorted.size());
-    for (int i = sorted.size() - 1; i >= 0; --i) {
-        members.prepend(m_adj.shapes[sorted[i]]);
-        m_adj.shapes.removeAt(sorted[i]);
+    QList<int> maskIndices;
+    for (int idx : m_selectedShapes) {
+        int mi = shapeMaskIndex(idx);
+        if (mi >= 0) maskIndices.append(mi);
     }
-    const int insertAt = originalTop - (sorted.size() - 1);
+    if (maskIndices.size() < 2) return;
+    std::sort(maskIndices.begin(), maskIndices.end());
+    const int originalTop = maskIndices.last();
+
+    QVector<Mask> members;
+    members.reserve(maskIndices.size());
+    for (int i = maskIndices.size() - 1; i >= 0; --i) {
+        members.prepend(m_adj.masks[maskIndices[i]]);
+        m_adj.masks.removeAt(maskIndices[i]);
+    }
+    const int insertAt = originalTop - (maskIndices.size() - 1);
 
     const QString groupId = QUuid::createUuid().toString();
-    for (ShapeOp &op : members) op.groupId = groupId;
-    for (int i = 0; i < members.size(); ++i) m_adj.shapes.insert(insertAt + i, members[i]);
+    for (Mask &mk : members) mk.groupId = groupId;
+    for (int i = 0; i < members.size(); ++i) m_adj.masks.insert(insertAt + i, members[i]);
 
+    updateShapeMarkers();
     m_selectedShapes.clear();
-    for (int i = 0; i < members.size(); ++i) m_selectedShapes.insert(insertAt + i);
-    m_activeShape = insertAt + members.size() - 1;
+    for (int i = 0; i < members.size(); ++i) {
+        int newIdx = m_shapeMaskIndices.indexOf(insertAt + i);
+        if (newIdx >= 0) m_selectedShapes.insert(newIdx);
+    }
+    m_activeShape = m_shapeMaskIndices.indexOf(insertAt + members.size() - 1);
 
     updateShapeMarkers();
     retone();
@@ -1367,12 +1544,14 @@ void RetouchTab::groupSelectedShapes() {
 // acting as one unit.
 void RetouchTab::ungroupSelectedShapes() {
     QSet<QString> groupIds;
-    for (int idx : m_selectedShapes)
-        if (idx >= 0 && idx < m_adj.shapes.size() && !m_adj.shapes[idx].groupId.isEmpty())
-            groupIds.insert(m_adj.shapes[idx].groupId);
+    for (int idx : m_selectedShapes) {
+        int mi = shapeMaskIndex(idx);
+        if (mi >= 0 && !m_adj.masks[mi].groupId.isEmpty())
+            groupIds.insert(m_adj.masks[mi].groupId);
+    }
     if (groupIds.isEmpty()) return;
-    for (ShapeOp &op : m_adj.shapes)
-        if (groupIds.contains(op.groupId)) op.groupId.clear();
+    for (Mask &mk : m_adj.masks)
+        if (mk.type == MaskType::Shape && groupIds.contains(mk.groupId)) mk.groupId.clear();
     updateShapeMarkers();
     retone();
     markEdited();
@@ -1380,42 +1559,79 @@ void RetouchTab::ungroupSelectedShapes() {
 }
 
 ShapeOp RetouchTab::activeShapeStyle() const {
-    if (m_activeShape >= 0 && m_activeShape < m_adj.shapes.size()) return m_adj.shapes[m_activeShape];
-    return m_shapeDefaults;
+    int mi = shapeMaskIndex(m_activeShape);
+    if (mi < 0) return m_shapeDefaults;
+    const Mask &mk = m_adj.masks[mi];
+    ShapeOp op;
+    op.type = mk.shapeType;
+    op.rect = mk.shapeRect;
+    op.p1 = mk.shapeP1;
+    op.p2 = mk.shapeP2;
+    op.rotation = mk.shapeRotation;
+    op.sides = mk.shapeSides;
+    op.innerRadiusRatio = mk.shapeInnerRadiusRatio;
+    op.fillEnabled = mk.shapeFillEnabled;
+    op.fillColor = mk.shapeFillColor;
+    op.strokeEnabled = mk.shapeStrokeEnabled;
+    op.strokeColor = mk.shapeStrokeColor;
+    op.strokeWidth = mk.shapeStrokeWidth;
+    op.opacity = mk.opacity;
+    op.visible = mk.visible;
+    op.groupId = mk.groupId;
+    return op;
 }
 
 void RetouchTab::setShapeSides(int sides) {
-    ShapeOp *target = (m_activeShape >= 0 && m_activeShape < m_adj.shapes.size())
-                          ? &m_adj.shapes[m_activeShape] : &m_shapeDefaults;
-    target->sides = sides;
-    if (target != &m_shapeDefaults) { retone(); markEdited(); }
+    int mi = shapeMaskIndex(m_activeShape);
+    if (mi >= 0) {
+        m_adj.masks[mi].shapeSides = sides;
+        retone();
+        markEdited();
+    } else {
+        m_shapeDefaults.sides = sides;
+    }
     emit shapesChanged();
 }
 
 void RetouchTab::setShapeInnerRadiusRatio(double ratio) {
-    ShapeOp *target = (m_activeShape >= 0 && m_activeShape < m_adj.shapes.size())
-                          ? &m_adj.shapes[m_activeShape] : &m_shapeDefaults;
-    target->innerRadiusRatio = ratio;
-    if (target != &m_shapeDefaults) { retone(); markEdited(); }
+    int mi = shapeMaskIndex(m_activeShape);
+    if (mi >= 0) {
+        m_adj.masks[mi].shapeInnerRadiusRatio = ratio;
+        retone();
+        markEdited();
+    } else {
+        m_shapeDefaults.innerRadiusRatio = ratio;
+    }
     emit shapesChanged();
 }
 
 void RetouchTab::setShapeFill(bool enabled, const QColor &color) {
-    ShapeOp *target = (m_activeShape >= 0 && m_activeShape < m_adj.shapes.size())
-                          ? &m_adj.shapes[m_activeShape] : &m_shapeDefaults;
-    target->fillEnabled = enabled;
-    target->fillColor = color;
-    if (target != &m_shapeDefaults) { retone(); markEdited(); }
+    int mi = shapeMaskIndex(m_activeShape);
+    if (mi >= 0) {
+        m_adj.masks[mi].shapeFillEnabled = enabled;
+        m_adj.masks[mi].shapeFillColor = color;
+        retone();
+        markEdited();
+    } else {
+        m_shapeDefaults.fillEnabled = enabled;
+        m_shapeDefaults.fillColor = color;
+    }
     emit shapesChanged();
 }
 
 void RetouchTab::setShapeStroke(bool enabled, const QColor &color, double width) {
-    ShapeOp *target = (m_activeShape >= 0 && m_activeShape < m_adj.shapes.size())
-                          ? &m_adj.shapes[m_activeShape] : &m_shapeDefaults;
-    target->strokeEnabled = enabled;
-    target->strokeColor = color;
-    target->strokeWidth = width;
-    if (target != &m_shapeDefaults) { retone(); markEdited(); }
+    int mi = shapeMaskIndex(m_activeShape);
+    if (mi >= 0) {
+        m_adj.masks[mi].shapeStrokeEnabled = enabled;
+        m_adj.masks[mi].shapeStrokeColor = color;
+        m_adj.masks[mi].shapeStrokeWidth = width;
+        retone();
+        markEdited();
+    } else {
+        m_shapeDefaults.strokeEnabled = enabled;
+        m_shapeDefaults.strokeColor = color;
+        m_shapeDefaults.strokeWidth = width;
+    }
     emit shapesChanged();
 }
 
@@ -1603,7 +1819,17 @@ void RetouchTab::onRemoveObjectFinished() {
 void RetouchTab::pushMaskGizmo() {
     if (m_activeMask >= 0 && m_activeMask < m_adj.masks.size()) {
         const Mask &m = m_adj.masks[m_activeMask];
-        m_canvas->setMaskMode(m.type, m_maskMode);
+        // Shape and TextBox layers are driven by the canvas's own
+        // setShapeMode()/setTextMode() (their own tool, own gizmo, own
+        // cursor) rather than the local-mask gizmo — routing them through
+        // setMaskMode() here would stomp whatever cursor the actually
+        // active tool just set (e.g. the Text tool's I-beam getting reset
+        // back to an arrow/cross cursor the instant a Text layer is simply
+        // selected in the Layers panel) and would make the canvas paint the
+        // Brush-mask gizmo circle over a layer that isn't a brush mask at
+        // all. Only route mask-gizmo types through here.
+        if (m.type != MaskType::Shape && m.type != MaskType::TextBox)
+            m_canvas->setMaskMode(m.type, m_maskMode);
         m_canvas->setActiveMask(true, m);
     } else {
         m_canvas->setActiveMask(false, Mask{});
@@ -1621,10 +1847,11 @@ void RetouchTab::setMaskMode(bool on) {
     if (on) m_canvas->setFocus();
 }
 
-int RetouchTab::addMask(MaskType type) {
+int RetouchTab::addMask(MaskType type, ShapeType shapeType) {
     Mask m;
     m.type = type;
     m.name = QStringLiteral("Layer %1").arg(m_adj.masks.size() + 1);
+    if (type == MaskType::Shape) m.shapeType = shapeType;
     m_adj.masks.insert(0, m);
     m_activeMask = 0;
     m_maskMode = (type != MaskType::None);
@@ -1720,6 +1947,40 @@ int RetouchTab::duplicateActiveMask() {
 void RetouchTab::selectMask(int index) {
     if (index < -1 || index >= m_adj.masks.size()) return;
     m_activeMask = index;
+    // Mirror the selection into m_activeShape/m_activeText (the canvas's own
+    // selection-gizmo/handle state -- see selectShape()/onTextSelected()'s
+    // comments on the reverse direction) so picking a Shape/TextBox row in
+    // the Layers panel moves the canvas selection handles onto it too,
+    // instead of leaving them on whatever shape/text was last clicked on
+    // the canvas while property edits and drag-move now silently target the
+    // newly panel-selected layer.
+    const MaskType t = (index >= 0 && index < m_adj.masks.size())
+                            ? m_adj.masks[index].type
+                            : MaskType::None;
+    // m_shapeMaskIndices/m_textMaskIndices are only rebuilt by
+    // updateShapeMarkers()/updateTextMarkers(), so refresh them first --
+    // otherwise indexOf() below would look up `index` in a stale (possibly
+    // empty) table left over from whatever last called those.
+    updateShapeMarkers();
+    updateTextMarkers();
+    if (t == MaskType::Shape) {
+        int markerIdx = m_shapeMaskIndices.indexOf(index);
+        m_activeShape = markerIdx;
+        m_selectedShapes = (markerIdx >= 0) ? QSet<int>{markerIdx} : QSet<int>{};
+        updateShapeMarkers();
+    } else if (m_activeShape != -1) {
+        m_activeShape = -1;
+        m_selectedShapes.clear();
+        updateShapeMarkers();
+    }
+    if (t == MaskType::TextBox) {
+        int markerIdx = m_textMaskIndices.indexOf(index);
+        m_activeText = markerIdx;
+        m_canvas->setActiveTextIndex(markerIdx);
+    } else if (m_activeText != -1) {
+        m_activeText = -1;
+        m_canvas->setActiveTextIndex(-1);
+    }
     pushMaskGizmo();
     if (m_maskPreviewEnabled) retone();
     emit masksChanged();
@@ -1736,22 +1997,23 @@ void RetouchTab::deleteActiveMask() {
     emit masksChanged();
 }
 
-void RetouchTab::setBackgroundVisible(bool visible) {
-    if (m_adj.backgroundDeleted || m_adj.backgroundHidden == !visible) return;
-    m_adj.backgroundHidden = !visible;
-    rebuildGeom();
-    retone();
-    markEdited();
-    emit masksChanged();
+int RetouchTab::backgroundMaskIndex() const {
+    for (int i = 0; i < m_adj.masks.size(); ++i)
+        if (m_adj.masks[i].type == MaskType::Background) return i;
+    return -1;
 }
 
-void RetouchTab::deleteBackground() {
-    if (m_adj.backgroundDeleted) return;
-    m_adj.backgroundDeleted = true;
-    rebuildGeom();
-    retone();
-    markEdited();
-    emit masksChanged();
+bool RetouchTab::backgroundLayerVisible() const {
+    const int idx = backgroundMaskIndex();
+    return idx < 0 || m_adj.masks[idx].visible;
+}
+
+void RetouchTab::ensureBackgroundMask() {
+    if (backgroundMaskIndex() >= 0) return;
+    Mask bg;
+    bg.type = MaskType::Background;
+    bg.name = QStringLiteral("Background");
+    m_adj.masks.append(bg);
 }
 
 void RetouchTab::setActiveMaskType(MaskType type) {
@@ -1887,6 +2149,41 @@ void RetouchTab::reorderMasks(const QVector<int> &newOrder, const QVector<int> &
     }
     m_adj.masks = reordered;
     m_activeMask = newActive;
+    // A drag can move a Shape/TextBox layer to a new masks index without
+    // changing which mask is "active" (e.g. dragging some other, unselected
+    // row) -- m_shapeMaskIndices/m_textMaskIndices (the marker<->masks index
+    // tables shape/text-specific tools resolve marker indices through, see
+    // shapeMaskIndex()/textMaskIndex()) are only rebuilt by
+    // updateShapeMarkers()/updateTextMarkers(), which reorderMasks() never
+    // called until now. Left stale, any shape/text op issued right after a
+    // drag-reorder (raise/lower/select/duplicate/delete, all keyed by marker
+    // index from the canvas) would resolve against the *pre-reorder*
+    // masks-index layout and silently act on the wrong layer -- e.g.
+    // swapping the wrong pair of masks on the very next '+'/'-' nudge.
+    // Refresh both tables now, and re-resolve m_activeShape/m_activeText
+    // (marker indices, so they've gone stale the same way) the same way
+    // selectMask() does, so canvas selection handles stay on the
+    // just-reordered active layer instead of snapping onto whatever now
+    // occupies the old marker index.
+    updateShapeMarkers();
+    updateTextMarkers();
+    const MaskType activeType = (m_activeMask >= 0 && m_activeMask < m_adj.masks.size())
+                                     ? m_adj.masks[m_activeMask].type
+                                     : MaskType::None;
+    if (activeType == MaskType::Shape) {
+        m_activeShape = m_shapeMaskIndices.indexOf(m_activeMask);
+    } else {
+        m_activeShape = -1;
+    }
+    m_selectedShapes.clear();
+    if (m_activeShape >= 0) m_selectedShapes.insert(m_activeShape);
+    if (activeType == MaskType::TextBox) {
+        m_activeText = m_textMaskIndices.indexOf(m_activeMask);
+    } else {
+        m_activeText = -1;
+    }
+    updateShapeMarkers();
+    m_canvas->setActiveTextIndex(m_activeText);
     retone();
     markEdited();
     emit masksChanged();
@@ -2080,8 +2377,7 @@ QImage RetouchTab::renderFullRes() const {
     // m_geomImg is the full-res oriented + healed + cropped base; apply tone,
     // then composite text last so it stays unaffected by tone/colour.
     QImage out = applyAdjustments(m_geomImg, toneOnly(m_adj));
-    if (!m_adj.texts.isEmpty()) applyTexts(out, m_adj.texts, m_orientedToGeom, m_geomRotationDeg);
-    if (!m_adj.shapes.isEmpty()) applyShapes(out, m_adj.shapes, m_orientedToGeom, m_geomRotationDeg);
-    if (!m_adj.masks.isEmpty()) applyPaintMasks(out, m_adj.masks);
+    if (!m_adj.masks.isEmpty())
+        applyPaintMasks(out, m_adj.masks, nullptr, m_orientedToGeom, m_geomRotationDeg);
     return out;
 }

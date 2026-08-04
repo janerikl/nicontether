@@ -42,16 +42,10 @@ class LayersPanel : public QWidget {
 public:
     explicit LayersPanel(QWidget *parent = nullptr);
 
-    // previewImage is the tab's current composited render, used only for the
-    // pinned Background row's thumbnail; passing a null image leaves
-    // whatever thumbnail is already cached (e.g. between renders) in place.
-    void setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground,
-                  bool backgroundHidden = false, const QImage &previewImage = QImage());
-    // Shapes section: a nested view of Adjustments::shapes — grouped shapes
-    // (shared groupId, always kept contiguous) show as a collapsible "Group"
-    // parent row with the members nested underneath; ungrouped shapes are
-    // top-level rows. Top of the list = topmost/frontmost in the stack.
-    void setShapes(const QVector<ShapeOp> &shapes, int activeIndex);
+    // The Background layer (the tab's own base photo) is just a normal
+    // MaskType::Background entry in `masks` now — no separate pinned row or
+    // extra parameters, same as every other layer.
+    void setMasks(const QVector<Mask> &masks, int activeIndex);
     // Remove Object section: a flat list of Adjustments::removals, one row
     // per content-aware fill (visibility checkbox + Delete button), mirroring
     // the Shapes section's per-row eye toggle. Top of the list = most
@@ -83,7 +77,14 @@ public:
     void resetSections();
 
 signals:
-    void addMaskRequested();
+    // type defaults to MaskType::None (a plain adjustment layer, the
+    // previous behaviour of the panel's single "Add Layer" action) so
+    // existing single-arg emitters/connections keep working unchanged.
+    void addMaskRequested(MaskType type = MaskType::None);
+    // Shape/TextBox creation has no prior signal to reuse (the Add Layer
+    // menu is the first way to create one outside the canvas), so it gets
+    // its own signal. shapeType is only meaningful when type == Shape.
+    void addLayerRequested(MaskType type, ShapeType shapeType = ShapeType::Rectangle);
     void addImageLayerRequested(const QString &path); // "Add Image Layer…" chosen a file
     void selectMaskRequested(int index);
     void deleteMaskRequested();
@@ -108,11 +109,6 @@ signals:
     void maskTextChanged(const QString &text, const QString &family, double pixelSize,
                          bool bold, bool italic);
 
-    void selectShapeRequested(int index);
-    void shapeVisibleChanged(int index, bool visible);
-    void groupShapesRequested();
-    void ungroupShapesRequested();
-
     void selectRemovalRequested(int index);
     void removalVisibleChanged(int index, bool visible);
     void deleteRemovalRequested(int index);
@@ -124,31 +120,22 @@ private:
     void rebuildList();
     void doRebuildList();
     void updateCurrentItemHighlight();
-    bool masksContentEqual(const QVector<Mask> &masks, bool hasBackground, bool backgroundHidden) const;
-    void rebuildShapeList();
+    bool masksContentEqual(const QVector<Mask> &masks) const;
     void rebuildRemovalList();
 
     // Row thumbnails (see doRebuildList()). Each returns an icon sized to
     // m_maskList's iconSize().
     QIcon maskThumbnail(const Mask &m) const;
     QIcon groupThumbnail() const;
-    QIcon backgroundThumbnail() const;
 
     QVector<Mask> m_masks;
     int m_active = -1;
-    bool m_hasBackground = false;
-    bool m_backgroundHidden = false;
-    QVector<ShapeOp> m_shapes;
-    int m_activeShape = -1;
     QVector<RemoveObjectOp> m_removals;
     int m_activeRemoval = -1;
     bool m_syncing = false;
     // True while a coalesced doRebuildList() call is pending on the event
     // loop (see rebuildList()).
     bool m_rebuildScheduled = false;
-    // Cached for the pinned Background row's thumbnail; updated opportunistically
-    // by setMasks() (see its previewImage parameter) without forcing a rebuild.
-    QImage m_backgroundPreview;
     MaskAdjust m_curAdjust; // last-loaded active layer's adjustment, patched per-section
 
     QTreeWidget *m_maskList = nullptr;
@@ -158,8 +145,7 @@ private:
     QPushButton *m_groupMasks = nullptr;
     QPushButton *m_ungroupMasks = nullptr;
     // groupId -> user collapsed it, so rebuildList() can restore collapse
-    // state instead of always expanding every group (mirrors m_collapsedGroups
-    // for the Shapes section below).
+    // state instead of always expanding every group.
     QSet<QString> m_collapsedMaskGroups;
 
     QLineEdit *m_name = nullptr;
@@ -170,6 +156,11 @@ private:
     QSlider *m_imageScaleX = nullptr;
     QSlider *m_imageScaleY = nullptr;
     QCheckBox *m_imageLockRatio = nullptr;
+    // Wraps the "Image Layer" header + Position/Scale/Lock-ratio form so the
+    // whole section can be hidden (not just disabled) when the selected
+    // layer isn't an image layer — e.g. a Text/Shape layer, which have no
+    // use for these fields at all.
+    QWidget *m_imageSection = nullptr;
 
     QMainWindow *m_inner = nullptr; // hosts the six per-section docks
 
@@ -180,13 +171,6 @@ private:
     DetailEffectsPanel *m_detailEffectsPanel = nullptr;
     MaskPanel *m_maskPanel = nullptr;
 
-    QTreeWidget *m_shapeList = nullptr;
-    QPushButton *m_groupShapes = nullptr;
-    QPushButton *m_ungroupShapes = nullptr;
-    // groupId -> user collapsed it, so rebuildShapeList() can restore
-    // collapse state instead of always expanding every group.
-    QSet<QString> m_collapsedGroups;
-
     QListWidget *m_removalList = nullptr;
     QPushButton *m_deleteRemoval = nullptr;
 
@@ -196,6 +180,5 @@ private:
     QDockWidget *m_levelsSectionDock = nullptr;
     QDockWidget *m_detailEffectsSectionDock = nullptr;
     QDockWidget *m_masksSectionDock = nullptr;
-    QDockWidget *m_shapesSectionDock = nullptr;
     QDockWidget *m_removalsSectionDock = nullptr;
 };

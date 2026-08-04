@@ -9,6 +9,7 @@
 
 #include <QAbstractItemModel>
 #include <QAbstractItemView>
+#include <cmath>
 #include <functional>
 #include <QComboBox>
 #include <QDockWidget>
@@ -44,11 +45,15 @@
 namespace {
 QString maskTypeLabel(MaskType t) {
     switch (t) {
-    case MaskType::Radial: return "Radial";
-    case MaskType::Linear: return "Graduated";
-    case MaskType::Brush:  return "Brush";
-    case MaskType::Paint:  return "Paint";
-    case MaskType::None:   return "Layer";
+    case MaskType::Radial:  return "Radial";
+    case MaskType::Linear:  return "Graduated";
+    case MaskType::Brush:   return "Brush";
+    case MaskType::Paint:   return "Paint";
+    case MaskType::None:    return "Layer";
+    case MaskType::Text:    return "Text Mask";
+    case MaskType::Shape:   return "Shape";
+    case MaskType::TextBox: return "Text";
+    case MaskType::Background: return "Background";
     }
     return "Layer";
 }
@@ -306,13 +311,10 @@ protected:
 } // namespace
 
 namespace {
-constexpr char kCollapsedGroupsKey[] = "layersPanel/collapsedShapeGroups";
 constexpr char kCollapsedMaskGroupsKey[] = "layersPanel/collapsedMaskGroups";
 }
 
 LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
-    const QStringList collapsed = QSettings().value(kCollapsedGroupsKey).toStringList();
-    m_collapsedGroups = QSet<QString>(collapsed.begin(), collapsed.end());
     const QStringList collapsedMasks = QSettings().value(kCollapsedMaskGroupsKey).toStringList();
     m_collapsedMaskGroups = QSet<QString>(collapsedMasks.begin(), collapsedMasks.end());
     // Collapsed section rows have very little intrinsic width (just a
@@ -388,9 +390,13 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     props->addRow("Blend:", m_blend);
     root->addLayout(props);
 
+    m_imageSection = new QWidget;
+    auto *imageSectionLayout = new QVBoxLayout(m_imageSection);
+    imageSectionLayout->setContentsMargins(0, 0, 0, 0);
     auto *imageHeader = new QLabel("<b>Image Layer</b>");
-    root->addWidget(imageHeader);
+    imageSectionLayout->addWidget(imageHeader);
     auto *imageForm = new QFormLayout;
+    imageSectionLayout->addLayout(imageForm);
     auto mkPos = [&](const QString &label) {
         auto *s = new QSlider(Qt::Horizontal);
         s->setRange(-100, 100);
@@ -434,7 +440,7 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
         }
         emitImageTransform();
     });
-    root->addLayout(imageForm);
+    root->addWidget(m_imageSection);
 
     // Each editing section is its own QDockWidget nested inside a small
     // inner QMainWindow, so it gets a real collapse/float/close title bar
@@ -478,26 +484,6 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     m_maskPanel = new MaskPanel;
     m_masksSectionDock = addSection("layerSectionMasks", "Masks", m_maskPanel);
 
-    // Shapes section: a tree (not a list, unlike the mask stack above) since
-    // groups nest as collapsible parent rows with their members underneath.
-    auto *shapesContent = new QWidget;
-    auto *shapesLayout = new QVBoxLayout(shapesContent);
-    shapesLayout->setContentsMargins(4, 4, 4, 4);
-    m_shapeList = new QTreeWidget;
-    m_shapeList->setHeaderHidden(true);
-    m_shapeList->setColumnCount(1);
-    m_shapeList->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_shapeList->setMinimumHeight(120);
-    shapesLayout->addWidget(m_shapeList, 1);
-    auto *shapeButtons = new QHBoxLayout;
-    m_groupShapes = new QPushButton("Group");
-    m_ungroupShapes = new QPushButton("Ungroup");
-    shapeButtons->addWidget(m_groupShapes);
-    shapeButtons->addWidget(m_ungroupShapes);
-    shapeButtons->addStretch(1);
-    shapesLayout->addLayout(shapeButtons);
-    m_shapesSectionDock = addSection("layerSectionShapes", "Shapes", shapesContent);
-
     // Remove Object section: a flat checkable list (no grouping/reordering
     // needed), one row per cached content-aware fill, plus a Delete button —
     // mirrors the masks list's eye-toggle + Delete pattern above.
@@ -521,15 +507,41 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     m_inner->splitDockWidget(m_toneCurveSectionDock, m_levelsSectionDock, Qt::Vertical);
     m_inner->splitDockWidget(m_levelsSectionDock, m_detailEffectsSectionDock, Qt::Vertical);
     m_inner->splitDockWidget(m_detailEffectsSectionDock, m_masksSectionDock, Qt::Vertical);
-    m_inner->splitDockWidget(m_masksSectionDock, m_shapesSectionDock, Qt::Vertical);
-    m_inner->splitDockWidget(m_shapesSectionDock, m_removalsSectionDock, Qt::Vertical);
+    m_inner->splitDockWidget(m_masksSectionDock, m_removalsSectionDock, Qt::Vertical);
 
     root->addWidget(m_inner, 2);
 
     auto *addMenu = new QMenu(m_add);
-    QAction *addLayerAction = addMenu->addAction("Add Layer");
+    QAction *addPaintAction = addMenu->addAction("Paint");
+    connect(addPaintAction, &QAction::triggered, this,
+            [this] { emit addMaskRequested(MaskType::Paint); });
+    QAction *addRadialAction = addMenu->addAction("Radial");
+    connect(addRadialAction, &QAction::triggered, this,
+            [this] { emit addMaskRequested(MaskType::Radial); });
+    QAction *addLinearAction = addMenu->addAction("Linear");
+    connect(addLinearAction, &QAction::triggered, this,
+            [this] { emit addMaskRequested(MaskType::Linear); });
+    QAction *addLayerAction = addMenu->addAction("Adjustment Layer");
     connect(addLayerAction, &QAction::triggered, this,
-            [this] { emit addMaskRequested(); });
+            [this] { emit addMaskRequested(MaskType::None); });
+
+    QMenu *shapeMenu = addMenu->addMenu("Shape");
+    auto addShapeAction = [&](const QString &label, ShapeType type) {
+        QAction *act = shapeMenu->addAction(label);
+        connect(act, &QAction::triggered, this,
+                [this, type] { emit addLayerRequested(MaskType::Shape, type); });
+    };
+    addShapeAction("Rectangle", ShapeType::Rectangle);
+    addShapeAction("Ellipse", ShapeType::Ellipse);
+    addShapeAction("Line", ShapeType::Line);
+    addShapeAction("Polygon", ShapeType::Polygon);
+    addShapeAction("Star", ShapeType::Star);
+    addShapeAction("Heart", ShapeType::Heart);
+
+    QAction *addTextBoxAction = addMenu->addAction("Text Box");
+    connect(addTextBoxAction, &QAction::triggered, this,
+            [this] { emit addLayerRequested(MaskType::TextBox); });
+
     QAction *addImageAction = addMenu->addAction("Add Image Layer…");
     connect(addImageAction, &QAction::triggered, this, [this] {
         QString path = QFileDialog::getOpenFileName(
@@ -551,7 +563,7 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 // first child instead.
                 if (idx == -1 && item->childCount() > 0)
                     idx = item->child(0)->data(0, Qt::UserRole).toInt();
-                emit selectMaskRequested(idx == -2 ? -1 : idx); // -2 = Background row
+                emit selectMaskRequested(idx);
             });
     connect(m_maskList, &QTreeWidget::itemChanged, this,
             [this](QTreeWidgetItem *item, int) {
@@ -562,12 +574,11 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 const bool wasChecked = item->data(0, Qt::UserRole + 2).toBool();
                 if (checked != wasChecked) {
                     item->setData(0, Qt::UserRole + 2, checked);
-                    const int emitIdx = idx == -2 ? -1 : idx; // -2 = Background row
                     QPointer<LayersPanel> self(this);
                     QMetaObject::invokeMethod(
                         this,
-                        [self, emitIdx, checked] {
-                            if (self) emit self->maskVisibleChanged(emitIdx, checked);
+                        [self, idx, checked] {
+                            if (self) emit self->maskVisibleChanged(idx, checked);
                         },
                         Qt::QueuedConnection);
                     return;
@@ -579,15 +590,14 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 if (m_syncing) return;
                 // Flatten the tree back into a full masks() order: a group's
                 // parent row expands to its members' original indices, a
-                // plain row is its own index. Background (idx == -2) isn't
-                // part of masks() and is skipped.
+                // plain row is its own index. Background is a normal row
+                // now, included in the flattened order like everything else.
                 QVector<int> order;
                 QVector<int> leftGroup; // original indices no longer nested under a group
                 QVector<QPair<int, QString>> joinGroup; // original indices that joined/switched group
                 for (int i = 0; i < m_maskList->topLevelItemCount(); ++i) {
                     QTreeWidgetItem *item = m_maskList->topLevelItem(i);
                     int idx = item->data(0, Qt::UserRole).toInt();
-                    if (idx == -2) continue; // Background
                     if (idx == -1) { // group parent: append its members in order
                         const QString groupId = item->data(0, Qt::UserRole + 1).toString();
                         for (int c = 0; c < item->childCount(); ++c) {
@@ -701,58 +711,6 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     connect(m_maskPanel, &MaskPanel::maskShapeChanged, this, &LayersPanel::maskShapeChanged);
     connect(m_maskPanel, &MaskPanel::maskTextChanged, this, &LayersPanel::maskTextChanged);
 
-    connect(m_shapeList, &QTreeWidget::currentItemChanged, this,
-            [this](QTreeWidgetItem *item, QTreeWidgetItem *) {
-                if (m_syncing || !item) return;
-                int idx = item->data(0, Qt::UserRole).toInt();
-                // A group's parent row has no shape of its own; select its
-                // first child instead — RetouchTab::selectShape already
-                // expands a grouped shape's selection to the whole group.
-                if (idx < 0 && item->childCount() > 0)
-                    idx = item->child(0)->data(0, Qt::UserRole).toInt();
-                if (idx >= 0) {
-                    QPointer<LayersPanel> self(this);
-                    QMetaObject::invokeMethod(
-                        this,
-                        [self, idx] {
-                            if (self) emit self->selectShapeRequested(idx);
-                        },
-                        Qt::QueuedConnection);
-                }
-            });
-    connect(m_shapeList, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *item, int) {
-        if (m_syncing) return;
-        int idx = item->data(0, Qt::UserRole).toInt();
-        if (idx >= 0) {
-            bool visible = item->checkState(0) == Qt::Checked;
-            QPointer<LayersPanel> self(this);
-            QMetaObject::invokeMethod(
-                this,
-                [self, idx, visible] {
-                    if (self) emit self->shapeVisibleChanged(idx, visible);
-                },
-                Qt::QueuedConnection);
-        }
-    });
-    connect(m_shapeList, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem *item) {
-        if (m_syncing) return;
-        QString groupId = item->data(0, Qt::UserRole + 1).toString();
-        if (groupId.isEmpty()) return;
-        m_collapsedGroups.insert(groupId);
-        QSettings().setValue(kCollapsedGroupsKey, QStringList(m_collapsedGroups.begin(), m_collapsedGroups.end()));
-    });
-    connect(m_shapeList, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem *item) {
-        if (m_syncing) return;
-        QString groupId = item->data(0, Qt::UserRole + 1).toString();
-        if (groupId.isEmpty()) return;
-        m_collapsedGroups.remove(groupId);
-        QSettings().setValue(kCollapsedGroupsKey, QStringList(m_collapsedGroups.begin(), m_collapsedGroups.end()));
-    });
-    connect(m_groupShapes, &QPushButton::clicked, this,
-            [this] { emit groupShapesRequested(); });
-    connect(m_ungroupShapes, &QPushButton::clicked, this,
-            [this] { emit ungroupShapesRequested(); });
-
     connect(m_removalList, &QListWidget::currentRowChanged, this, [this](int uiRow) {
         if (m_syncing) return;
         int idx = (uiRow >= 0 && uiRow < m_removals.size()) ? m_removals.size() - 1 - uiRow : -1;
@@ -777,13 +735,10 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
 void LayersPanel::clear() {
     m_masks.clear();
     m_active = -1;
-    m_shapes.clear();
-    m_activeShape = -1;
     m_removals.clear();
     m_activeRemoval = -1;
     m_syncing = true;
     m_maskList->clear();
-    m_shapeList->clear();
     m_removalList->clear();
     m_imagePosX->setValue(0);
     m_imagePosY->setValue(0);
@@ -794,12 +749,12 @@ void LayersPanel::clear() {
     m_imageScaleX->setEnabled(false);
     m_imageScaleY->setEnabled(false);
     m_imageLockRatio->setEnabled(false);
+    m_imageSection->setVisible(false);
     m_syncing = false;
     setEnabled(false);
 }
 
-void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground,
-                            bool backgroundHidden, const QImage &previewImage) {
+void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex) {
     // A plain click to select a row round-trips through RetouchTab::selectMask
     // -> masksChanged -> here with the mask list content completely unchanged
     // (only activeIndex differs). Rebuilding the tree in that case destroys
@@ -809,28 +764,13 @@ void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex, bool has
     // since the pressed row no longer exists by the time the mouse moves far
     // enough to cross the drag-start threshold. So: only rebuild when the
     // content actually changed; otherwise just move the highlighted row.
-    const bool sameContent = masksContentEqual(masks, hasBackground, backgroundHidden);
+    const bool sameContent = masksContentEqual(masks);
     m_masks = masks;
     m_active = activeIndex;
-    m_hasBackground = hasBackground;
-    m_backgroundHidden = backgroundHidden;
-    // Stored opportunistically, independent of sameContent: the preview
-    // image changes on essentially every render, and forcing a tree rebuild
-    // whenever it does would defeat the whole point of masksContentEqual()
-    // above. It's simply picked up next time a real (structural) rebuild
-    // happens to run.
-    if (!previewImage.isNull()) m_backgroundPreview = previewImage;
     setEnabled(true);
     if (sameContent) updateCurrentItemHighlight();
     else rebuildList();
     loadActive();
-}
-
-void LayersPanel::setShapes(const QVector<ShapeOp> &shapes, int activeIndex) {
-    m_shapes = shapes;
-    m_activeShape = activeIndex;
-    setEnabled(true);
-    rebuildShapeList();
 }
 
 void LayersPanel::setRemovals(const QVector<RemoveObjectOp> &removals, int activeIndex) {
@@ -851,7 +791,7 @@ void LayersPanel::setMaskBrushRadius(double radiusNorm) {
 QVector<QDockWidget *> LayersPanel::sectionDocks() const {
     return {m_toneSectionDock, m_colorSectionDock, m_toneCurveSectionDock,
             m_levelsSectionDock, m_detailEffectsSectionDock, m_masksSectionDock,
-            m_shapesSectionDock, m_removalsSectionDock};
+            m_removalsSectionDock};
 }
 
 QByteArray LayersPanel::innerDockState() const {
@@ -867,11 +807,6 @@ void LayersPanel::resetSections() {
         if (d) d->show();
 }
 
-// True when `masks`/hasBackground/backgroundHidden describe exactly the same
-// layer stack already shown in the tree (m_masks et al) — the only thing
-// that may differ is which one is active/selected. Mask::operator== covers
-// every layer-identity/content field except sourceImageCache and
-// sourceMissing (both transient decode results, deliberately excluded from
 namespace {
 constexpr int kThumbPx = 40;
 const QColor kThumbBg(46, 46, 46);
@@ -887,7 +822,7 @@ const QColor kThumbFg(225, 225, 225);
 // here. Same drawn-not-loaded-asset style as drawChevronIcon/drawCloseIcon
 // above.
 QIcon LayersPanel::maskThumbnail(const Mask &m) const {
-    if (m.isImageLayer()) {
+    if (m.isImageLayer() || m.isBackgroundLayer()) {
         if (!m.sourceImageCache.isNull()) {
             QPixmap pm = QPixmap::fromImage(m.sourceImageCache)
                              .scaled(kThumbPx, kThumbPx, Qt::KeepAspectRatio, Qt::SmoothTransformation);
@@ -951,6 +886,72 @@ QIcon LayersPanel::maskThumbnail(const Mask &m) const {
     }
     case MaskType::None:
         break;
+    case MaskType::Background:
+        break; // unreachable: isBackgroundLayer() returns early above
+    case MaskType::Shape: {
+        // Simple schematic outline of the shape's kind, tinted with its own
+        // fill/stroke colors so the row gives some hint of the actual layer
+        // without needing the full ShapeTool rasterizer.
+        QColor fill = m.shapeFillEnabled ? m.shapeFillColor : Qt::transparent;
+        QColor stroke = m.shapeStrokeEnabled ? m.shapeStrokeColor : kThumbFg;
+        p.setBrush(fill.alpha() > 0 ? fill : Qt::NoBrush);
+        p.setPen(QPen(stroke, 2));
+        const QRectF r(kThumbPx * 0.18, kThumbPx * 0.18, kThumbPx * 0.64, kThumbPx * 0.64);
+        switch (m.shapeType) {
+        case ShapeType::Rectangle:
+            p.drawRect(r);
+            break;
+        case ShapeType::Ellipse:
+            p.drawEllipse(r);
+            break;
+        case ShapeType::Line:
+            p.drawLine(r.topLeft(), r.bottomRight());
+            break;
+        case ShapeType::Polygon:
+        case ShapeType::Star: {
+            const int sides = qMax(3, m.shapeSides);
+            const QPointF c = r.center();
+            const double radius = r.width() / 2.0;
+            const double innerRadius = m.shapeType == ShapeType::Star
+                                            ? radius * m.shapeInnerRadiusRatio
+                                            : radius;
+            const int pts = m.shapeType == ShapeType::Star ? sides * 2 : sides;
+            QPolygonF poly;
+            for (int i = 0; i < pts; ++i) {
+                const double a = -M_PI / 2 + i * M_PI / (pts / 2.0);
+                const double rad = (m.shapeType == ShapeType::Star && i % 2) ? innerRadius : radius;
+                poly << QPointF(c.x() + rad * std::cos(a), c.y() + rad * std::sin(a));
+            }
+            p.drawPolygon(poly);
+            break;
+        }
+        case ShapeType::Heart: {
+            QPainterPath path;
+            const double w = r.width(), h = r.height();
+            path.moveTo(r.left() + w / 2, r.top() + h * 0.28);
+            path.cubicTo(r.left() - w * 0.1, r.top() - h * 0.1, r.left() + w * 0.15,
+                         r.top() + h * 0.55, r.left() + w / 2, r.bottom());
+            path.cubicTo(r.left() + w * 0.85, r.top() + h * 0.55, r.right() + w * 0.1,
+                         r.top() - h * 0.1, r.left() + w / 2, r.top() + h * 0.28);
+            p.drawPath(path);
+            break;
+        }
+        }
+        break;
+    }
+    case MaskType::TextBox: {
+        // A rendered-content preview: the layer's own text color, echoing
+        // how image layers show real pixel content instead of a schematic.
+        QFont f = p.font();
+        f.setBold(m.textBoxBold);
+        f.setItalic(m.textBoxItalic);
+        f.setPixelSize(kThumbPx / 2);
+        p.setFont(f);
+        p.setPen(m.textBoxColor.alpha() > 0 ? m.textBoxColor : kThumbFg);
+        const QString sample = m.textBoxText.isEmpty() ? QStringLiteral("T") : m.textBoxText.left(3);
+        p.drawText(pm.rect(), Qt::AlignCenter, sample);
+        break;
+    }
     }
     return QIcon(pm);
 }
@@ -970,30 +971,15 @@ QIcon LayersPanel::groupThumbnail() const {
     return QIcon(pm);
 }
 
-// Pinned Background row: a scaled copy of the tab's current composited
-// render (see setMasks()'s previewImage parameter), same scale-to-fit
-// treatment as an image layer's own thumbnail.
-QIcon LayersPanel::backgroundThumbnail() const {
-    if (m_backgroundPreview.isNull()) {
-        QPixmap pm(kThumbPx, kThumbPx);
-        pm.fill(kThumbBg);
-        return QIcon(pm);
-    }
-    QPixmap pm = QPixmap::fromImage(m_backgroundPreview)
-                     .scaled(kThumbPx, kThumbPx, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    QPixmap canvas(kThumbPx, kThumbPx);
-    canvas.fill(kThumbBg);
-    QPainter p(&canvas);
-    p.drawPixmap((kThumbPx - pm.width()) / 2, (kThumbPx - pm.height()) / 2, pm);
-    return QIcon(canvas);
-}
-
-// operator== elsewhere), so those two are compared separately here since
-// they affect the tree row's " (loading…)"/" (missing)" label text.
-bool LayersPanel::masksContentEqual(const QVector<Mask> &masks, bool hasBackground,
-                                     bool backgroundHidden) const {
+// True when `masks` describes exactly the same layer stack already shown in
+// the tree (m_masks) — the only thing that may differ is which one is
+// active/selected. Mask::operator== covers every layer-identity/content
+// field except sourceImageCache and sourceMissing (both transient decode
+// results, deliberately excluded from operator== elsewhere), so those two
+// are compared separately here since they affect the tree row's
+// " (loading…)"/" (missing)" label text.
+bool LayersPanel::masksContentEqual(const QVector<Mask> &masks) const {
     if (masks.size() != m_masks.size()) return false;
-    if (hasBackground != m_hasBackground || backgroundHidden != m_backgroundHidden) return false;
     if (masks != m_masks) return false;
     for (int i = 0; i < masks.size(); ++i) {
         if (masks[i].sourceImageCache.isNull() != m_masks[i].sourceImageCache.isNull()) return false;
@@ -1003,9 +989,12 @@ bool LayersPanel::masksContentEqual(const QVector<Mask> &masks, bool hasBackgrou
 }
 
 // Builds the tree top-to-bottom to match the stack's top-to-bottom render
-// order: walks m_masks from the highest index down, creating a "Group"
-// parent row the first time each groupId is seen and nesting every
-// subsequent same-group layer under it, mirroring rebuildShapeList().
+// order: masks[0] is documented (Adjustments.h) and treated by applyMasks
+// as the topmost/frontmost layer, so walk m_masks from index 0 upward,
+// creating a "Group" parent row the first time each groupId is seen and
+// nesting every subsequent same-group layer under it. (rowsMoved's handler
+// mirrors this: it reads the tree top-to-bottom into `order` and assumes
+// row 0 -> masks index 0, so this walk direction must match that.)
 // Rebuilding clear()s and recreates every QTreeWidgetItem in m_maskList,
 // which is unsafe to do synchronously from within a call chain Qt's own
 // drag-and-drop machinery is still unwinding on top of (e.g. rowsMoved fired
@@ -1031,7 +1020,7 @@ void LayersPanel::doRebuildList() {
         selectedIndices.insert(item->data(0, Qt::UserRole).toInt());
     m_maskList->clear();
     QHash<QString, QTreeWidgetItem *> groupItems;
-    for (int i = m_masks.size() - 1; i >= 0; --i) {
+    for (int i = 0; i < m_masks.size(); ++i) {
         const Mask &m = m_masks[i];
         QTreeWidgetItem *parent = nullptr;
         if (!m.groupId.isEmpty()) {
@@ -1047,9 +1036,19 @@ void LayersPanel::doRebuildList() {
                 parent = it.value();
             }
         }
-        QString label = m.name.isEmpty()
-                            ? QString("Layer %1 (%2)").arg(i + 1).arg(maskTypeLabel(m.type))
-                            : m.name;
+        QString label;
+        if (!m.name.isEmpty()) {
+            label = m.name;
+        } else if (m.type == MaskType::Shape) {
+            // Shape masks created via a later-session canvas tool get an
+            // auto-generated name; ones created via the Add Layer menu
+            // (this session) don't yet, so fall back to the shape kind.
+            label = shapeTypeLabel(m.shapeType);
+        } else if (m.type == MaskType::TextBox) {
+            label = QStringLiteral("Text");
+        } else {
+            label = QString("Layer %1 (%2)").arg(i + 1).arg(maskTypeLabel(m.type));
+        }
         if (m.isImageLayer()) {
             if (m.sourceMissing) label += " (missing)";
             else if (m.sourceImageCache.isNull()) label += " (loading…)";
@@ -1066,20 +1065,6 @@ void LayersPanel::doRebuildList() {
     }
     for (auto it = groupItems.constBegin(); it != groupItems.constEnd(); ++it)
         it.value()->setExpanded(!m_collapsedMaskGroups.contains(it.key()));
-    if (m_hasBackground) {
-        // Pinned to the bottom of the stack, like Photoshop's Background layer.
-        // Unlike other rows it can't be dragged or grouped, but it can be
-        // hidden (eye checkbox) and deleted (see loadActive()'s isBackground
-        // handling).
-        auto *bg = new QTreeWidgetItem(m_maskList, {QStringLiteral("Background \xF0\x9F\x94\x92")}); // trailing lock emoji
-        bg->setIcon(0, backgroundThumbnail());
-        bg->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
-        bg->setData(0, Qt::UserRole, -2);
-        bg->setCheckState(0, m_backgroundHidden ? Qt::Unchecked : Qt::Checked);
-        bg->setData(0, Qt::UserRole + 2, !m_backgroundHidden);
-        if (m_active == -1) m_maskList->setCurrentItem(bg);
-        if (selectedIndices.contains(-2)) bg->setSelected(true);
-    }
     m_syncing = false;
 }
 
@@ -1089,53 +1074,14 @@ void LayersPanel::doRebuildList() {
 // disturbing Qt's own in-flight drag/press bookkeeping. Group members are
 // nested, so search every level via QTreeWidgetItemIterator.
 void LayersPanel::updateCurrentItemHighlight() {
-    const int wantRole = (m_active == -1 && m_hasBackground) ? -2 : m_active;
     for (QTreeWidgetItemIterator it(m_maskList); *it; ++it) {
-        if ((*it)->data(0, Qt::UserRole).toInt() == wantRole) {
+        if ((*it)->data(0, Qt::UserRole).toInt() == m_active) {
             m_syncing = true;
             m_maskList->setCurrentItem(*it);
             m_syncing = false;
             return;
         }
     }
-}
-
-// Builds the tree top-to-bottom to match the stack's top-to-bottom render
-// order (last-drawn/topmost shape first): walks Adjustments::shapes from the
-// highest index down, creating a "Group" parent row the first time each
-// groupId is seen and nesting every subsequent same-group shape under it
-// (safe because RetouchTab::groupSelectedShapes keeps a group's members
-// contiguous, so a group's block is never interrupted by another shape).
-void LayersPanel::rebuildShapeList() {
-    m_syncing = true;
-    m_shapeList->clear();
-    QHash<QString, QTreeWidgetItem *> groupItems;
-    for (int i = m_shapes.size() - 1; i >= 0; --i) {
-        const ShapeOp &s = m_shapes[i];
-        QTreeWidgetItem *parent = nullptr;
-        if (!s.groupId.isEmpty()) {
-            auto it = groupItems.constFind(s.groupId);
-            if (it == groupItems.constEnd()) {
-                auto *g = new QTreeWidgetItem(m_shapeList, {QStringLiteral("Group")});
-                g->setData(0, Qt::UserRole, -1);
-                g->setData(0, Qt::UserRole + 1, s.groupId);
-                groupItems.insert(s.groupId, g);
-                parent = g;
-            } else {
-                parent = it.value();
-            }
-        }
-        QString label = shapeTypeLabel(s.type) + " " + QString::number(i + 1);
-        auto *item = parent ? new QTreeWidgetItem(parent, {label})
-                             : new QTreeWidgetItem(m_shapeList, {label});
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(0, s.visible ? Qt::Checked : Qt::Unchecked);
-        item->setData(0, Qt::UserRole, i);
-        if (i == m_activeShape) m_shapeList->setCurrentItem(item);
-    }
-    for (auto it = groupItems.constBegin(); it != groupItems.constEnd(); ++it)
-        it.value()->setExpanded(!m_collapsedGroups.contains(it.key()));
-    m_syncing = false;
 }
 
 // Flat list, most-recent removal first (top of stack), same eye-toggle
@@ -1158,13 +1104,12 @@ void LayersPanel::rebuildRemovalList() {
 
 void LayersPanel::loadActive() {
     const bool has = m_active >= 0 && m_active < m_masks.size();
-    const bool isBackground = m_hasBackground && m_active == -1;
     m_syncing = true;
     for (QWidget *w : std::initializer_list<QWidget *>{
              m_name, m_opacity, m_blend, m_levelsPanel})
         w->setEnabled(has);
-    m_duplicate->setEnabled(has || isBackground);
-    m_delete->setEnabled(has || isBackground); // background delete handled specially, see deleteMaskRequested
+    m_duplicate->setEnabled(has);
+    m_delete->setEnabled(has);
     if (has) {
         const Mask &m = m_masks[m_active];
         m_name->setText(m.name);
@@ -1183,6 +1128,10 @@ void LayersPanel::loadActive() {
                                               m_curAdjust.lightIntensity);
         m_maskPanel->setMask(m, true);
         const bool imageLayer = m.isImageLayer();
+        // Only image layers have any use for Position/Scale/Lock-ratio —
+        // hide the whole section for Text/Shape/mask layers instead of just
+        // graying it out, so it doesn't read as applicable-but-disabled.
+        m_imageSection->setVisible(imageLayer);
         m_imagePosX->setEnabled(imageLayer);
         m_imagePosY->setEnabled(imageLayer);
         m_imageScaleX->setEnabled(imageLayer);
@@ -1201,6 +1150,7 @@ void LayersPanel::loadActive() {
         m_levelsPanel->clear();
         m_detailEffectsPanel->clear();
         m_maskPanel->clear();
+        m_imageSection->setVisible(false);
         m_imagePosX->setEnabled(false);
         m_imagePosY->setEnabled(false);
         m_imageScaleX->setEnabled(false);

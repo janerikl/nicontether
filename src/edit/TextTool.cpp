@@ -145,26 +145,3 @@ void applyTextOp(QImage &img, const TextOp &op) {
         p.strokePath(path, pen);
     }
 }
-
-void applyTexts(QImage &img, const QVector<TextOp> &texts, const QTransform &orientedToGeom,
-                double geomRotationDeg, double scale) {
-    if (texts.isEmpty()) return;
-
-    const QImage::Format origFormat = img.format();
-    QImage work = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-
-    for (const TextOp &op : texts) {
-        if (op.text.trimmed().isEmpty()) continue;
-        TextOp local = op;
-        local.pos = orientedToGeom.map(op.pos) * scale;
-        local.rotation = op.rotation + geomRotationDeg;
-        local.pixelSize *= scale;
-        local.outlineWidth *= scale;
-        local.shadowOffset *= scale;
-        local.shadowBlur *= scale;
-        local.bgPadding *= scale;
-        applyTextOp(work, local);
-    }
-
-    img = work.convertToFormat(origFormat);
-}

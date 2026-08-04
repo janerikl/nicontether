@@ -7,6 +7,7 @@
 #include <QString>
 #include <QColor>
 #include <QMetaType>
+#include <QTransform>
 #include <cmath>
 #include <vector>
 
@@ -130,7 +131,15 @@ struct MaskAdjust {
     bool operator!=(const MaskAdjust &o) const { return !(*this == o); }
 };
 
-enum class MaskType { Radial, Linear, Brush, Paint, Text, None };
+// Background: the tab's own loaded base photo, represented as a normal Mask
+// entry so it goes through the exact same visibility/delete/reorder/thumbnail
+// code paths as every other layer (see RetouchTab::ensureBackgroundMask).
+// Full-frame, non-repositionable content sourced from `sourceImageCache`
+// (populated by RetouchTab from its base image, never from an external file
+// — `sourceImagePath` stays empty so isImageLayer() does not also match it).
+enum class MaskType { Radial, Linear, Brush, Paint, Text, None, Shape, TextBox, Background };
+
+enum class ShapeType { Rectangle, Ellipse, Line, Polygon, Star, Heart };
 
 // How a layer's local adjustment composites over what's below it. Applied
 // per-channel in sRGB space, then mixed with the layer below by mask weight
@@ -230,6 +239,56 @@ struct Mask {
     bool textItalic = false;
     QPointF textPos{0.3, 0.45}; // top-left, width-normalized
 
+    // Shape (MaskType::Shape): a real shape layer (rectangle/ellipse/line/
+    // polygon/star/heart), mirroring ShapeOp's fields. `opacity`/`visible`/
+    // `groupId`/`name` above are reused for what ShapeOp calls
+    // opacity/visible/groupId (ShapeOp has no name; new Shape masks get an
+    // auto-generated name at creation time in a later session).
+    // TODO(shape-layer migration stage B): shapeRect/shapeP1/shapeP2 are
+    // currently in raw oriented-image pixel space, pre-crop, like legacy
+    // ShapeOp — NOT width-normalized like other Mask geometry (center/p0/p1
+    // above). Converting to the normalized convention is deferred to the
+    // rendering-pipeline session since it requires rewriting ShapeTool.cpp's
+    // geometry math and canvas hit-testing together.
+    ShapeType shapeType = ShapeType::Rectangle;
+    QRectF shapeRect{0, 0, 200, 200};
+    QPointF shapeP1{0, 0};
+    QPointF shapeP2{200, 0};
+    double shapeRotation = 0.0; // degrees, clockwise
+    int shapeSides = 5;
+    double shapeInnerRadiusRatio = 0.5;
+    bool shapeFillEnabled = true;
+    QColor shapeFillColor{255, 255, 255, 255};
+    bool shapeStrokeEnabled = true;
+    QColor shapeStrokeColor{0, 0, 0, 255};
+    double shapeStrokeWidth = 4.0;
+
+    // TextBox (MaskType::TextBox): a real text layer, mirroring TextOp's
+    // fields (distinct from the Text clip-mask fields above, which carry no
+    // colour/outline/shadow/background of their own). Same deferred raw
+    // oriented-image pixel-space convention as TextOp::pos for now (see
+    // TODO(shape-layer migration stage B) note above).
+    QPointF textBoxPos{0, 0};
+    double textBoxRotation = 0.0; // degrees, clockwise, about textBoxPos
+    QString textBoxText;
+    QString textBoxFamily = QStringLiteral("Sans Serif");
+    double textBoxPixelSize = 48.0;
+    bool textBoxBold = false;
+    bool textBoxItalic = false;
+    QColor textBoxColor{255, 255, 255, 255};
+    bool textBoxOutlineEnabled = false;
+    QColor textBoxOutlineColor{0, 0, 0, 255};
+    double textBoxOutlineWidth = 3.0;
+    bool textBoxShadowEnabled = false;
+    QPointF textBoxShadowOffset{8, 8};
+    double textBoxShadowBlur = 14.0;
+    double textBoxShadowOpacity = 0.75;
+    QColor textBoxShadowColor{0, 0, 0, 255};
+    bool textBoxBgEnabled = false;
+    QColor textBoxBgColor{0, 0, 0, 255};
+    double textBoxBgOpacity = 0.6;
+    double textBoxBgPadding = 10.0;
+
     MaskAdjust adj;
 
     // Image layer: when set, this layer's content is a cover-fit scale/crop of
@@ -248,6 +307,10 @@ struct Mask {
     QImage sourceImageCache;
     bool sourceMissing = false;
     bool isImageLayer() const { return !sourceImagePath.isEmpty(); }
+    // Background layer: content is the tab's own loaded base photo (see
+    // MaskType::Background comment above), sourced via `sourceImageCache`
+    // like an image layer but never from an external file/path.
+    bool isBackgroundLayer() const { return type == MaskType::Background; }
 
     // Erase-tool strokes (image layers only): canvas-normalized dabs that
     // punch feathered transparency into this layer's alpha at composite
@@ -273,7 +336,35 @@ struct Mask {
                sourceImageOffset == o.sourceImageOffset &&
                sourceImageScale == o.sourceImageScale &&
                sourceImageLockRatio == o.sourceImageLockRatio &&
-               sourceImagePath == o.sourceImagePath;
+               sourceImagePath == o.sourceImagePath &&
+               shapeType == o.shapeType && shapeRect == o.shapeRect &&
+               shapeP1 == o.shapeP1 && shapeP2 == o.shapeP2 &&
+               std::abs(shapeRotation - o.shapeRotation) < 1e-9 &&
+               shapeSides == o.shapeSides &&
+               std::abs(shapeInnerRadiusRatio - o.shapeInnerRadiusRatio) < 1e-9 &&
+               shapeFillEnabled == o.shapeFillEnabled &&
+               shapeFillColor == o.shapeFillColor &&
+               shapeStrokeEnabled == o.shapeStrokeEnabled &&
+               shapeStrokeColor == o.shapeStrokeColor &&
+               std::abs(shapeStrokeWidth - o.shapeStrokeWidth) < 1e-9 &&
+               textBoxPos == o.textBoxPos &&
+               std::abs(textBoxRotation - o.textBoxRotation) < 1e-9 &&
+               textBoxText == o.textBoxText && textBoxFamily == o.textBoxFamily &&
+               std::abs(textBoxPixelSize - o.textBoxPixelSize) < 1e-9 &&
+               textBoxBold == o.textBoxBold && textBoxItalic == o.textBoxItalic &&
+               textBoxColor == o.textBoxColor &&
+               textBoxOutlineEnabled == o.textBoxOutlineEnabled &&
+               textBoxOutlineColor == o.textBoxOutlineColor &&
+               std::abs(textBoxOutlineWidth - o.textBoxOutlineWidth) < 1e-9 &&
+               textBoxShadowEnabled == o.textBoxShadowEnabled &&
+               textBoxShadowOffset == o.textBoxShadowOffset &&
+               std::abs(textBoxShadowBlur - o.textBoxShadowBlur) < 1e-9 &&
+               std::abs(textBoxShadowOpacity - o.textBoxShadowOpacity) < 1e-9 &&
+               textBoxShadowColor == o.textBoxShadowColor &&
+               textBoxBgEnabled == o.textBoxBgEnabled &&
+               textBoxBgColor == o.textBoxBgColor &&
+               std::abs(textBoxBgOpacity - o.textBoxBgOpacity) < 1e-9 &&
+               std::abs(textBoxBgPadding - o.textBoxBgPadding) < 1e-9;
     }
     bool operator!=(const Mask &o) const { return !(*this == o); }
 };
@@ -368,8 +459,6 @@ struct TextOp {
     }
     bool operator!=(const TextOp &o) const { return !(*this == o); }
 };
-
-enum class ShapeType { Rectangle, Ellipse, Line, Polygon, Star, Heart };
 
 // One shape overlay (rectangle/ellipse/line/polygon/star/heart). `rect` is
 // the bounding box in oriented-image pixel space, pre-crop (same convention
@@ -501,12 +590,6 @@ struct Adjustments {
     // Spot-heal ops (oriented-image coords; applied before crop).
     QVector<HealOp> heals;
 
-    // Text overlays (oriented-image coords, pre-crop; see TextOp comment).
-    QVector<TextOp> texts;
-
-    // Shape overlays (oriented-image coords, pre-crop; see ShapeOp comment).
-    QVector<ShapeOp> shapes;
-
     // Content-aware object-removal regions (oriented-image coords, pre-crop;
     // applied same stage as heals, before crop; see RemoveObjectOp comment).
     QVector<RemoveObjectOp> removals;
@@ -523,14 +606,6 @@ struct Adjustments {
     // in the sidecar like everything else here, so it's just carried along.
     QColor backgroundColor = QColor(30, 30, 30);
 
-    // Base (background) layer visibility/deletion, toggled from the Layers
-    // panel's pinned Background row. `backgroundDeleted` is a permanent,
-    // one-way version of hidden — once set, the base photo is dropped from
-    // compositing entirely (rendered transparent) and the Background row
-    // stops appearing, leaving only whatever mask/shape/text layers remain.
-    bool backgroundHidden = false;
-    bool backgroundDeleted = false;
-
     bool hasCurve() const;     // true if curve is set and not the identity
 
     bool operator==(const Adjustments &o) const {
@@ -545,14 +620,12 @@ struct Adjustments {
                flatStyle == o.flatStyle &&
                curve == o.curve && levels == o.levels &&
                colorRanges == o.colorRanges &&
-               masks == o.masks && heals == o.heals && texts == o.texts &&
-               shapes == o.shapes && removals == o.removals &&
+               masks == o.masks && heals == o.heals &&
+               removals == o.removals &&
                rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
                flipV == o.flipV && cropRect == o.cropRect &&
                std::abs(cropAngle - o.cropAngle) < 1e-9 &&
-               backgroundColor == o.backgroundColor &&
-               backgroundHidden == o.backgroundHidden &&
-               backgroundDeleted == o.backgroundDeleted;
+               backgroundColor == o.backgroundColor;
     }
     bool operator!=(const Adjustments &o) const { return !(*this == o); }
 };
@@ -578,14 +651,21 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
                         int maskSnapshotIndex = -1,
                         QImage *maskSnapshotOut = nullptr);
 
-// Composites only MaskType::Paint layers (the free-draw brush/paint tool) on
-// top of `img`. Call this after text/shapes have been composited so paint
-// strokes render above other elements by default; applyAdjustments excludes
-// Paint layers from its own masks pass for this reason. `brushCache`, if
-// given, is used/updated for incremental stroke rasterization, same as
-// applyAdjustments.
+// Composites the "interactive tier" of masks — MaskType::Paint (the free-draw
+// brush/paint tool), MaskType::Shape, and MaskType::TextBox — on top of `img`,
+// in their own relative stack order. applyAdjustments excludes these types
+// from its own (worker-thread) masks pass so this cheaper top-up can be
+// re-run on every interactive drag/paint/edit without re-running the full
+// tone/static-mask pipeline (see MaskPass in Adjustments.cpp). `brushCache`,
+// if given, is used/updated for incremental Paint stroke rasterization, same
+// as applyAdjustments. Shape/TextBox masks are still stored in raw
+// oriented-image pixel space (see Mask::shapeRect etc.), so `orientedToGeom`/
+// `geomRotationDeg`/`scale` are forwarded exactly as to applyShapes/
+// applyTexts to map that geometry into `img`'s local pixel space.
 void applyPaintMasks(QImage &img, const QVector<Mask> &masks,
-                     QVector<BrushRasterCache> *brushCache = nullptr);
+                     QVector<BrushRasterCache> *brushCache = nullptr,
+                     const QTransform &orientedToGeom = QTransform(),
+                     double geomRotationDeg = 0.0, double scale = 1.0);
 
 // Build a tinted, semi-transparent overlay (ARGB, alpha = mask weight × maxAlpha)
 // visualizing a single mask's coverage, for live "see the mask" feedback while
