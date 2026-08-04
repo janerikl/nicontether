@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QIcon>
 #include <QImage>
 #include <QPair>
 #include <QSet>
@@ -41,8 +42,11 @@ class LayersPanel : public QWidget {
 public:
     explicit LayersPanel(QWidget *parent = nullptr);
 
+    // previewImage is the tab's current composited render, used only for the
+    // pinned Background row's thumbnail; passing a null image leaves
+    // whatever thumbnail is already cached (e.g. between renders) in place.
     void setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground,
-                  bool backgroundHidden = false);
+                  bool backgroundHidden = false, const QImage &previewImage = QImage());
     // Shapes section: a nested view of Adjustments::shapes — grouped shapes
     // (shared groupId, always kept contiguous) show as a collapsible "Group"
     // parent row with the members nested underneath; ungrouped shapes are
@@ -124,6 +128,12 @@ private:
     void rebuildShapeList();
     void rebuildRemovalList();
 
+    // Row thumbnails (see doRebuildList()). Each returns an icon sized to
+    // m_maskList's iconSize().
+    QIcon maskThumbnail(const Mask &m) const;
+    QIcon groupThumbnail() const;
+    QIcon backgroundThumbnail() const;
+
     QVector<Mask> m_masks;
     int m_active = -1;
     bool m_hasBackground = false;
@@ -136,6 +146,9 @@ private:
     // True while a coalesced doRebuildList() call is pending on the event
     // loop (see rebuildList()).
     bool m_rebuildScheduled = false;
+    // Cached for the pinned Background row's thumbnail; updated opportunistically
+    // by setMasks() (see its previewImage parameter) without forcing a rebuild.
+    QImage m_backgroundPreview;
     MaskAdjust m_curAdjust; // last-loaded active layer's adjustment, patched per-section
 
     QTreeWidget *m_maskList = nullptr;

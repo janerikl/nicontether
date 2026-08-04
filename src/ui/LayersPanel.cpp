@@ -29,7 +29,9 @@
 #include <QHash>
 #include <QMainWindow>
 #include <QMenu>
+#include <QLinearGradient>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QPushButton>
 #include <QSettings>
@@ -96,6 +98,80 @@ QIcon drawCloseIcon() {
     p.setPen(pen);
     p.drawLine(QPointF(3, 3), QPointF(11, 11));
     p.drawLine(QPointF(11, 3), QPointF(3, 11));
+    return QIcon(pm);
+}
+
+// Layer-list action toolbar glyphs (Add/Duplicate/Delete/Group/Ungroup),
+// same drawn-not-loaded-asset style and size as the two icons above.
+QIcon drawPlusIcon() {
+    QPixmap pm(kSectionIconPx, kSectionIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(kSectionIconColor, 1.6);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    p.drawLine(QPointF(7, 2), QPointF(7, 12));
+    p.drawLine(QPointF(2, 7), QPointF(12, 7));
+    return QIcon(pm);
+}
+
+QIcon drawDuplicateIcon() {
+    QPixmap pm(kSectionIconPx, kSectionIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(kSectionIconColor, 1.3);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(QRectF(2, 2, 7, 7));
+    p.drawRect(QRectF(5, 5, 7, 7));
+    return QIcon(pm);
+}
+
+QIcon drawTrashIcon() {
+    QPixmap pm(kSectionIconPx, kSectionIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(kSectionIconColor, 1.3);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    p.drawLine(QPointF(3, 4), QPointF(11, 4));
+    p.drawLine(QPointF(5, 4), QPointF(5.5, 2));
+    p.drawLine(QPointF(9, 4), QPointF(8.5, 2));
+    p.drawLine(QPointF(5.5, 2), QPointF(8.5, 2));
+    p.drawRect(QRectF(4, 4, 6, 8));
+    return QIcon(pm);
+}
+
+QIcon drawGroupIcon() {
+    QPixmap pm(kSectionIconPx, kSectionIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(Qt::NoPen);
+    p.setBrush(kSectionIconColor);
+    p.drawRoundedRect(QRectF(2, 4, 5, 2.5), 1, 1);
+    p.drawRoundedRect(QRectF(2, 5.5, 10, 6.5), 1.5, 1.5);
+    return QIcon(pm);
+}
+
+QIcon drawUngroupIcon() {
+    QPixmap pm(kSectionIconPx, kSectionIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(Qt::NoPen);
+    p.setBrush(kSectionIconColor);
+    p.drawRoundedRect(QRectF(1, 4, 4.5, 2.2), 1, 1);
+    p.drawRoundedRect(QRectF(1, 5.4, 8.5, 5.6), 1.3, 1.3);
+    p.setBrush(Qt::NoBrush);
+    QPen pen(kSectionIconColor, 1.3);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    p.drawLine(QPointF(12, 5), QPointF(12, 11));
+    p.drawLine(QPointF(10, 8), QPointF(14, 8));
     return QIcon(pm);
 }
 
@@ -254,29 +330,46 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     // move as one block), double-click to rename, Duplicate/Delete/Group.
     // A tree (not a flat list) since groups nest as collapsible parent rows
     // with their members underneath, mirroring the Shapes section below.
-    auto *selRow = new QHBoxLayout;
     m_maskList = new MaskTreeWidget;
     m_maskList->setHeaderHidden(true);
     m_maskList->setColumnCount(1);
     m_maskList->setDragDropMode(QAbstractItemView::InternalMove);
     m_maskList->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_maskList->setEditTriggers(QAbstractItemView::EditKeyPressed | QAbstractItemView::DoubleClicked);
+    // Photoshop-sized rows: besides looking right, a bigger row also gives
+    // MaskTreeWidget::dropEvent's Above/On/Below classification (computed
+    // proportionally to row height) much bigger, easier-to-hit drop zones.
+    m_maskList->setIconSize(QSize(40, 40));
+    // No per-depth indent: a group's members would otherwise render their
+    // checkbox/thumbnail shifted right of top-level rows and the group
+    // header itself, which is what made the checkbox column look
+    // inconsistent. Nesting is still legible from the "Group" header row
+    // and its collapse chevron alone.
+    m_maskList->setIndentation(0);
     m_maskList->setMinimumHeight(140);
-    selRow->addWidget(m_maskList, 1);
-    auto *listButtons = new QVBoxLayout;
-    m_add = new QPushButton("Add");
-    m_duplicate = new QPushButton("Duplicate");
-    m_delete = new QPushButton("Delete");
-    m_groupMasks = new QPushButton("Group");
-    m_ungroupMasks = new QPushButton("Ungroup");
-    listButtons->addWidget(m_add);
-    listButtons->addWidget(m_duplicate);
-    listButtons->addWidget(m_delete);
-    listButtons->addWidget(m_groupMasks);
-    listButtons->addWidget(m_ungroupMasks);
+    root->addWidget(m_maskList, 1);
+
+    // Icon toolbar below the list (Photoshop-style), rather than a column of
+    // full-width text buttons beside it — frees up the list's full width for
+    // bigger, easier-to-hit rows.
+    auto *listButtons = new QHBoxLayout;
+    auto mkToolButton = [&](const QIcon &icon, const QString &tooltip) {
+        auto *b = new QPushButton;
+        b->setIcon(icon);
+        b->setIconSize(QSize(kSectionIconPx, kSectionIconPx));
+        b->setToolTip(tooltip);
+        b->setFlat(true);
+        b->setFixedSize(28, 28);
+        listButtons->addWidget(b);
+        return b;
+    };
+    m_add = mkToolButton(drawPlusIcon(), QStringLiteral("Add Layer"));
+    m_duplicate = mkToolButton(drawDuplicateIcon(), QStringLiteral("Duplicate Layer"));
+    m_delete = mkToolButton(drawTrashIcon(), QStringLiteral("Delete Layer"));
+    m_groupMasks = mkToolButton(drawGroupIcon(), QStringLiteral("Group Layers"));
+    m_ungroupMasks = mkToolButton(drawUngroupIcon(), QStringLiteral("Ungroup Layers"));
     listButtons->addStretch(1);
-    selRow->addLayout(listButtons);
-    root->addLayout(selRow, 1);
+    root->addLayout(listButtons);
 
     // Name / opacity / blend mode.
     auto *props = new QFormLayout;
@@ -706,7 +799,7 @@ void LayersPanel::clear() {
 }
 
 void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground,
-                            bool backgroundHidden) {
+                            bool backgroundHidden, const QImage &previewImage) {
     // A plain click to select a row round-trips through RetouchTab::selectMask
     // -> masksChanged -> here with the mask list content completely unchanged
     // (only activeIndex differs). Rebuilding the tree in that case destroys
@@ -721,6 +814,12 @@ void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex, bool has
     m_active = activeIndex;
     m_hasBackground = hasBackground;
     m_backgroundHidden = backgroundHidden;
+    // Stored opportunistically, independent of sameContent: the preview
+    // image changes on essentially every render, and forcing a tree rebuild
+    // whenever it does would defeat the whole point of masksContentEqual()
+    // above. It's simply picked up next time a real (structural) rebuild
+    // happens to run.
+    if (!previewImage.isNull()) m_backgroundPreview = previewImage;
     setEnabled(true);
     if (sameContent) updateCurrentItemHighlight();
     else rebuildList();
@@ -773,6 +872,122 @@ void LayersPanel::resetSections() {
 // that may differ is which one is active/selected. Mask::operator== covers
 // every layer-identity/content field except sourceImageCache and
 // sourceMissing (both transient decode results, deliberately excluded from
+namespace {
+constexpr int kThumbPx = 40;
+const QColor kThumbBg(46, 46, 46);
+const QColor kThumbFg(225, 225, 225);
+}
+
+// Row thumbnails, Photoshop-style: image layers show their actual scaled
+// content (see maskThumbnail()); geometry-based masks (radial/linear/brush/
+// paint/text/none) have no standalone pixel content of their own, so they
+// get a small schematic icon of their geometry instead of a full composite —
+// applyMasks()'s rasterizers (Adjustments.cpp) are tuned for full-image
+// coverage buffers, not icon-sized previews, and aren't exposed for reuse
+// here. Same drawn-not-loaded-asset style as drawChevronIcon/drawCloseIcon
+// above.
+QIcon LayersPanel::maskThumbnail(const Mask &m) const {
+    if (m.isImageLayer()) {
+        if (!m.sourceImageCache.isNull()) {
+            QPixmap pm = QPixmap::fromImage(m.sourceImageCache)
+                             .scaled(kThumbPx, kThumbPx, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            QPixmap canvas(kThumbPx, kThumbPx);
+            canvas.fill(kThumbBg);
+            QPainter p(&canvas);
+            p.drawPixmap((kThumbPx - pm.width()) / 2, (kThumbPx - pm.height()) / 2, pm);
+            return QIcon(canvas);
+        }
+        // Loading or missing source: fall through to a neutral placeholder.
+        QPixmap pm(kThumbPx, kThumbPx);
+        pm.fill(kThumbBg);
+        return QIcon(pm);
+    }
+
+    QPixmap pm(kThumbPx, kThumbPx);
+    pm.fill(kThumbBg);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    switch (m.type) {
+    case MaskType::Radial: {
+        QPen pen(kThumbFg, 2);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        const QPointF c(m.center.x() * kThumbPx, m.center.y() * kThumbPx);
+        p.drawEllipse(c, m.radiusX * kThumbPx, m.radiusY * kThumbPx);
+        break;
+    }
+    case MaskType::Linear: {
+        QLinearGradient grad(m.p0.x() * kThumbPx, m.p0.y() * kThumbPx,
+                              m.p1.x() * kThumbPx, m.p1.y() * kThumbPx);
+        grad.setColorAt(0, kThumbFg);
+        grad.setColorAt(1, kThumbBg);
+        p.fillRect(pm.rect(), grad);
+        break;
+    }
+    case MaskType::Brush:
+    case MaskType::Paint: {
+        QPen pen(m.type == MaskType::Paint ? m.paintColor : kThumbFg, 2);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        p.setPen(pen);
+        QPainterPath path;
+        bool first = true;
+        for (const BrushStrokePoint &pt : m.stroke) {
+            const QPointF sp(pt.pt.x() * kThumbPx, pt.pt.y() * kThumbPx);
+            if (first) { path.moveTo(sp); first = false; }
+            else path.lineTo(sp);
+        }
+        p.drawPath(path);
+        break;
+    }
+    case MaskType::Text: {
+        QFont f = p.font();
+        f.setBold(true);
+        f.setPixelSize(kThumbPx * 2 / 3);
+        p.setFont(f);
+        p.setPen(kThumbFg);
+        p.drawText(pm.rect(), Qt::AlignCenter, QStringLiteral("T"));
+        break;
+    }
+    case MaskType::None:
+        break;
+    }
+    return QIcon(pm);
+}
+
+// Simple folder glyph for a group's parent row.
+QIcon LayersPanel::groupThumbnail() const {
+    QPixmap pm(kThumbPx, kThumbPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QRectF body(kThumbPx * 0.12, kThumbPx * 0.3, kThumbPx * 0.76, kThumbPx * 0.5);
+    QRectF tab(kThumbPx * 0.12, kThumbPx * 0.2, kThumbPx * 0.32, kThumbPx * 0.14);
+    p.setPen(Qt::NoPen);
+    p.setBrush(kThumbFg.darker(115));
+    p.drawRoundedRect(tab, 2, 2);
+    p.drawRoundedRect(body, 3, 3);
+    return QIcon(pm);
+}
+
+// Pinned Background row: a scaled copy of the tab's current composited
+// render (see setMasks()'s previewImage parameter), same scale-to-fit
+// treatment as an image layer's own thumbnail.
+QIcon LayersPanel::backgroundThumbnail() const {
+    if (m_backgroundPreview.isNull()) {
+        QPixmap pm(kThumbPx, kThumbPx);
+        pm.fill(kThumbBg);
+        return QIcon(pm);
+    }
+    QPixmap pm = QPixmap::fromImage(m_backgroundPreview)
+                     .scaled(kThumbPx, kThumbPx, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QPixmap canvas(kThumbPx, kThumbPx);
+    canvas.fill(kThumbBg);
+    QPainter p(&canvas);
+    p.drawPixmap((kThumbPx - pm.width()) / 2, (kThumbPx - pm.height()) / 2, pm);
+    return QIcon(canvas);
+}
+
 // operator== elsewhere), so those two are compared separately here since
 // they affect the tree row's " (loading…)"/" (missing)" label text.
 bool LayersPanel::masksContentEqual(const QVector<Mask> &masks, bool hasBackground,
@@ -823,6 +1038,7 @@ void LayersPanel::doRebuildList() {
             auto it = groupItems.constFind(m.groupId);
             if (it == groupItems.constEnd()) {
                 auto *g = new QTreeWidgetItem(m_maskList, {QStringLiteral("Group")});
+                g->setIcon(0, groupThumbnail());
                 g->setData(0, Qt::UserRole, -1);
                 g->setData(0, Qt::UserRole + 1, m.groupId);
                 groupItems.insert(m.groupId, g);
@@ -840,6 +1056,7 @@ void LayersPanel::doRebuildList() {
         }
         auto *item = parent ? new QTreeWidgetItem(parent, {label})
                              : new QTreeWidgetItem(m_maskList, {label});
+        item->setIcon(0, maskThumbnail(m));
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEditable);
         item->setCheckState(0, m.visible ? Qt::Checked : Qt::Unchecked);
         item->setData(0, Qt::UserRole, i);
@@ -855,6 +1072,7 @@ void LayersPanel::doRebuildList() {
         // hidden (eye checkbox) and deleted (see loadActive()'s isBackground
         // handling).
         auto *bg = new QTreeWidgetItem(m_maskList, {QStringLiteral("Background \xF0\x9F\x94\x92")}); // trailing lock emoji
+        bg->setIcon(0, backgroundThumbnail());
         bg->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
         bg->setData(0, Qt::UserRole, -2);
         bg->setCheckState(0, m_backgroundHidden ? Qt::Unchecked : Qt::Checked);
