@@ -816,6 +816,11 @@ void RetouchTab::onTextSelected(int index) {
     m_activeText = index;
     m_newTextIndex = -1;
     m_canvas->setActiveTextIndex(index);
+    // See selectShape()'s comment: keep m_activeMask in sync with
+    // canvas-driven selection so the Layers panel highlight (and generic
+    // per-mask edits) follow whichever text box was actually just selected.
+    m_activeMask = mi;
+    pushMaskGizmo();
     emit textsChanged();
 }
 
@@ -850,6 +855,7 @@ void RetouchTab::onTextEditRequested(int index) {
     m_activeText = index;
     m_newTextIndex = -1;
     m_textEditIndex = index;
+    m_activeMask = mi; // see selectShape()'s comment: keep selection in sync
     const Mask &mk = m_adj.masks[mi];
     QPointF displayPos = m_orientedToGeom.map(mk.textBoxPos) * m_scaleFromGeom;
     QFont font(mk.textBoxFamily);
@@ -1167,7 +1173,15 @@ void RetouchTab::selectShape(int index) {
                 m_selectedShapes.insert(mkIdx);
     }
     m_activeShape = index;
+    // Keep m_activeMask (the Layers panel's highlighted row and the target
+    // of generic mask edits like opacity/blend/visibility) in lockstep with
+    // canvas-driven shape selection -- without this, clicking a shape on
+    // the canvas moved the shape gizmo/selection handles but left the
+    // Layers panel highlighting whatever mask was last active via
+    // selectMask()/addMask(), a stale-selection desync.
+    m_activeMask = mi;
     updateShapeMarkers();
+    pushMaskGizmo();
     const Mask &mk = m_adj.masks[mi];
     QPointF center;
     if (mk.shapeType == ShapeType::Line) {
@@ -1970,6 +1984,40 @@ int RetouchTab::duplicateActiveMask() {
 void RetouchTab::selectMask(int index) {
     if (index < -1 || index >= m_adj.masks.size()) return;
     m_activeMask = index;
+    // Mirror the selection into m_activeShape/m_activeText (the canvas's own
+    // selection-gizmo/handle state -- see selectShape()/onTextSelected()'s
+    // comments on the reverse direction) so picking a Shape/TextBox row in
+    // the Layers panel moves the canvas selection handles onto it too,
+    // instead of leaving them on whatever shape/text was last clicked on
+    // the canvas while property edits and drag-move now silently target the
+    // newly panel-selected layer.
+    const MaskType t = (index >= 0 && index < m_adj.masks.size())
+                            ? m_adj.masks[index].type
+                            : MaskType::None;
+    // m_shapeMaskIndices/m_textMaskIndices are only rebuilt by
+    // updateShapeMarkers()/updateTextMarkers(), so refresh them first --
+    // otherwise indexOf() below would look up `index` in a stale (possibly
+    // empty) table left over from whatever last called those.
+    updateShapeMarkers();
+    updateTextMarkers();
+    if (t == MaskType::Shape) {
+        int markerIdx = m_shapeMaskIndices.indexOf(index);
+        m_activeShape = markerIdx;
+        m_selectedShapes = (markerIdx >= 0) ? QSet<int>{markerIdx} : QSet<int>{};
+        updateShapeMarkers();
+    } else if (m_activeShape != -1) {
+        m_activeShape = -1;
+        m_selectedShapes.clear();
+        updateShapeMarkers();
+    }
+    if (t == MaskType::TextBox) {
+        int markerIdx = m_textMaskIndices.indexOf(index);
+        m_activeText = markerIdx;
+        m_canvas->setActiveTextIndex(markerIdx);
+    } else if (m_activeText != -1) {
+        m_activeText = -1;
+        m_canvas->setActiveTextIndex(-1);
+    }
     pushMaskGizmo();
     if (m_maskPreviewEnabled) retone();
     emit masksChanged();

@@ -92,6 +92,79 @@ int main(int argc, char **argv) {
         assert(tab.masks()[1].groupId == groupId);
     }
 
+    // Regression test: sequential real Shape creation via the actual
+    // creation entry point (RetouchTab::addMask(MaskType::Shape, ...), the
+    // same call onShapeCreateRequested makes for every canvas drag-to-create
+    // gesture) must always insert at true masks index 0, independent of
+    // which mask happened to be active/selected beforehand -- mirroring the
+    // normal "draw shape, it becomes active, draw the next one" workflow
+    // with no deliberate reselection in between.
+    {
+        RetouchTab tab2(QSize(8, 8));
+        assert(tab2.masks().size() == 1); // just Background
+        int blueIdx = tab2.addMask(MaskType::Shape, ShapeType::Rectangle);
+        tab2.masks()[blueIdx]; // still active after creation (addMask sets m_activeMask)
+        int redIdx = tab2.addMask(MaskType::Shape, ShapeType::Ellipse);
+        int whiteIdx = tab2.addMask(MaskType::Shape, ShapeType::Rectangle);
+        (void)blueIdx; (void)redIdx;
+        // Newest-created (white) must be at index 0 (frontmost/top), then
+        // red, then blue, then Background last -- true creation-order,
+        // newest-is-topmost, matching both the Layers panel (built by
+        // walking masks() index 0 upward) and applyMasks' render order.
+        assert(tab2.masks().size() == 4);
+        assert(whiteIdx == 0);
+        assert(tab2.masks()[0].shapeType == ShapeType::Rectangle); // white (created last)
+        assert(tab2.masks()[1].shapeType == ShapeType::Ellipse);   // red (created 2nd)
+        assert(tab2.masks()[2].shapeType == ShapeType::Rectangle); // blue (created 1st)
+        assert(tab2.masks()[3].type == MaskType::Background);
+        assert(tab2.activeMaskIndex() == 0); // most recently created shape stays active
+    }
+
+    // Regression test: selecting a shape via the canvas (RetouchTab::
+    // selectShape, called from onShapeSelected on a canvas click) must keep
+    // m_activeMask (the Layers panel's highlighted row, and the target of
+    // generic per-mask edits like opacity/blend/visibility) in sync with
+    // the shape actually selected -- previously selectShape() only updated
+    // m_activeShape, leaving the Layers panel highlighting whatever mask
+    // was last active via selectMask()/addMask() and any generic mask edit
+    // silently targeting the wrong layer.
+    {
+        RetouchTab tab3(QSize(8, 8));
+        // addMask() always returns 0 (its own just-inserted index at index
+        // 0), which goes stale the moment the *next* addMask() shifts it --
+        // so blue's real current index after red is created is 1, not the
+        // 0 its own addMask() call returned; use the known post-insertion
+        // layout instead of the return value for the older shape.
+        tab3.addMask(MaskType::Shape, ShapeType::Rectangle); // blue -> ends up at index 1
+        int redIdx = tab3.addMask(MaskType::Shape, ShapeType::Ellipse); // red, index 0
+        const int blueIdx = 1;
+        // selectShape()'s marker-index table (m_shapeMaskIndices) is only
+        // (re)built by updateShapeMarkers(), which addMask() alone never
+        // calls (only onShapeCreateRequested/selectMask do); an initial
+        // selectMask() call here mirrors that and populates the table so
+        // selectShape() below has fresh marker indices to resolve against.
+        tab3.selectMask(redIdx);
+        assert(tab3.activeShapeIndex() == 0); // red's marker index
+        // After the two creations above, masks() is [red(0), blue(1), Bg(2)]
+        // with red active (most recently created). Clicking blue's shape
+        // marker on the canvas (marker index 1, since updateShapeMarkers()
+        // walks masks front-to-back skipping Background) must move
+        // m_activeMask onto blue's real masks index, not leave it on red.
+        assert(tab3.activeMaskIndex() == 0); // red, just created
+        tab3.selectShape(1); // marker index 1 -> blue
+        assert(tab3.activeShapeIndex() == 1);
+        assert(tab3.activeMaskIndex() == blueIdx);
+
+        // And the reverse direction: selecting a mask via the Layers panel
+        // (RetouchTab::selectMask, called from LayersPanel::
+        // selectMaskRequested) must move the canvas's shape-selection
+        // gizmo (m_activeShape) onto it too, not leave canvas selection
+        // handles on whatever shape was last clicked on the canvas.
+        tab3.selectMask(redIdx);
+        assert(tab3.activeMaskIndex() == redIdx);
+        assert(tab3.activeShapeIndex() == 0); // red's marker index
+    }
+
     printf("LayerReorderTest passed\n");
     return 0;
 }
