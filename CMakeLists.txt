@@ -114,3 +114,21 @@ target_include_directories(new_document_size_test PRIVATE src)
 target_link_libraries(new_document_size_test PRIVATE Qt6::Widgets)
 target_compile_options(new_document_size_test PRIVATE -UNDEBUG)
 add_test(NAME new_document_size_test COMMAND new_document_size_test)
+
+add_executable(layer_reorder_test
+    tests/LayerReorderTest.cpp
+    src/edit/Adjustments.cpp
+    src/edit/RawLoader.cpp
+    src/edit/ImageCanvas.cpp
+    src/edit/RetouchTab.cpp
+    src/edit/EditSidecar.cpp
+    src/edit/HealTool.cpp
+    src/edit/TextTool.cpp
+    src/edit/ShapeTool.cpp
+    src/edit/InpaintTool.cpp
+)
+target_include_directories(layer_reorder_test PRIVATE src)
+target_link_libraries(layer_reorder_test PRIVATE Qt6::Widgets Qt6::Concurrent PkgConfig::LIBRAW)
+target_compile_options(layer_reorder_test PRIVATE -UNDEBUG)
+add_test(NAME layer_reorder_test COMMAND layer_reorder_test)
+set_tests_properties(layer_reorder_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

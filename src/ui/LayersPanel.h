@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QImage>
+#include <QPair>
 #include <QSet>
 #include <QVector>
 #include <QWidget>
@@ -93,7 +94,8 @@ signals:
     void maskRenamed(int index, const QString &name); // inline rename of any row in the list
     // Full new order of masks() indices, plus any indices whose drag pulled
     // them out of a group's nested rows (their groupId should be cleared).
-    void maskReorderRequested(const QVector<int> &newOrder, const QVector<int> &leftGroupIndices);
+    void maskReorderRequested(const QVector<int> &newOrder, const QVector<int> &leftGroupIndices,
+                               const QVector<QPair<int, QString>> &joinGroups);
     void groupMasksRequested(const QVector<int> &indices);
     void ungroupMasksRequested(const QVector<int> &indices);
     void maskTypeChanged(MaskType type);
@@ -116,6 +118,9 @@ private:
     void emitImageTransform();
     void loadActive();
     void rebuildList();
+    void doRebuildList();
+    void updateCurrentItemHighlight();
+    bool masksContentEqual(const QVector<Mask> &masks, bool hasBackground, bool backgroundHidden) const;
     void rebuildShapeList();
     void rebuildRemovalList();
 
@@ -128,6 +133,9 @@ private:
     QVector<RemoveObjectOp> m_removals;
     int m_activeRemoval = -1;
     bool m_syncing = false;
+    // True while a coalesced doRebuildList() call is pending on the event
+    // loop (see rebuildList()).
+    bool m_rebuildScheduled = false;
     MaskAdjust m_curAdjust; // last-loaded active layer's adjustment, patched per-section
 
     QTreeWidget *m_maskList = nullptr;

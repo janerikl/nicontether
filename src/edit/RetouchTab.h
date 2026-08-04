@@ -145,7 +145,8 @@ public:
     // from a Layers-panel drag); leftGroupIndices (also original indices)
     // are layers whose drag pulled them out of their group's nested rows, so
     // their groupId is cleared before the reorder is applied.
-    void reorderMasks(const QVector<int> &newOrder, const QVector<int> &leftGroupIndices = {});
+    void reorderMasks(const QVector<int> &newOrder, const QVector<int> &leftGroupIndices = {},
+                       const QVector<QPair<int, QString>> &joinGroups = {});
     void groupMasks(const QVector<int> &indices);     // tag layers as one group; kept contiguous
     void ungroupMasks(const QVector<int> &indices);   // clear the group tag of the given layers' groups
     const QVector<Mask> &masks() const { return m_adj.masks; }
