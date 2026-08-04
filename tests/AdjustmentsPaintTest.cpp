@@ -115,6 +115,50 @@ int main(int argc, char **argv) {
         assert(qRed(resized.pixel(0, 0)) == 0);
     }
 
+    // masks[0] is documented as the topmost/frontmost entry: with two
+    // full-frame, fully-opaque image layers stacked, the rendered result
+    // must show whichever one sits at index 0, regardless of insertion
+    // order. Regression test for a Layers-panel display-order bug where a
+    // newly-added layer (always inserted at masks index 0) visually showed
+    // up at the bottom of the panel list -- the panel bug didn't affect
+    // this applyAdjustments/applyMasks compositing path itself, but this
+    // pins down the masks[0]-is-topmost contract those UI pieces rely on.
+    {
+        QImage base(4, 4, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        QImage redSrc(4, 4, QImage::Format_ARGB32);
+        redSrc.fill(QColor(255, 0, 0));
+        QImage greenSrc(4, 4, QImage::Format_ARGB32);
+        greenSrc.fill(QColor(0, 255, 0));
+
+        Mask red;
+        red.type = MaskType::None;
+        red.sourceImagePath = "red.png";
+        red.sourceImageCache = redSrc;
+        red.opacity = 1.0;
+
+        Mask green;
+        green.type = MaskType::None;
+        green.sourceImagePath = "green.png";
+        green.sourceImageCache = greenSrc;
+        green.opacity = 1.0;
+
+        Adjustments adjRedOnTop;
+        adjRedOnTop.masks.append(red);   // index 0: topmost
+        adjRedOnTop.masks.append(green); // index 1: bottom
+        QImage outRedOnTop = applyAdjustments(base, adjRedOnTop);
+        assert(qRed(outRedOnTop.pixel(2, 2)) > 200);
+        assert(qGreen(outRedOnTop.pixel(2, 2)) < 50);
+
+        Adjustments adjGreenOnTop;
+        adjGreenOnTop.masks.append(green); // index 0: topmost
+        adjGreenOnTop.masks.append(red);   // index 1: bottom
+        QImage outGreenOnTop = applyAdjustments(base, adjGreenOnTop);
+        assert(qGreen(outGreenOnTop.pixel(2, 2)) > 200);
+        assert(qRed(outGreenOnTop.pixel(2, 2)) < 50);
+    }
+
     // Erasing an image layer punches transparency through to the base below.
     {
         QImage base(8, 8, QImage::Format_ARGB32);

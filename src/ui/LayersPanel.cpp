@@ -1017,9 +1017,12 @@ bool LayersPanel::masksContentEqual(const QVector<Mask> &masks, bool hasBackgrou
 }
 
 // Builds the tree top-to-bottom to match the stack's top-to-bottom render
-// order: walks m_masks from the highest index down, creating a "Group"
-// parent row the first time each groupId is seen and nesting every
-// subsequent same-group layer under it.
+// order: masks[0] is documented (Adjustments.h) and treated by applyMasks
+// as the topmost/frontmost layer, so walk m_masks from index 0 upward,
+// creating a "Group" parent row the first time each groupId is seen and
+// nesting every subsequent same-group layer under it. (rowsMoved's handler
+// mirrors this: it reads the tree top-to-bottom into `order` and assumes
+// row 0 -> masks index 0, so this walk direction must match that.)
 // Rebuilding clear()s and recreates every QTreeWidgetItem in m_maskList,
 // which is unsafe to do synchronously from within a call chain Qt's own
 // drag-and-drop machinery is still unwinding on top of (e.g. rowsMoved fired
@@ -1045,7 +1048,7 @@ void LayersPanel::doRebuildList() {
         selectedIndices.insert(item->data(0, Qt::UserRole).toInt());
     m_maskList->clear();
     QHash<QString, QTreeWidgetItem *> groupItems;
-    for (int i = m_masks.size() - 1; i >= 0; --i) {
+    for (int i = 0; i < m_masks.size(); ++i) {
         const Mask &m = m_masks[i];
         QTreeWidgetItem *parent = nullptr;
         if (!m.groupId.isEmpty()) {
