@@ -726,6 +726,57 @@ int main(int argc, char **argv) {
         }
     }
 
+    // Regression test: three OVERLAPPING same-tier (all MaskType::Shape)
+    // layers must composite in true masks-array index order among
+    // themselves, index 0 frontmost, exactly like any other same-tier set.
+    // The earlier "Paint, Shape, and TextBox composite together" test above
+    // only used non-overlapping regions, so it couldn't catch a same-tier
+    // relative-ordering regression -- this test closes that gap by covering
+    // the exact scenario from the user's bug report: three full-frame-ish
+    // Shape layers (blue on top, then white, then red), overlapping in the
+    // same region, where only the topmost (masks[0], blue) should show.
+    {
+        QImage base(10, 10, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask blue;
+        blue.type = MaskType::Shape;
+        blue.shapeType = ShapeType::Rectangle;
+        blue.shapeRect = QRectF(0, 0, 10, 10);
+        blue.shapeFillEnabled = true;
+        blue.shapeFillColor = QColor(0, 0, 255);
+        blue.shapeStrokeEnabled = false;
+        blue.opacity = 1.0;
+
+        Mask white;
+        white.type = MaskType::Shape;
+        white.shapeType = ShapeType::Rectangle;
+        white.shapeRect = QRectF(0, 0, 10, 10);
+        white.shapeFillEnabled = true;
+        white.shapeFillColor = QColor(255, 255, 255);
+        white.shapeStrokeEnabled = false;
+        white.opacity = 1.0;
+
+        Mask red;
+        red.type = MaskType::Shape;
+        red.shapeType = ShapeType::Rectangle;
+        red.shapeRect = QRectF(0, 0, 10, 10);
+        red.shapeFillEnabled = true;
+        red.shapeFillColor = QColor(255, 0, 0);
+        red.shapeStrokeEnabled = false;
+        red.opacity = 1.0;
+
+        Adjustments adj;
+        adj.masks.append(blue);  // index 0: topmost, matches Layers-panel row 0
+        adj.masks.append(white); // index 1
+        adj.masks.append(red);   // index 2: bottommost
+
+        QImage out = applyAdjustments(base, adj);
+        applyPaintMasks(out, adj.masks);
+        QRgb center = out.pixel(5, 5);
+        assert(qBlue(center) > 200 && qRed(center) < 20 && qGreen(center) < 20);
+    }
+
     std::printf("AdjustmentsPaintTest: all assertions passed\n");
     return 0;
 }
