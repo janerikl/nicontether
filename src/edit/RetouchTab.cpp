@@ -2108,16 +2108,28 @@ void RetouchTab::moveMask(int from, int to) {
 // Applies a full new ordering of masks() indices (e.g. from a Layers-panel
 // drag), rather than a single from/to pair — needed because a drag can move
 // a whole contiguous group as one block.
-void RetouchTab::reorderMasks(const QVector<int> &newOrder, const QVector<int> &leftGroupIndices) {
+void RetouchTab::reorderMasks(const QVector<int> &newOrder, const QVector<int> &leftGroupIndices,
+                               const QVector<QPair<int, QString>> &joinGroups) {
     if (newOrder.size() != m_adj.masks.size()) return;
+    // newOrder must be a permutation of 0..size-1: the UI derives it by
+    // flattening the tree, and a stale/desynced tree (e.g. after a drag that
+    // moved a row out of a group) can otherwise yield a non-bijective order
+    // that silently drops or duplicates masks, potentially losing the active
+    // mask's index and leaving m_activeMask pointing past the new array.
+    QVector<bool> seen(m_adj.masks.size(), false);
+    for (int idx : newOrder) {
+        if (idx < 0 || idx >= m_adj.masks.size() || seen[idx]) return;
+        seen[idx] = true;
+    }
     for (int idx : leftGroupIndices)
         if (idx >= 0 && idx < m_adj.masks.size()) m_adj.masks[idx].groupId.clear();
+    for (const auto &join : joinGroups)
+        if (join.first >= 0 && join.first < m_adj.masks.size()) m_adj.masks[join.first].groupId = join.second;
     QVector<Mask> reordered;
     reordered.reserve(newOrder.size());
     int newActive = -1;
     for (int i = 0; i < newOrder.size(); ++i) {
         const int idx = newOrder[i];
-        if (idx < 0 || idx >= m_adj.masks.size()) return;
         reordered.append(m_adj.masks[idx]);
         if (idx == m_activeMask) newActive = i;
     }

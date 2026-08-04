@@ -1875,6 +1875,7 @@ void RetouchWindow::buildLayersDock() {
             // image layer sourced from the same photo, placed at the
             // bottom of the stack (directly above Background).
             int idx = tab->addImageLayer(tab->path());
+            tab->setMaskName(idx, QStringLiteral("Background copy"));
             tab->moveMask(idx, 0);
             tab->selectMask(0);
         } else {
@@ -1939,9 +1940,10 @@ void RetouchWindow::buildLayersDock() {
                 if (tab) tab->setMaskName(index, name);
             });
     connect(m_layersPanel, &LayersPanel::maskReorderRequested, this,
-            [this](const QVector<int> &newOrder, const QVector<int> &leftGroupIndices) {
+            [this](const QVector<int> &newOrder, const QVector<int> &leftGroupIndices,
+                   const QVector<QPair<int, QString>> &joinGroups) {
                 RetouchTab *tab = currentTab();
-                if (tab) { tab->reorderMasks(newOrder, leftGroupIndices); refreshMaskPanel(); }
+                if (tab) { tab->reorderMasks(newOrder, leftGroupIndices, joinGroups); refreshMaskPanel(); }
             });
     connect(m_layersPanel, &LayersPanel::groupMasksRequested, this,
             [this](const QVector<int> &indices) {
@@ -1974,7 +1976,8 @@ void RetouchWindow::refreshMaskPanel() {
     if (m_layersPanel) {
         if (ready) {
             m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex(),
-                                    tab->hasBackgroundLayer(), tab->isBackgroundHidden());
+                                    tab->hasBackgroundLayer(), tab->isBackgroundHidden(),
+                                    tab->previewImage());
             m_layersPanel->setRemovals(tab->removals(), tab->activeRemovalIndex());
         } else {
             m_layersPanel->clear();

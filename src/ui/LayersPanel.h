@@ -1,7 +1,9 @@
 #pragma once
 
 #include <QByteArray>
+#include <QIcon>
 #include <QImage>
+#include <QPair>
 #include <QSet>
 #include <QVector>
 #include <QWidget>
@@ -40,8 +42,11 @@ class LayersPanel : public QWidget {
 public:
     explicit LayersPanel(QWidget *parent = nullptr);
 
+    // previewImage is the tab's current composited render, used only for the
+    // pinned Background row's thumbnail; passing a null image leaves
+    // whatever thumbnail is already cached (e.g. between renders) in place.
     void setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground,
-                  bool backgroundHidden = false);
+                  bool backgroundHidden = false, const QImage &previewImage = QImage());
     // Remove Object section: a flat list of Adjustments::removals, one row
     // per content-aware fill (visibility checkbox + Delete button), mirroring
     // the Shapes section's per-row eye toggle. Top of the list = most
@@ -95,7 +100,8 @@ signals:
     void maskRenamed(int index, const QString &name); // inline rename of any row in the list
     // Full new order of masks() indices, plus any indices whose drag pulled
     // them out of a group's nested rows (their groupId should be cleared).
-    void maskReorderRequested(const QVector<int> &newOrder, const QVector<int> &leftGroupIndices);
+    void maskReorderRequested(const QVector<int> &newOrder, const QVector<int> &leftGroupIndices,
+                               const QVector<QPair<int, QString>> &joinGroups);
     void groupMasksRequested(const QVector<int> &indices);
     void ungroupMasksRequested(const QVector<int> &indices);
     void maskTypeChanged(MaskType type);
@@ -113,7 +119,16 @@ private:
     void emitImageTransform();
     void loadActive();
     void rebuildList();
+    void doRebuildList();
+    void updateCurrentItemHighlight();
+    bool masksContentEqual(const QVector<Mask> &masks, bool hasBackground, bool backgroundHidden) const;
     void rebuildRemovalList();
+
+    // Row thumbnails (see doRebuildList()). Each returns an icon sized to
+    // m_maskList's iconSize().
+    QIcon maskThumbnail(const Mask &m) const;
+    QIcon groupThumbnail() const;
+    QIcon backgroundThumbnail() const;
 
     QVector<Mask> m_masks;
     int m_active = -1;
@@ -122,6 +137,12 @@ private:
     QVector<RemoveObjectOp> m_removals;
     int m_activeRemoval = -1;
     bool m_syncing = false;
+    // True while a coalesced doRebuildList() call is pending on the event
+    // loop (see rebuildList()).
+    bool m_rebuildScheduled = false;
+    // Cached for the pinned Background row's thumbnail; updated opportunistically
+    // by setMasks() (see its previewImage parameter) without forcing a rebuild.
+    QImage m_backgroundPreview;
     MaskAdjust m_curAdjust; // last-loaded active layer's adjustment, patched per-section
 
     QTreeWidget *m_maskList = nullptr;
