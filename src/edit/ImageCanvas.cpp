@@ -2250,17 +2250,6 @@ void ImageCanvas::keyPressEvent(QKeyEvent *ev) {
         ev->accept();
         return;
     }
-    if (m_shapeMode && m_activeShapeIndex >= 0 &&
-        (ev->key() == Qt::Key_Plus || ev->key() == Qt::Key_Equal)) {
-        emit shapeRaiseRequested(m_activeShapeIndex);
-        ev->accept();
-        return;
-    }
-    if (m_shapeMode && m_activeShapeIndex >= 0 && ev->key() == Qt::Key_Minus) {
-        emit shapeLowerRequested(m_activeShapeIndex);
-        ev->accept();
-        return;
-    }
     if (ev->key() == Qt::Key_Space && !ev->isAutoRepeat() && !m_cropMode) {
         m_spaceDown = true;
         if (!m_panning) setCursor(Qt::OpenHandCursor);

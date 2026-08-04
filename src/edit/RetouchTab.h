@@ -253,8 +253,6 @@ private slots:
     void onShapeGroupDeleteRequested(const QList<int> &indices);
     void onShapeDuplicateRequested(int index);
     void onShapeGroupDuplicateRequested(const QList<int> &indices);
-    void onShapeRaiseRequested(int index);
-    void onShapeLowerRequested(int index);
     void onShapeToggleSelectRequested(int index);
     void onShapeGroupMoveStarted(const QList<int> &indices);
     void onShapeGroupMoveRequested(const QList<int> &indices, const QPointF &deltaImage);

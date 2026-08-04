@@ -123,8 +123,6 @@ void RetouchTab::setupCanvasAndWiring() {
             &RetouchTab::onShapeDuplicateRequested);
     connect(m_canvas, &ImageCanvas::shapeGroupDuplicateRequested, this,
             &RetouchTab::onShapeGroupDuplicateRequested);
-    connect(m_canvas, &ImageCanvas::shapeRaiseRequested, this, &RetouchTab::onShapeRaiseRequested);
-    connect(m_canvas, &ImageCanvas::shapeLowerRequested, this, &RetouchTab::onShapeLowerRequested);
     connect(m_canvas, &ImageCanvas::shapeGroupDeleteRequested, this,
             &RetouchTab::onShapeGroupDeleteRequested);
     connect(m_canvas, &ImageCanvas::shapeToggleSelectRequested, this,
@@ -1480,41 +1478,6 @@ void RetouchTab::onShapeGroupDuplicateRequested(const QList<int> &indices) {
     }
     m_selectedShapes = QSet<int>(newIndices.begin(), newIndices.end());
     m_activeShape = newIndices.isEmpty() ? -1 : newIndices.last();
-    updateShapeMarkers();
-    retone();
-    markEdited();
-    emit shapesChanged();
-}
-
-// '+': move one level toward the top of the stack (shapes render in vector
-// order, so "up" means a higher index — swap with the next entry).
-void RetouchTab::onShapeRaiseRequested(int index) {
-    int mi = shapeMaskIndex(index);
-    if (mi < 0 || mi >= m_adj.masks.size() - 1) return;
-    m_adj.masks.swapItemsAt(mi, mi + 1);
-    if (m_activeMask == mi) m_activeMask = mi + 1;
-    else if (m_activeMask == mi + 1) m_activeMask = mi;
-    updateShapeMarkers();
-    int newIndex = m_shapeMaskIndices.indexOf(mi + 1);
-    if (m_selectedShapes.remove(index) && newIndex >= 0) m_selectedShapes.insert(newIndex);
-    m_activeShape = newIndex;
-    updateShapeMarkers();
-    retone();
-    markEdited();
-    emit shapesChanged();
-}
-
-// '-': move one level toward the bottom of the stack.
-void RetouchTab::onShapeLowerRequested(int index) {
-    int mi = shapeMaskIndex(index);
-    if (mi <= 0 || mi >= m_adj.masks.size()) return;
-    m_adj.masks.swapItemsAt(mi, mi - 1);
-    if (m_activeMask == mi) m_activeMask = mi - 1;
-    else if (m_activeMask == mi - 1) m_activeMask = mi;
-    updateShapeMarkers();
-    int newIndex = m_shapeMaskIndices.indexOf(mi - 1);
-    if (m_selectedShapes.remove(index) && newIndex >= 0) m_selectedShapes.insert(newIndex);
-    m_activeShape = newIndex;
     updateShapeMarkers();
     retone();
     markEdited();
