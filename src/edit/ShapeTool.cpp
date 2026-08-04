@@ -129,34 +129,3 @@ void applyShapeOp(QImage &img, const ShapeOp &op) {
         p.strokePath(path, pen);
     }
 }
-
-void applyShapes(QImage &img, const QVector<ShapeOp> &shapes, const QTransform &orientedToGeom,
-                  double geomRotationDeg, double scale) {
-    if (shapes.isEmpty()) return;
-
-    const QImage::Format origFormat = img.format();
-    QImage work = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-
-    for (const ShapeOp &op : shapes) {
-        if (!op.visible) continue;
-        ShapeOp local = op;
-        if (op.type == ShapeType::Line) {
-            // p1/p2 are literal endpoints; mapping them through the full
-            // affine already carries the geom rotation via their new
-            // relative angle, so local.rotation (unused for Line — see
-            // shapeCornerHandleAt/shapeRotateHandlePos exclusions) is left
-            // untouched to avoid double-rotating the segment.
-            local.p1 = orientedToGeom.map(op.p1) * scale;
-            local.p2 = orientedToGeom.map(op.p2) * scale;
-        } else {
-            QPointF center = orientedToGeom.map(op.rect.center()) * scale;
-            local.rect = QRectF(QPointF(0, 0), op.rect.size() * scale);
-            local.rect.moveCenter(center);
-            local.rotation = op.rotation + geomRotationDeg;
-        }
-        local.strokeWidth *= scale;
-        applyShapeOp(work, local);
-    }
-
-    img = work.convertToFormat(origFormat);
-}

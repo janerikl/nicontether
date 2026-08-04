@@ -238,8 +238,7 @@ void RetouchTab::onDecodeFinished() {
 
 bool RetouchTab::hasEdits() const {
     return hasToneEdits(m_adj) || m_adj.rotationQuadrants != 0 || m_adj.flipH ||
-           m_adj.flipV || !m_adj.cropRect.isNull() || !m_adj.heals.isEmpty() ||
-           !m_adj.texts.isEmpty() || !m_adj.shapes.isEmpty();
+           m_adj.flipV || !m_adj.cropRect.isNull() || !m_adj.heals.isEmpty();
 }
 
 void RetouchTab::assignPath(const QString &path) {
@@ -555,21 +554,6 @@ void RetouchTab::requestRender(const QImage &src, const Adjustments &adj, int ma
 
 void RetouchTab::onRenderDone(const QImage &result, const QImage &maskSnapshot) {
     m_lastEdited = result;
-    if (!m_adj.texts.isEmpty()) {
-        // The op currently open in the inline editor still composites
-        // normally — background/shadow/outline all preview live — but its
-        // glyph *fill* is hidden, since the editor widget already shows that
-        // live text itself; compositing the fill too would double it up.
-        if (m_textEditIndex >= 0 && m_textEditIndex < m_adj.texts.size()) {
-            QVector<TextOp> texts = m_adj.texts;
-            texts[m_textEditIndex].color.setAlpha(0);
-            applyTexts(m_lastEdited, texts, m_orientedToGeom, m_geomRotationDeg, m_scaleFromGeom);
-        } else {
-            applyTexts(m_lastEdited, m_adj.texts, m_orientedToGeom, m_geomRotationDeg, m_scaleFromGeom);
-        }
-    }
-    if (!m_adj.shapes.isEmpty())
-        applyShapes(m_lastEdited, m_adj.shapes, m_orientedToGeom, m_geomRotationDeg, m_scaleFromGeom);
     if (!m_adj.masks.isEmpty())
         applyPaintMasks(m_lastEdited, m_adj.masks, &m_paintCache, m_orientedToGeom,
                         m_geomRotationDeg, m_scaleFromGeom);
@@ -2328,8 +2312,6 @@ QImage RetouchTab::renderFullRes() const {
     // m_geomImg is the full-res oriented + healed + cropped base; apply tone,
     // then composite text last so it stays unaffected by tone/colour.
     QImage out = applyAdjustments(m_geomImg, toneOnly(m_adj));
-    if (!m_adj.texts.isEmpty()) applyTexts(out, m_adj.texts, m_orientedToGeom, m_geomRotationDeg);
-    if (!m_adj.shapes.isEmpty()) applyShapes(out, m_adj.shapes, m_orientedToGeom, m_geomRotationDeg);
     if (!m_adj.masks.isEmpty())
         applyPaintMasks(out, m_adj.masks, nullptr, m_orientedToGeom, m_geomRotationDeg);
     return out;

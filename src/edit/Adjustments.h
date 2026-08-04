@@ -580,12 +580,6 @@ struct Adjustments {
     // Spot-heal ops (oriented-image coords; applied before crop).
     QVector<HealOp> heals;
 
-    // Text overlays (oriented-image coords, pre-crop; see TextOp comment).
-    QVector<TextOp> texts;
-
-    // Shape overlays (oriented-image coords, pre-crop; see ShapeOp comment).
-    QVector<ShapeOp> shapes;
-
     // Content-aware object-removal regions (oriented-image coords, pre-crop;
     // applied same stage as heals, before crop; see RemoveObjectOp comment).
     QVector<RemoveObjectOp> removals;
@@ -624,8 +618,8 @@ struct Adjustments {
                flatStyle == o.flatStyle &&
                curve == o.curve && levels == o.levels &&
                colorRanges == o.colorRanges &&
-               masks == o.masks && heals == o.heals && texts == o.texts &&
-               shapes == o.shapes && removals == o.removals &&
+               masks == o.masks && heals == o.heals &&
+               removals == o.removals &&
                rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
                flipV == o.flipV && cropRect == o.cropRect &&
                std::abs(cropAngle - o.cropAngle) < 1e-9 &&

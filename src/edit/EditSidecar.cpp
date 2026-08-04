@@ -279,65 +279,10 @@ bool save(const QString &imagePath, const Adjustments &a) {
     }
     o["heals"] = heals;
 
-    if (!a.texts.isEmpty()) {
-        QJsonArray texts;
-        for (const TextOp &t : a.texts) {
-            QJsonObject j;
-            j["x"] = t.pos.x();
-            j["y"] = t.pos.y();
-            j["rotation"] = t.rotation;
-            j["text"] = t.text;
-            j["family"] = t.family;
-            j["pixelSize"] = t.pixelSize;
-            j["bold"] = t.bold;
-            j["italic"] = t.italic;
-            j["color"] = t.color.name(QColor::HexArgb);
-            j["outlineEnabled"] = t.outlineEnabled;
-            j["outlineColor"] = t.outlineColor.name(QColor::HexArgb);
-            j["outlineWidth"] = t.outlineWidth;
-            j["shadowEnabled"] = t.shadowEnabled;
-            j["shadowOffsetX"] = t.shadowOffset.x();
-            j["shadowOffsetY"] = t.shadowOffset.y();
-            j["shadowBlur"] = t.shadowBlur;
-            j["shadowOpacity"] = t.shadowOpacity;
-            j["shadowColor"] = t.shadowColor.name(QColor::HexArgb);
-            j["bgEnabled"] = t.bgEnabled;
-            j["bgColor"] = t.bgColor.name(QColor::HexArgb);
-            j["bgOpacity"] = t.bgOpacity;
-            j["bgPadding"] = t.bgPadding;
-            texts.append(j);
-        }
-        o["texts"] = texts;
-    }
-
-    if (!a.shapes.isEmpty()) {
-        QJsonArray shapes;
-        for (const ShapeOp &s : a.shapes) {
-            QJsonObject j;
-            j["type"] = shapeTypeName(s.type);
-            j["rectX"] = s.rect.x();
-            j["rectY"] = s.rect.y();
-            j["rectW"] = s.rect.width();
-            j["rectH"] = s.rect.height();
-            j["p1x"] = s.p1.x();
-            j["p1y"] = s.p1.y();
-            j["p2x"] = s.p2.x();
-            j["p2y"] = s.p2.y();
-            j["rotation"] = s.rotation;
-            j["sides"] = s.sides;
-            j["innerRadiusRatio"] = s.innerRadiusRatio;
-            j["fillEnabled"] = s.fillEnabled;
-            j["fillColor"] = s.fillColor.name(QColor::HexArgb);
-            j["strokeEnabled"] = s.strokeEnabled;
-            j["strokeColor"] = s.strokeColor.name(QColor::HexArgb);
-            j["strokeWidth"] = s.strokeWidth;
-            j["opacity"] = s.opacity;
-            j["visible"] = s.visible;
-            j["groupId"] = s.groupId;
-            shapes.append(j);
-        }
-        o["shapes"] = shapes;
-    }
+    // Legacy "texts"/"shapes" JSON keys are no longer written: shape/text
+    // content lives entirely in "masks" now (MaskType::Shape/TextBox), and
+    // Adjustments::shapes/texts (the old in-memory arrays) have been removed.
+    // Version 7+ sidecars therefore never contain these keys.
 
     if (!a.removals.isEmpty()) {
         // Cached fill/mask images are embedded as base64-encoded PNG so a
@@ -548,6 +493,12 @@ bool load(const QString &imagePath, Adjustments &out) {
         hp.radius = h["r"].toInt();
         a.heals.append(hp);
     }
+    // Legacy "texts"/"shapes" JSON keys (pre-version-7 sidecars) are parsed
+    // into local, transient vectors here — used only below to synthesize
+    // equivalent masks entries — rather than into Adjustments::shapes/texts,
+    // which no longer exist.
+    QVector<TextOp> legacyTexts;
+    QVector<ShapeOp> legacyShapes;
     for (const QJsonValue &v : o["texts"].toArray()) {
         QJsonObject j = v.toObject();
         TextOp t;
@@ -571,7 +522,7 @@ bool load(const QString &imagePath, Adjustments &out) {
         t.bgColor = QColor(j["bgColor"].toString(QStringLiteral("#ff000000")));
         t.bgOpacity = j["bgOpacity"].toDouble(0.6);
         t.bgPadding = j["bgPadding"].toDouble(10.0);
-        a.texts.append(t);
+        legacyTexts.append(t);
     }
     for (const QJsonValue &v : o["shapes"].toArray()) {
         QJsonObject j = v.toObject();
@@ -592,7 +543,7 @@ bool load(const QString &imagePath, Adjustments &out) {
         s.opacity = j["opacity"].toDouble(1.0);
         s.visible = j["visible"].toBool(true);
         s.groupId = j["groupId"].toString();
-        a.shapes.append(s);
+        legacyShapes.append(s);
     }
     auto imageFromBase64Png = [](const QString &b64) -> QImage {
         if (b64.isEmpty()) return QImage();
@@ -618,23 +569,23 @@ bool load(const QString &imagePath, Adjustments &out) {
     }
 
     // Load-time migration (pre-version-7 sidecars): synthesize equivalent
-    // MaskType::Shape/TextBox entries in a.masks from the legacy a.texts/
-    // a.shapes arrays, so the new masks-based representation exists
-    // alongside the old one going forward. Best-effort z-order
+    // MaskType::Shape/TextBox entries in a.masks from the legacy
+    // legacyTexts/legacyShapes vectors parsed above. Best-effort z-order
     // reconstruction only — old files never had a true interleaved
     // masks/texts/shapes/paint concept, so this approximates the legacy
     // composite order (non-Paint masks, then texts, then shapes, then Paint
     // masks) by inserting migrated text-masks then migrated shape-masks
     // immediately above all existing non-Paint masks and below any Paint
-    // masks. Purely inert plumbing: nothing in the render pipeline reads
-    // MaskType::Shape/TextBox yet, so this cannot cause double-rendering.
-    if (fileVersion < 7 && (!a.texts.isEmpty() || !a.shapes.isEmpty())) {
+    // masks. This is now the ONLY place shape/text content ends up:
+    // Adjustments::shapes/texts no longer exist, so masks is the sole
+    // representation, avoiding the old double-render.
+    if (fileVersion < 7 && (!legacyTexts.isEmpty() || !legacyShapes.isEmpty())) {
         int insertAt = a.masks.size();
         for (int i = 0; i < a.masks.size(); ++i) {
             if (a.masks[i].type == MaskType::Paint) { insertAt = i; break; }
         }
         QVector<Mask> migrated;
-        for (const TextOp &t : a.texts) {
+        for (const TextOp &t : legacyTexts) {
             Mask m;
             m.type = MaskType::TextBox;
             m.visible = true;
@@ -660,7 +611,7 @@ bool load(const QString &imagePath, Adjustments &out) {
             m.textBoxBgPadding = t.bgPadding;
             migrated.append(m);
         }
-        for (const ShapeOp &s : a.shapes) {
+        for (const ShapeOp &s : legacyShapes) {
             Mask m;
             m.type = MaskType::Shape;
             m.visible = s.visible;

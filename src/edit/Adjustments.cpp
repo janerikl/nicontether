@@ -1350,7 +1350,6 @@ QString historyStepLabel(const Adjustments &prev, const Adjustments &curr) {
     if (curr.colorRanges != prev.colorRanges) return QStringLiteral("Color Range");
     if (curr.masks != prev.masks)             return QStringLiteral("Layer");
     if (curr.heals != prev.heals)             return QStringLiteral("Spot Heal");
-    if (curr.texts != prev.texts)             return QStringLiteral("Text");
     if (curr.rotationQuadrants != prev.rotationQuadrants)
         return QStringLiteral("Rotate");
     if (curr.flipH != prev.flipH || curr.flipV != prev.flipV)

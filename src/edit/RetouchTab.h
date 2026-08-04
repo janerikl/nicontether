@@ -108,7 +108,6 @@ public:
     void setShapeInnerRadiusRatio(double ratio);
     void setShapeFill(bool enabled, const QColor &color);
     void setShapeStroke(bool enabled, const QColor &color, double width);
-    const QVector<ShapeOp> &shapes() const { return m_adj.shapes; }
     const QSet<int> &selectedShapes() const { return m_selectedShapes; }
     // Select a shape (e.g. a Layers-panel row click). If it belongs to a
     // group, the whole group is selected, matching a canvas click on a
