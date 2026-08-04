@@ -891,6 +891,19 @@ void RetouchWindow::buildToolPanel() {
     auto *resetShortcut = new QShortcut(QKeySequence(Qt::Key_D), this);
     connect(resetShortcut, &QShortcut::activated, m_colorSwatch, &ColorSwatchWidget::resetColors);
 
+    // Photoshop-style fill shortcuts: Ctrl+Backspace = background color,
+    // Alt+Backspace = foreground color.
+    auto *fillBgShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Backspace), this);
+    connect(fillBgShortcut, &QShortcut::activated, this, [this] {
+        RetouchTab *tab = currentTab();
+        if (tab && tab->isReady()) tab->fillActiveMask(m_colorSwatch->backgroundColor());
+    });
+    auto *fillFgShortcut = new QShortcut(QKeySequence(Qt::ALT | Qt::Key_Backspace), this);
+    connect(fillFgShortcut, &QShortcut::activated, this, [this] {
+        RetouchTab *tab = currentTab();
+        if (tab && tab->isReady()) tab->fillActiveMask(m_colorSwatch->foregroundColor());
+    });
+
     connect(m_colorSwatch, &ColorSwatchWidget::foregroundColorChanged, this,
             [this](const QColor &c) {
                 RetouchTab *tab = currentTab();

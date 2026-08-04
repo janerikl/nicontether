@@ -123,6 +123,11 @@ public:
     // type == MaskType::Shape (sets Mask::shapeType on the new layer).
     int addMask(MaskType type, ShapeType shapeType = ShapeType::Rectangle);
     int addImageLayer(const QString &path); // append an image layer; returns its index
+    // Photoshop-style Ctrl/Alt+Backspace: flat-fills the active layer with
+    // `color`. Background -> inserts a new full-canvas Paint layer above it;
+    // Paint -> appends full coverage to its existing stroke. No-op for mask
+    // types that don't represent flat raster content (Shape/Text/Image/etc).
+    void fillActiveMask(const QColor &color);
     int duplicateActiveMask();              // copy + insert above; returns its index
     void selectMask(int index);             // -1 = none
     void deleteActiveMask();

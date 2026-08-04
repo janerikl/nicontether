@@ -682,6 +682,36 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             if (src.width() != w || src.height() != h)
                 src = src.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
             loc = applyLayerContent(src, m.adj);
+            // Ctrl+Backspace ("fill with color") on the Background layer
+            // paints directly into its own content rather than adding a new
+            // layer, reusing `stroke`/`paintColor` the same way a Paint mask
+            // does. Composited here (straight-alpha over `loc`) so it stays
+            // undo-safe (lives in `m_adj.masks`) without a synthetic layer.
+            if (!m.stroke.isEmpty()) {
+                std::vector<uchar> fillCov;
+                std::vector<QRgb> fillCol;
+                rasterizeBrush(m, fillCov, w, h, nullptr, nullptr, &fillCol);
+                for (int y = 0; y < h; ++y) {
+                    QRgba64 *line = reinterpret_cast<QRgba64 *>(loc.scanLine(y));
+                    for (int x = 0; x < w; ++x) {
+                        const size_t idx = size_t(y) * w + x;
+                        if (fillCov[idx] == 0) continue;
+                        const double a = fillCov[idx] / 255.0;
+                        const QRgb c = fillCol[idx];
+                        const QRgba64 dst = line[x];
+                        const double dstA = dst.alpha() / 65535.0;
+                        const double outA = a + dstA * (1.0 - a);
+                        if (outA <= 0.0) continue;
+                        const double sr = qRed(c) * 257.0, sg = qGreen(c) * 257.0,
+                                    sb = qBlue(c) * 257.0;
+                        line[x] = qRgba64(
+                            clamp16(int(std::lround((sr * a + dst.red() * dstA * (1.0 - a)) / outA))),
+                            clamp16(int(std::lround((sg * a + dst.green() * dstA * (1.0 - a)) / outA))),
+                            clamp16(int(std::lround((sb * a + dst.blue() * dstA * (1.0 - a)) / outA))),
+                            clamp16(int(std::lround(outA * 65535.0))));
+                    }
+                }
+            }
         } else if (paintLayer) {
             loc = QImage(w, h, QImage::Format_RGBA64);
             loc.fill(m.paintColor); // fallback fill; per-dab colors applied below
@@ -741,8 +771,8 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                     wgt = linearWeight(m, x / W, y / W);
                 else
                     wgt = covRead[size_t(y) * w + x] / 255.0;
-                if (imageLayer)
-                    wgt *= qAlpha(locLine[x]) / 255.0;
+                if (imageLayer || backgroundLayer)
+                    wgt *= locLine[x].alpha() / 65535.0;
                 wgt *= op;
                 if (wgt <= 0.0) continue;
                 QRgba64 src = line[x];

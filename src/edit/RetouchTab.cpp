@@ -402,7 +402,7 @@ void RetouchTab::rebuildGeom() {
         }
     }
 
-    m_canvas->setShowCheckerboard(!backgroundLayerVisible());
+    m_canvas->setShowCheckerboard(true);
 
     if (qMax(m_geomImg.width(), m_geomImg.height()) > kDisplayMaxDim) {
         m_scaled = m_geomImg.scaled(kDisplayMaxDim, kDisplayMaxDim,
@@ -2299,6 +2299,29 @@ void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm, bool erase) {
                                      m.paintColor.rgb()});
     pushMaskGizmo(); // show the painted coverage right away
     retone();
+}
+
+void RetouchTab::fillActiveMask(const QColor &color) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    // Full-canvas coverage regardless of aspect ratio: radius is normalized
+    // to image width (see BrushStrokePoint), so 3.0 comfortably covers the
+    // diagonal of any canvas up to ~3x taller than it is wide.
+    const BrushStrokePoint fillDab{QPointF(0.5, 0.5), false, 3.0, 1.0,
+                                   color.rgb()};
+
+    const MaskType type = m_adj.masks[m_activeMask].type;
+    if (type == MaskType::Background || type == MaskType::Paint) {
+        Mask &m = m_adj.masks[m_activeMask];
+        m.paintColor = color;
+        m.stroke.append(fillDab);
+    } else {
+        return; // no flat-fill mapping for this mask type
+    }
+
+    pushMaskGizmo();
+    retone();
+    markEdited();
+    emit masksChanged();
 }
 
 void RetouchTab::onMaskEditFinished() {
