@@ -139,7 +139,15 @@ public:
     void setActiveMaskVisible(bool visible);
     void setMaskVisible(int index, bool visible); // toggle any layer, not just the active one
     void setActiveMaskName(const QString &name);
+    void setMaskName(int index, const QString &name); // renames any layer, not just the active one
     void moveMask(int from, int to);                 // reorder within the stack
+    // Applies a full new ordering of masks() indices (original indices, e.g.
+    // from a Layers-panel drag); leftGroupIndices (also original indices)
+    // are layers whose drag pulled them out of their group's nested rows, so
+    // their groupId is cleared before the reorder is applied.
+    void reorderMasks(const QVector<int> &newOrder, const QVector<int> &leftGroupIndices = {});
+    void groupMasks(const QVector<int> &indices);     // tag layers as one group; kept contiguous
+    void ungroupMasks(const QVector<int> &indices);   // clear the group tag of the given layers' groups
     const QVector<Mask> &masks() const { return m_adj.masks; }
     int activeMaskIndex() const { return m_activeMask; }
 

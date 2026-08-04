@@ -121,6 +121,9 @@ public:
     void zoomFit();
     void setZoomPercent(double percent); // anchored to the view centre
     double zoomPercent() const { return m_scale * 100.0; }
+    // Pans (without changing zoom) so imagePt — in the same display-image
+    // space as ShapeMarker/setImage() — lands in the centre of the viewport.
+    void centerOnImagePoint(const QPointF &imagePt);
 
     // Canvas background (right-click the canvas background to change it).
     void setBackgroundColor(const QColor &color);

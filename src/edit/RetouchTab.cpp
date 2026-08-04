@@ -1026,6 +1026,16 @@ void RetouchTab::selectShape(int index) {
     }
     m_activeShape = index;
     updateShapeMarkers();
+    const ShapeOp &op = m_adj.shapes[index];
+    QPointF center;
+    if (op.type == ShapeType::Line) {
+        QPointF p1 = m_orientedToGeom.map(op.p1) * m_scaleFromGeom;
+        QPointF p2 = m_orientedToGeom.map(op.p2) * m_scaleFromGeom;
+        center = (p1 + p2) / 2.0;
+    } else {
+        center = m_orientedToGeom.map(op.rect.center()) * m_scaleFromGeom;
+    }
+    m_canvas->centerOnImagePoint(center);
     emit shapesChanged();
 }
 
@@ -1692,6 +1702,7 @@ void RetouchTab::kickoffImageLayerDecode(const QString &path) {
 int RetouchTab::duplicateActiveMask() {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return -1;
     Mask copy = m_adj.masks[m_activeMask];
+    copy.groupId.clear(); // a lone duplicate leaves its group, even if the original had one
     copy.name = copy.name.isEmpty() ? QStringLiteral("Layer copy")
                                     : copy.name + QStringLiteral(" copy");
     int insertAt = m_activeMask + 1;
@@ -1822,8 +1833,14 @@ void RetouchTab::setMaskVisible(int index, bool visible) {
 }
 
 void RetouchTab::setActiveMaskName(const QString &name) {
-    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
-    m_adj.masks[m_activeMask].name = name;
+    setMaskName(m_activeMask, name);
+}
+
+void RetouchTab::setMaskName(int index, const QString &name) {
+    if (index < 0 || index >= m_adj.masks.size()) return;
+    if (m_adj.masks[index].name == name) return;
+    m_adj.masks[index].name = name;
+    markEdited();
     emit masksChanged();
 }
 
@@ -1836,6 +1853,74 @@ void RetouchTab::moveMask(int from, int to) {
     else if (from < m_activeMask && m_activeMask <= to) --m_activeMask;
     else if (to <= m_activeMask && m_activeMask < from) ++m_activeMask;
     retone();
+    markEdited();
+    emit masksChanged();
+}
+
+// Applies a full new ordering of masks() indices (e.g. from a Layers-panel
+// drag), rather than a single from/to pair — needed because a drag can move
+// a whole contiguous group as one block.
+void RetouchTab::reorderMasks(const QVector<int> &newOrder, const QVector<int> &leftGroupIndices) {
+    if (newOrder.size() != m_adj.masks.size()) return;
+    for (int idx : leftGroupIndices)
+        if (idx >= 0 && idx < m_adj.masks.size()) m_adj.masks[idx].groupId.clear();
+    QVector<Mask> reordered;
+    reordered.reserve(newOrder.size());
+    int newActive = -1;
+    for (int i = 0; i < newOrder.size(); ++i) {
+        const int idx = newOrder[i];
+        if (idx < 0 || idx >= m_adj.masks.size()) return;
+        reordered.append(m_adj.masks[idx]);
+        if (idx == m_activeMask) newActive = i;
+    }
+    m_adj.masks = reordered;
+    m_activeMask = newActive;
+    retone();
+    markEdited();
+    emit masksChanged();
+}
+
+// Tags the given layers as one group and moves them to be contiguous in the
+// stack (at the position of the topmost/frontmost member), mirroring
+// groupSelectedShapes.
+void RetouchTab::groupMasks(const QVector<int> &indices) {
+    QSet<int> sel(indices.begin(), indices.end());
+    if (sel.size() < 2) return;
+    QList<int> sorted = sel.values();
+    std::sort(sorted.begin(), sorted.end());
+    for (int i : sorted)
+        if (i < 0 || i >= m_adj.masks.size()) return;
+    const int originalTop = sorted.last();
+
+    QVector<Mask> members;
+    members.reserve(sorted.size());
+    for (int i = sorted.size() - 1; i >= 0; --i) {
+        members.prepend(m_adj.masks[sorted[i]]);
+        m_adj.masks.removeAt(sorted[i]);
+    }
+    const int insertAt = originalTop - (sorted.size() - 1);
+
+    const QString groupId = QUuid::createUuid().toString();
+    for (Mask &m : members) m.groupId = groupId;
+    for (int i = 0; i < members.size(); ++i) m_adj.masks.insert(insertAt + i, members[i]);
+
+    m_activeMask = insertAt + members.size() - 1;
+    retone();
+    markEdited();
+    emit masksChanged();
+}
+
+// Clears the group tag of every layer sharing a group with the given
+// indices — the layers stay exactly where they are, they just stop acting
+// as one unit.
+void RetouchTab::ungroupMasks(const QVector<int> &indices) {
+    QSet<QString> groupIds;
+    for (int idx : indices)
+        if (idx >= 0 && idx < m_adj.masks.size() && !m_adj.masks[idx].groupId.isEmpty())
+            groupIds.insert(m_adj.masks[idx].groupId);
+    if (groupIds.isEmpty()) return;
+    for (Mask &m : m_adj.masks)
+        if (groupIds.contains(m.groupId)) m.groupId.clear();
     markEdited();
     emit masksChanged();
 }

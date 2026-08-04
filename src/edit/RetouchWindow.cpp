@@ -5,6 +5,7 @@
 #include "edit/CurveEditor.h"
 #include "edit/EditSidecar.h"
 #include "edit/RecentSessions.h"
+#include "edit/RecentFiles.h"
 #include "ui/FilmstripWidget.h"
 #include "ui/LevelsPanel.h"
 #include "ui/LayersPanel.h"
@@ -485,11 +486,17 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     // rebuildRecentSessionsMenu(); both separators hide when the list is empty.
     m_recentBeginSeparator = m_fileMenu->addSeparator();
     m_recentEndSeparator = m_fileMenu->addSeparator();
+    // Recently opened individual photos live in their own section, below the
+    // recent-sessions section, using the same insert-before-end-separator
+    // pattern via rebuildRecentFilesMenu().
+    m_recentFilesBeginSeparator = m_fileMenu->addSeparator();
+    m_recentFilesEndSeparator = m_fileMenu->addSeparator();
     m_fileMenu->addAction(m_saveAction);
     m_fileMenu->addAction(m_saveAllAction);
     m_fileMenu->addSeparator();
     m_fileMenu->addAction(m_exportAction);
     rebuildRecentSessionsMenu();
+    rebuildRecentFilesMenu();
 
     auto *editMenu = menuBar()->addMenu("Edit");
     m_undoAction = editMenu->addAction("Undo");
@@ -1816,7 +1823,11 @@ void RetouchWindow::buildLayersDock() {
     });
     connect(m_layersPanel, &LayersPanel::deleteMaskRequested, this, [this] {
         RetouchTab *tab = currentTab();
-        if (tab) { tab->deleteActiveMask(); refreshMaskPanel(); }
+        if (tab) {
+            if (tab->activeMaskIndex() == -1) tab->deleteBackground();
+            else tab->deleteActiveMask();
+            refreshMaskPanel();
+        }
     });
     connect(m_layersPanel, &LayersPanel::addMaskRequested, this, [this] {
         RetouchTab *tab = currentTab();
@@ -1882,17 +1893,36 @@ void RetouchWindow::buildLayersDock() {
     connect(m_layersPanel, &LayersPanel::maskVisibleChanged, this,
             [this](int index, bool visible) {
                 RetouchTab *tab = currentTab();
-                if (tab) { tab->setMaskVisible(index, visible); refreshMaskPanel(); }
+                if (tab) {
+                    if (index == -1) tab->setBackgroundVisible(visible);
+                    else tab->setMaskVisible(index, visible);
+                    refreshMaskPanel();
+                }
             });
     connect(m_layersPanel, &LayersPanel::maskNameChanged, this,
             [this](const QString &name) {
                 RetouchTab *tab = currentTab();
                 if (tab) tab->setActiveMaskName(name);
             });
-    connect(m_layersPanel, &LayersPanel::maskReorderRequested, this,
-            [this](int from, int to) {
+    connect(m_layersPanel, &LayersPanel::maskRenamed, this,
+            [this](int index, const QString &name) {
                 RetouchTab *tab = currentTab();
-                if (tab) { tab->moveMask(from, to); refreshMaskPanel(); }
+                if (tab) tab->setMaskName(index, name);
+            });
+    connect(m_layersPanel, &LayersPanel::maskReorderRequested, this,
+            [this](const QVector<int> &newOrder, const QVector<int> &leftGroupIndices) {
+                RetouchTab *tab = currentTab();
+                if (tab) { tab->reorderMasks(newOrder, leftGroupIndices); refreshMaskPanel(); }
+            });
+    connect(m_layersPanel, &LayersPanel::groupMasksRequested, this,
+            [this](const QVector<int> &indices) {
+                RetouchTab *tab = currentTab();
+                if (tab) { tab->groupMasks(indices); refreshMaskPanel(); }
+            });
+    connect(m_layersPanel, &LayersPanel::ungroupMasksRequested, this,
+            [this](const QVector<int> &indices) {
+                RetouchTab *tab = currentTab();
+                if (tab) { tab->ungroupMasks(indices); refreshMaskPanel(); }
             });
     connect(m_layersPanel, &LayersPanel::selectShapeRequested, this, [this](int index) {
         RetouchTab *tab = currentTab();
@@ -1932,7 +1962,7 @@ void RetouchWindow::refreshMaskPanel() {
     if (m_layersPanel) {
         if (ready) {
             m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex(),
-                                    !tab->path().isEmpty());
+                                    tab->hasBackgroundLayer(), tab->isBackgroundHidden());
             m_layersPanel->setShapes(tab->shapes(), tab->activeShapeIndex());
             m_layersPanel->setRemovals(tab->removals(), tab->activeRemovalIndex());
         } else {
@@ -2174,7 +2204,7 @@ void RetouchWindow::addToFilmstrip(const QString &path) {
     QImage thumb = EditSidecar::loadThumbnail(path);
     if (thumb.isNull())
         thumb = NefPreview::extract(path);
-    m_filmstrip->addCapture(path, thumb);
+    m_filmstrip->addCapture(path, thumb, EditSidecar::loadRating(path));
     m_filmstripPaths.insert(path);
     // Show a "saved edits exist" badge if a sidecar is already on disk.
     if (EditSidecar::exists(path))
@@ -2199,6 +2229,9 @@ void RetouchWindow::createUntitledTab(const QSize &size) {
 
 void RetouchWindow::openPhoto(const QString &path) {
     addToFilmstrip(path);
+
+    RecentFiles::add(QFileInfo(path).absoluteFilePath());
+    rebuildRecentFilesMenu();
 
     if (m_openTabs.contains(path)) {
         m_tabs->setCurrentWidget(m_openTabs.value(path));
@@ -2612,6 +2645,7 @@ void RetouchWindow::onRenameRequested(const QString &path) {
 
 void RetouchWindow::onRatingChanged(const QString &path, int rating) {
     EditSidecar::saveRating(path, rating);
+    m_filmstrip->setRating(path, rating);
     m_statusLabel->setText(rating > 0 ? QString("Rated %1 star(s)").arg(rating)
                                        : QString("Rating cleared"));
 }
@@ -2750,6 +2784,43 @@ void RetouchWindow::rebuildRecentSessionsMenu() {
     const bool hasRecent = !m_recentActions.isEmpty();
     if (m_recentBeginSeparator) m_recentBeginSeparator->setVisible(hasRecent);
     if (m_recentEndSeparator) m_recentEndSeparator->setVisible(hasRecent);
+}
+
+// Repopulate the recent-file entries between m_recentFilesBeginSeparator and
+// m_recentFilesEndSeparator, reflecting the current RecentFiles::load(). Both
+// separators are hidden when the list is empty.
+void RetouchWindow::rebuildRecentFilesMenu() {
+    if (!m_fileMenu) return;
+    for (QAction *a : m_recentFileActions) {
+        m_fileMenu->removeAction(a);
+        a->deleteLater();
+    }
+    m_recentFileActions.clear();
+
+    const QStringList recent = RecentFiles::load();
+    for (const QString &path : recent) {
+        auto *act = new QAction(QFileInfo(path).fileName(), this);
+        act->setToolTip(path);
+        connect(act, &QAction::triggered, this, [this, path] {
+            if (!QFileInfo::exists(path)) {
+                QMessageBox::warning(
+                    this, "Open Photo",
+                    "This file no longer exists:\n" + path);
+                RecentFiles::remove(path);
+                rebuildRecentFilesMenu();
+                return;
+            }
+            openPhoto(path);
+        });
+        // Insert before the closing separator so entries sit in the section.
+        m_fileMenu->insertAction(m_recentFilesEndSeparator, act);
+        m_recentFileActions.append(act);
+    }
+    m_fileMenu->setToolTipsVisible(true);
+
+    const bool hasRecent = !m_recentFileActions.isEmpty();
+    if (m_recentFilesBeginSeparator) m_recentFilesBeginSeparator->setVisible(hasRecent);
+    if (m_recentFilesEndSeparator) m_recentFilesEndSeparator->setVisible(hasRecent);
 }
 
 void RetouchWindow::onOpenPhotos() {

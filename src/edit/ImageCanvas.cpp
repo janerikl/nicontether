@@ -678,6 +678,14 @@ void ImageCanvas::zoomTo(double newScale, const QPointF &anchor) {
     emit zoomChanged(zoomPercent());
 }
 
+void ImageCanvas::centerOnImagePoint(const QPointF &imagePt) {
+    if (m_img.isNull()) return;
+    m_fit = false;
+    m_topLeft = QPointF(width() / 2.0, height() / 2.0) - imagePt * m_scale;
+    clampPan();
+    update();
+}
+
 void ImageCanvas::zoomFit() {
     m_fit = true;
     relayoutFit();

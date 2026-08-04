@@ -591,7 +591,7 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                     clamp16(int(std::lround(src.red() * inv + br * wgt))),
                     clamp16(int(std::lround(src.green() * inv + bg * wgt))),
                     clamp16(int(std::lround(src.blue() * inv + bb * wgt))),
-                    src.alpha());
+                    clamp16(int(std::lround(src.alpha() * inv + 65535.0 * wgt))));
             }
         }
         if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;

@@ -12,8 +12,9 @@
 
 namespace {
 constexpr int kBadgeRole = Qt::UserRole + 1;
+constexpr int kRatingRole = Qt::UserRole + 2;
 
-// Paints a small save-state dot in the top-right of each thumbnail.
+// Paints a small save-state dot and a star rating over each thumbnail.
 class BadgeDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
@@ -21,17 +22,35 @@ public:
                const QModelIndex &index) const override {
         QStyledItemDelegate::paint(p, opt, index);
         int b = index.data(kBadgeRole).toInt();
-        if (b == FilmstripWidget::NoBadge) return;
-        QColor c = (b == FilmstripWidget::Unsaved) ? QColor(255, 170, 0)
-                                                   : QColor(150, 150, 150);
-        const int d = 12;
-        QRect dot(opt.rect.right() - d - 6, opt.rect.top() + 6, d, d);
-        p->save();
-        p->setRenderHint(QPainter::Antialiasing, true);
-        p->setPen(QPen(QColor(0, 0, 0, 180), 1));
-        p->setBrush(c);
-        p->drawEllipse(dot);
-        p->restore();
+        if (b != FilmstripWidget::NoBadge) {
+            QColor c = (b == FilmstripWidget::Unsaved) ? QColor(255, 170, 0)
+                                                       : QColor(150, 150, 150);
+            const int d = 12;
+            QRect dot(opt.rect.right() - d - 6, opt.rect.top() + 6, d, d);
+            p->save();
+            p->setRenderHint(QPainter::Antialiasing, true);
+            p->setPen(QPen(QColor(0, 0, 0, 180), 1));
+            p->setBrush(c);
+            p->drawEllipse(dot);
+            p->restore();
+        }
+
+        int rating = index.data(kRatingRole).toInt();
+        if (rating > 0) {
+            QString stars;
+            for (int i = 0; i < rating; ++i) stars += QChar(0x2605); // filled star
+            p->save();
+            QFont f = p->font();
+            f.setPointSize(9);
+            p->setFont(f);
+            QRect textRect(opt.rect.left() + 4, opt.rect.top() + 93 - 16,
+                            opt.rect.width() - 8, 16);
+            p->setPen(Qt::black);
+            p->drawText(textRect.adjusted(1, 1, 1, 1), Qt::AlignLeft | Qt::AlignVCenter, stars);
+            p->setPen(QColor(255, 215, 0));
+            p->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, stars);
+            p->restore();
+        }
     }
 };
 } // namespace
@@ -78,6 +97,17 @@ void FilmstripWidget::setBadge(const QString &path, Badge state) {
     }
 }
 
+void FilmstripWidget::setRating(const QString &path, int rating) {
+    for (int i = 0; i < count(); ++i) {
+        QListWidgetItem *it = item(i);
+        if (it->data(Qt::UserRole).toString() == path) {
+            it->setData(kRatingRole, rating);
+            viewport()->update();
+            return;
+        }
+    }
+}
+
 void FilmstripWidget::renamePath(const QString &oldPath, const QString &newPath) {
     for (int i = 0; i < count(); ++i) {
         QListWidgetItem *it = item(i);
@@ -111,11 +141,12 @@ void FilmstripWidget::updateThumbnail(const QString &path, const QImage &image) 
     }
 }
 
-void FilmstripWidget::addCapture(const QString &path, const QImage &preview) {
+void FilmstripWidget::addCapture(const QString &path, const QImage &preview, int rating) {
     QPixmap pix = iconFor(preview);
 
     auto *item = new QListWidgetItem(QIcon(pix), QFileInfo(path).fileName());
     item->setData(Qt::UserRole, path);
+    if (rating > 0) item->setData(kRatingRole, rating);
     insertItem(0, item); // newest first
     setCurrentItem(item);
     scrollToTop();

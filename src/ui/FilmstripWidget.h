@@ -18,11 +18,13 @@ public:
     // Save-state badge drawn over a thumbnail.
     enum Badge { NoBadge = 0, Saved, Unsaved };
 
-    void addCapture(const QString &path, const QImage &preview);
+    void addCapture(const QString &path, const QImage &preview, int rating = 0);
     // Replace an existing thumbnail's icon (e.g. to reflect the latest edits).
     // No-op if no item matches the path.
     void updateThumbnail(const QString &path, const QImage &image);
     void setBadge(const QString &path, Badge state);
+    // Set the star rating (0-5) shown on a thumbnail. 0 clears it.
+    void setRating(const QString &path, int rating);
     // Update a thumbnail's path and displayed filename in place after an
     // on-disk rename. No-op if no item matches oldPath.
     void renamePath(const QString &oldPath, const QString &newPath);

@@ -70,6 +70,7 @@ private:
     void buildDock();
     void loadSession(const QString &dir);      // scan a folder for NEFs into the filmstrip
     void rebuildRecentSessionsMenu();          // repopulate the recent-session items in the File menu
+    void rebuildRecentFilesMenu();             // repopulate the recent-file items in the File menu
     void buildToolPanel(); // narrow left icon toolbar: Zoom / Crop / Spot Heal tools
     void deselectAllTools(); // uncheck all left-bar tools and exit their modes
     void buildToolOptionsBar(); // contextual per-tool options row under the main toolbar
@@ -105,6 +106,12 @@ private:
     class QAction *m_recentBeginSeparator = nullptr; // separator above the recent items
     class QAction *m_recentEndSeparator = nullptr;   // separator below the recent items
     QList<class QAction *> m_recentActions;          // current recent-session menu entries
+
+    // Anchors for the rebuildable recent-files section (individually opened
+    // photos, as distinct from recent session folders above).
+    class QAction *m_recentFilesBeginSeparator = nullptr;
+    class QAction *m_recentFilesEndSeparator = nullptr;
+    QList<class QAction *> m_recentFileActions;
 
     // View menu togglable panels.
     QToolBar *m_toolsBar = nullptr; // left icon bar: Zoom / Crop / Spot Heal

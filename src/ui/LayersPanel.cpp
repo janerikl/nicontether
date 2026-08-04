@@ -11,6 +11,7 @@
 #include <QAbstractItemView>
 #include <QComboBox>
 #include <QDockWidget>
+#include <QDropEvent>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -18,6 +19,7 @@
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
+#include <QPointer>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QTreeWidget>
@@ -28,6 +30,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QPushButton>
+#include <QSettings>
 #include <QSlider>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -155,9 +158,39 @@ private:
     QDockWidget *m_dock;
     QToolButton *m_chevron = nullptr;
 };
+
+// Blocks internal drag-and-drop from reparenting a row under another row
+// (i.e. joining/nesting a group via drag) — grouping only happens through
+// the Group/Ungroup buttons. Only "between top-level rows" drops are
+// accepted, so a drag can reorder ungrouped layers and whole groups (moved
+// as one block) but never nest one inside another.
+class MaskTreeWidget : public QTreeWidget {
+public:
+    using QTreeWidget::QTreeWidget;
+
+protected:
+    void dropEvent(QDropEvent *event) override {
+        QModelIndex idx = indexAt(event->position().toPoint());
+        if (idx.isValid() && (idx.parent().isValid() ||
+                              dropIndicatorPosition() == QAbstractItemView::OnItem)) {
+            event->ignore();
+            return;
+        }
+        QTreeWidget::dropEvent(event);
+    }
+};
 } // namespace
 
+namespace {
+constexpr char kCollapsedGroupsKey[] = "layersPanel/collapsedShapeGroups";
+constexpr char kCollapsedMaskGroupsKey[] = "layersPanel/collapsedMaskGroups";
+}
+
 LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
+    const QStringList collapsed = QSettings().value(kCollapsedGroupsKey).toStringList();
+    m_collapsedGroups = QSet<QString>(collapsed.begin(), collapsed.end());
+    const QStringList collapsedMasks = QSettings().value(kCollapsedMaskGroupsKey).toStringList();
+    m_collapsedMaskGroups = QSet<QString>(collapsedMasks.begin(), collapsedMasks.end());
     // Collapsed section rows have very little intrinsic width (just a
     // chevron + short label); without a floor here the whole panel would
     // shrink to that width whenever every section is collapsed, dragging
@@ -169,20 +202,30 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     root->setContentsMargins(6, 6, 6, 6);
     root->setSpacing(6);
 
-    // Layer list: checkable (visibility) rows, drag to reorder, Duplicate/Delete.
+    // Layer list: checkable (visibility) rows, drag to reorder (whole groups
+    // move as one block), double-click to rename, Duplicate/Delete/Group.
+    // A tree (not a flat list) since groups nest as collapsible parent rows
+    // with their members underneath, mirroring the Shapes section below.
     auto *selRow = new QHBoxLayout;
-    m_maskList = new QListWidget;
+    m_maskList = new MaskTreeWidget;
+    m_maskList->setHeaderHidden(true);
+    m_maskList->setColumnCount(1);
     m_maskList->setDragDropMode(QAbstractItemView::InternalMove);
-    m_maskList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_maskList->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_maskList->setEditTriggers(QAbstractItemView::EditKeyPressed | QAbstractItemView::DoubleClicked);
     m_maskList->setMinimumHeight(140);
     selRow->addWidget(m_maskList, 1);
     auto *listButtons = new QVBoxLayout;
     m_add = new QPushButton("Add");
     m_duplicate = new QPushButton("Duplicate");
     m_delete = new QPushButton("Delete");
+    m_groupMasks = new QPushButton("Group");
+    m_ungroupMasks = new QPushButton("Ungroup");
     listButtons->addWidget(m_add);
     listButtons->addWidget(m_duplicate);
     listButtons->addWidget(m_delete);
+    listButtons->addWidget(m_groupMasks);
+    listButtons->addWidget(m_ungroupMasks);
     listButtons->addStretch(1);
     selRow->addLayout(listButtons);
     root->addLayout(selRow, 1);
@@ -359,30 +402,93 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
             [this] { emit duplicateMaskRequested(); });
     connect(m_delete, &QPushButton::clicked, this,
             [this] { emit deleteMaskRequested(); });
-    connect(m_maskList, &QListWidget::currentRowChanged, this, [this](int i) {
-        if (!m_syncing)
-            emit selectMaskRequested(m_hasBackground && i == m_masks.size() ? -1 : i);
-    });
-    connect(m_maskList, &QListWidget::itemChanged, this,
-            [this](QListWidgetItem *item) {
+    connect(m_maskList, &QTreeWidget::currentItemChanged, this,
+            [this](QTreeWidgetItem *item, QTreeWidgetItem *) {
+                if (m_syncing || !item) return;
+                int idx = item->data(0, Qt::UserRole).toInt();
+                // A group's parent row has no mask of its own; select its
+                // first child instead.
+                if (idx == -1 && item->childCount() > 0)
+                    idx = item->child(0)->data(0, Qt::UserRole).toInt();
+                emit selectMaskRequested(idx == -2 ? -1 : idx); // -2 = Background row
+            });
+    connect(m_maskList, &QTreeWidget::itemChanged, this,
+            [this](QTreeWidgetItem *item, int) {
                 if (m_syncing) return;
-                int i = m_maskList->row(item);
-                if (m_hasBackground && i == m_masks.size()) {
-                    emit maskVisibleChanged(-1, item->checkState() == Qt::Checked); // Background row
+                int idx = item->data(0, Qt::UserRole).toInt();
+                if (idx == -1) return; // group parent row: no checkbox/name of its own
+                const bool checked = item->checkState(0) == Qt::Checked;
+                const bool wasChecked = item->data(0, Qt::UserRole + 2).toBool();
+                if (checked != wasChecked) {
+                    item->setData(0, Qt::UserRole + 2, checked);
+                    const int emitIdx = idx == -2 ? -1 : idx; // -2 = Background row
+                    QPointer<LayersPanel> self(this);
+                    QMetaObject::invokeMethod(
+                        this,
+                        [self, emitIdx, checked] {
+                            if (self) emit self->maskVisibleChanged(emitIdx, checked);
+                        },
+                        Qt::QueuedConnection);
                     return;
                 }
-                emit maskVisibleChanged(i, item->checkState() == Qt::Checked);
+                if (idx >= 0) emit maskRenamed(idx, item->text(0));
             });
     connect(m_maskList->model(), &QAbstractItemModel::rowsMoved, this,
-            [this](const QModelIndex &, int start, int, const QModelIndex &,
-                   int destRow) {
-                if (m_syncing) return;
-                const int bgRow = m_masks.size(); // Background is pinned to the last row
-                if (m_hasBackground && (start >= bgRow || destRow > bgRow))
-                    return; // can't move Background, or drop a layer below it
-                int to = destRow > start ? destRow - 1 : destRow;
-                emit maskReorderRequested(start, to);
+            [this](const QModelIndex &parent, int, int, const QModelIndex &destParent, int) {
+                if (m_syncing || parent.isValid() || destParent.isValid()) return;
+                // Flatten the tree back into a full masks() order: a group's
+                // parent row expands to its members' original indices, a
+                // plain row is its own index. Background (idx == -2) isn't
+                // part of masks() and is skipped.
+                QVector<int> order;
+                QVector<int> leftGroup; // original indices no longer nested under a group
+                for (int i = 0; i < m_maskList->topLevelItemCount(); ++i) {
+                    QTreeWidgetItem *item = m_maskList->topLevelItem(i);
+                    int idx = item->data(0, Qt::UserRole).toInt();
+                    if (idx == -2) continue; // Background
+                    if (idx == -1) { // group parent: append its members in order
+                        for (int c = 0; c < item->childCount(); ++c)
+                            order.append(item->child(c)->data(0, Qt::UserRole).toInt());
+                        continue;
+                    }
+                    order.append(idx);
+                    if (idx >= 0 && idx < m_masks.size() && !m_masks[idx].groupId.isEmpty())
+                        leftGroup.append(idx); // was grouped, now a top-level row
+                }
+                if (order.size() == m_masks.size()) emit maskReorderRequested(order, leftGroup);
             });
+    connect(m_maskList, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem *item) {
+        if (m_syncing) return;
+        QString groupId = item->data(0, Qt::UserRole + 1).toString();
+        if (groupId.isEmpty()) return;
+        m_collapsedMaskGroups.insert(groupId);
+        QSettings().setValue(kCollapsedMaskGroupsKey,
+                             QStringList(m_collapsedMaskGroups.begin(), m_collapsedMaskGroups.end()));
+    });
+    connect(m_maskList, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem *item) {
+        if (m_syncing) return;
+        QString groupId = item->data(0, Qt::UserRole + 1).toString();
+        if (groupId.isEmpty()) return;
+        m_collapsedMaskGroups.remove(groupId);
+        QSettings().setValue(kCollapsedMaskGroupsKey,
+                             QStringList(m_collapsedMaskGroups.begin(), m_collapsedMaskGroups.end()));
+    });
+    connect(m_groupMasks, &QPushButton::clicked, this, [this] {
+        QVector<int> indices;
+        for (QTreeWidgetItem *item : m_maskList->selectedItems()) {
+            int idx = item->data(0, Qt::UserRole).toInt();
+            if (idx >= 0) indices.append(idx);
+        }
+        if (indices.size() >= 2) emit groupMasksRequested(indices);
+    });
+    connect(m_ungroupMasks, &QPushButton::clicked, this, [this] {
+        QVector<int> indices;
+        for (QTreeWidgetItem *item : m_maskList->selectedItems()) {
+            int idx = item->data(0, Qt::UserRole).toInt();
+            if (idx >= 0) indices.append(idx);
+        }
+        if (!indices.isEmpty()) emit ungroupMasksRequested(indices);
+    });
     connect(m_name, &QLineEdit::editingFinished, this,
             [this] { if (!m_syncing) emit maskNameChanged(m_name->text()); });
     connect(m_opacity, &QSlider::valueChanged, this, [this](int v) {
@@ -443,12 +549,43 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 // expands a grouped shape's selection to the whole group.
                 if (idx < 0 && item->childCount() > 0)
                     idx = item->child(0)->data(0, Qt::UserRole).toInt();
-                if (idx >= 0) emit selectShapeRequested(idx);
+                if (idx >= 0) {
+                    QPointer<LayersPanel> self(this);
+                    QMetaObject::invokeMethod(
+                        this,
+                        [self, idx] {
+                            if (self) emit self->selectShapeRequested(idx);
+                        },
+                        Qt::QueuedConnection);
+                }
             });
     connect(m_shapeList, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *item, int) {
         if (m_syncing) return;
         int idx = item->data(0, Qt::UserRole).toInt();
-        if (idx >= 0) emit shapeVisibleChanged(idx, item->checkState(0) == Qt::Checked);
+        if (idx >= 0) {
+            bool visible = item->checkState(0) == Qt::Checked;
+            QPointer<LayersPanel> self(this);
+            QMetaObject::invokeMethod(
+                this,
+                [self, idx, visible] {
+                    if (self) emit self->shapeVisibleChanged(idx, visible);
+                },
+                Qt::QueuedConnection);
+        }
+    });
+    connect(m_shapeList, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem *item) {
+        if (m_syncing) return;
+        QString groupId = item->data(0, Qt::UserRole + 1).toString();
+        if (groupId.isEmpty()) return;
+        m_collapsedGroups.insert(groupId);
+        QSettings().setValue(kCollapsedGroupsKey, QStringList(m_collapsedGroups.begin(), m_collapsedGroups.end()));
+    });
+    connect(m_shapeList, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem *item) {
+        if (m_syncing) return;
+        QString groupId = item->data(0, Qt::UserRole + 1).toString();
+        if (groupId.isEmpty()) return;
+        m_collapsedGroups.remove(groupId);
+        QSettings().setValue(kCollapsedGroupsKey, QStringList(m_collapsedGroups.begin(), m_collapsedGroups.end()));
     });
     connect(m_groupShapes, &QPushButton::clicked, this,
             [this] { emit groupShapesRequested(); });
@@ -552,11 +689,29 @@ void LayersPanel::resetSections() {
         if (d) d->show();
 }
 
+// Builds the tree top-to-bottom to match the stack's top-to-bottom render
+// order: walks m_masks from the highest index down, creating a "Group"
+// parent row the first time each groupId is seen and nesting every
+// subsequent same-group layer under it, mirroring rebuildShapeList().
 void LayersPanel::rebuildList() {
     m_syncing = true;
     m_maskList->clear();
-    for (int i = 0; i < m_masks.size(); ++i) {
+    QHash<QString, QTreeWidgetItem *> groupItems;
+    for (int i = m_masks.size() - 1; i >= 0; --i) {
         const Mask &m = m_masks[i];
+        QTreeWidgetItem *parent = nullptr;
+        if (!m.groupId.isEmpty()) {
+            auto it = groupItems.constFind(m.groupId);
+            if (it == groupItems.constEnd()) {
+                auto *g = new QTreeWidgetItem(m_maskList, {QStringLiteral("Group")});
+                g->setData(0, Qt::UserRole, -1);
+                g->setData(0, Qt::UserRole + 1, m.groupId);
+                groupItems.insert(m.groupId, g);
+                parent = g;
+            } else {
+                parent = it.value();
+            }
+        }
         QString label = m.name.isEmpty()
                             ? QString("Layer %1 (%2)").arg(i + 1).arg(maskTypeLabel(m.type))
                             : m.name;
@@ -564,24 +719,28 @@ void LayersPanel::rebuildList() {
             if (m.sourceMissing) label += " (missing)";
             else if (m.sourceImageCache.isNull()) label += " (loading…)";
         }
-        auto *item = new QListWidgetItem(label);
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(m.visible ? Qt::Checked : Qt::Unchecked);
-        m_maskList->addItem(item);
+        auto *item = parent ? new QTreeWidgetItem(parent, {label})
+                             : new QTreeWidgetItem(m_maskList, {label});
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEditable);
+        item->setCheckState(0, m.visible ? Qt::Checked : Qt::Unchecked);
+        item->setData(0, Qt::UserRole, i);
+        item->setData(0, Qt::UserRole + 2, m.visible);
+        if (i == m_active) m_maskList->setCurrentItem(item);
     }
+    for (auto it = groupItems.constBegin(); it != groupItems.constEnd(); ++it)
+        it.value()->setExpanded(!m_collapsedMaskGroups.contains(it.key()));
     if (m_hasBackground) {
         // Pinned to the bottom of the stack, like Photoshop's Background layer.
-        // Unlike other rows it can't be dragged, but it can be hidden (eye
-        // checkbox) and deleted (see loadActive()'s isBackground handling).
-        auto *bg = new QListWidgetItem(QStringLiteral("Background \xF0\x9F\x94\x92")); // trailing lock emoji
+        // Unlike other rows it can't be dragged or grouped, but it can be
+        // hidden (eye checkbox) and deleted (see loadActive()'s isBackground
+        // handling).
+        auto *bg = new QTreeWidgetItem(m_maskList, {QStringLiteral("Background \xF0\x9F\x94\x92")}); // trailing lock emoji
         bg->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
-        bg->setCheckState(m_backgroundHidden ? Qt::Unchecked : Qt::Checked);
-        m_maskList->addItem(bg);
+        bg->setData(0, Qt::UserRole, -2);
+        bg->setCheckState(0, m_backgroundHidden ? Qt::Unchecked : Qt::Checked);
+        bg->setData(0, Qt::UserRole + 2, !m_backgroundHidden);
+        if (m_active == -1) m_maskList->setCurrentItem(bg);
     }
-    const int row = (m_active >= 0) ? m_active
-                    : (m_hasBackground ? m_masks.size() : -1);
-    if (row >= 0 && row < m_maskList->count())
-        m_maskList->setCurrentRow(row);
     m_syncing = false;
 }
 
@@ -603,6 +762,7 @@ void LayersPanel::rebuildShapeList() {
             if (it == groupItems.constEnd()) {
                 auto *g = new QTreeWidgetItem(m_shapeList, {QStringLiteral("Group")});
                 g->setData(0, Qt::UserRole, -1);
+                g->setData(0, Qt::UserRole + 1, s.groupId);
                 groupItems.insert(s.groupId, g);
                 parent = g;
             } else {
@@ -617,7 +777,8 @@ void LayersPanel::rebuildShapeList() {
         item->setData(0, Qt::UserRole, i);
         if (i == m_activeShape) m_shapeList->setCurrentItem(item);
     }
-    m_shapeList->expandAll();
+    for (auto it = groupItems.constBegin(); it != groupItems.constEnd(); ++it)
+        it.value()->setExpanded(!m_collapsedGroups.contains(it.key()));
     m_syncing = false;
 }
 

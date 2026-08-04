@@ -182,6 +182,10 @@ struct Mask {
     bool visible = true;
     double opacity = 1.0;      // 0..1, on top of the mask's own weight
     BlendMode blend = BlendMode::Normal;
+    // Layers sharing a non-empty groupId belong to the same group (assigned
+    // by RetouchTab::groupMasks, cleared by ungroupMasks) and are always kept
+    // contiguous in the stack, mirroring ShapeOp::groupId.
+    QString groupId;
 
     MaskType type = MaskType::Radial;
     bool inverted = false;
@@ -251,7 +255,7 @@ struct Mask {
     QVector<ErasePoint> eraseStrokes;
 
     bool operator==(const Mask &o) const {
-        return name == o.name && visible == o.visible &&
+        return name == o.name && visible == o.visible && groupId == o.groupId &&
                std::abs(opacity - o.opacity) < 1e-9 && blend == o.blend &&
                type == o.type && inverted == o.inverted &&
                std::abs(feather - o.feather) < 1e-9 && center == o.center &&

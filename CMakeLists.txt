@@ -47,6 +47,7 @@ add_executable(nikontether
     src/edit/ExportPreset.cpp
     src/edit/AdjustmentPreset.cpp
     src/edit/RecentSessions.cpp
+    src/edit/RecentFiles.cpp
     src/edit/ExportDialog.cpp
     src/edit/CurveEditor.cpp
     src/edit/EditSidecar.cpp

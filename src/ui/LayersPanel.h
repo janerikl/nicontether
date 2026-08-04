@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QImage>
+#include <QSet>
 #include <QVector>
 #include <QWidget>
 
@@ -89,7 +90,12 @@ signals:
                                    double scaleY, bool lockRatio);
     void maskVisibleChanged(int index, bool visible);
     void maskNameChanged(const QString &name);
-    void maskReorderRequested(int from, int to);
+    void maskRenamed(int index, const QString &name); // inline rename of any row in the list
+    // Full new order of masks() indices, plus any indices whose drag pulled
+    // them out of a group's nested rows (their groupId should be cleared).
+    void maskReorderRequested(const QVector<int> &newOrder, const QVector<int> &leftGroupIndices);
+    void groupMasksRequested(const QVector<int> &indices);
+    void ungroupMasksRequested(const QVector<int> &indices);
     void maskTypeChanged(MaskType type);
     void maskShapeChanged(bool inverted, double feather, double hardness,
                           double brushRadius, bool autoMask);
@@ -124,10 +130,16 @@ private:
     bool m_syncing = false;
     MaskAdjust m_curAdjust; // last-loaded active layer's adjustment, patched per-section
 
-    QListWidget *m_maskList = nullptr;
+    QTreeWidget *m_maskList = nullptr;
     QPushButton *m_add = nullptr;
     QPushButton *m_duplicate = nullptr;
     QPushButton *m_delete = nullptr;
+    QPushButton *m_groupMasks = nullptr;
+    QPushButton *m_ungroupMasks = nullptr;
+    // groupId -> user collapsed it, so rebuildList() can restore collapse
+    // state instead of always expanding every group (mirrors m_collapsedGroups
+    // for the Shapes section below).
+    QSet<QString> m_collapsedMaskGroups;
 
     QLineEdit *m_name = nullptr;
     QSlider *m_opacity = nullptr;
@@ -150,6 +162,9 @@ private:
     QTreeWidget *m_shapeList = nullptr;
     QPushButton *m_groupShapes = nullptr;
     QPushButton *m_ungroupShapes = nullptr;
+    // groupId -> user collapsed it, so rebuildShapeList() can restore
+    // collapse state instead of always expanding every group.
+    QSet<QString> m_collapsedGroups;
 
     QListWidget *m_removalList = nullptr;
     QPushButton *m_deleteRemoval = nullptr;
