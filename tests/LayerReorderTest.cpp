@@ -165,6 +165,59 @@ int main(int argc, char **argv) {
         assert(tab3.activeShapeIndex() == 0); // red's marker index
     }
 
+    // Regression test: activating the Shape tool (RetouchWindow's "U"
+    // shortcut calls RetouchTab::setShapeMode(true), which — via
+    // RetouchWindow::updateShapeOptionsFromTab() — also triggers a read of
+    // activeShapeStyle()/activeShapeIndex(), and setShapeMode() itself may
+    // trigger a marker refresh) must NEVER mutate m_adj.masks' order. A
+    // user's manual drag-reorder in the Layers panel (RetouchTab::
+    // reorderMasks, exercised above) must survive simply turning the Shape
+    // tool on/off, even though m_shapeMaskIndices (the marker<->masks index
+    // table used by shape-specific tools) goes stale until the next
+    // updateShapeMarkers() call after such a reorder.
+    {
+        RetouchTab tab4(QSize(8, 8));
+        assert(tab4.masks().size() == 1); // just Background
+        // Creation order: liila (purple) created first, then keltainen
+        // (yellow), then vihrea (green) -- each addMask() inserts at index
+        // 0, so immediately after creation masks() is
+        // [vihrea, keltainen, liila, Background] (newest-first).
+        tab4.addMask(MaskType::Shape, ShapeType::Rectangle); // liila
+        tab4.addMask(MaskType::Shape, ShapeType::Rectangle); // keltainen
+        tab4.addMask(MaskType::Shape, ShapeType::Rectangle); // vihrea
+        assert(tab4.masks().size() == 4);
+
+        // Manually reorder via the Layers panel's drag-drop entry point so
+        // liila (currently at masks index 2) ends up on top (index 0),
+        // matching the bug report's screenshot: liila (top/selected),
+        // keltainen, vihrea, Background.
+        tab4.reorderMasks({2, 1, 0, 3});
+        assert(tab4.masks()[0].groupId.isEmpty()); // sanity: still ungrouped
+        QVector<Mask> afterManualReorder = tab4.masks();
+        assert(afterManualReorder.size() == 4);
+
+        // Simulate the Shape tool being activated via the "U" shortcut:
+        // RetouchWindow's toggled-handler calls tab->setShapeMode(true),
+        // and RetouchWindow::updateShapeOptionsFromTab() (called right
+        // after) reads tab->activeShapeStyle()/activeShapeIndex() and the
+        // Layers panel is refreshed via updateShapeMarkers()'s marker
+        // rebuild -- none of which should touch m_adj.masks' order.
+        tab4.setShapeMode(true);
+        tab4.activeShapeStyle();     // read-only style query, as the toolbar does
+        (void)tab4.activeShapeIndex();
+
+        assert(tab4.masks().size() == afterManualReorder.size());
+        for (int i = 0; i < afterManualReorder.size(); ++i)
+            assert(tab4.masks()[i].type == afterManualReorder[i].type &&
+                   tab4.masks()[i].shapeRect == afterManualReorder[i].shapeRect &&
+                   tab4.masks()[i].groupId == afterManualReorder[i].groupId);
+
+        tab4.setShapeMode(false);
+        assert(tab4.masks().size() == afterManualReorder.size());
+        for (int i = 0; i < afterManualReorder.size(); ++i)
+            assert(tab4.masks()[i].shapeRect == afterManualReorder[i].shapeRect);
+    }
+
     printf("LayerReorderTest passed\n");
     return 0;
 }

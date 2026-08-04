@@ -2186,6 +2186,41 @@ void RetouchTab::reorderMasks(const QVector<int> &newOrder, const QVector<int> &
     }
     m_adj.masks = reordered;
     m_activeMask = newActive;
+    // A drag can move a Shape/TextBox layer to a new masks index without
+    // changing which mask is "active" (e.g. dragging some other, unselected
+    // row) -- m_shapeMaskIndices/m_textMaskIndices (the marker<->masks index
+    // tables shape/text-specific tools resolve marker indices through, see
+    // shapeMaskIndex()/textMaskIndex()) are only rebuilt by
+    // updateShapeMarkers()/updateTextMarkers(), which reorderMasks() never
+    // called until now. Left stale, any shape/text op issued right after a
+    // drag-reorder (raise/lower/select/duplicate/delete, all keyed by marker
+    // index from the canvas) would resolve against the *pre-reorder*
+    // masks-index layout and silently act on the wrong layer -- e.g.
+    // swapping the wrong pair of masks on the very next '+'/'-' nudge.
+    // Refresh both tables now, and re-resolve m_activeShape/m_activeText
+    // (marker indices, so they've gone stale the same way) the same way
+    // selectMask() does, so canvas selection handles stay on the
+    // just-reordered active layer instead of snapping onto whatever now
+    // occupies the old marker index.
+    updateShapeMarkers();
+    updateTextMarkers();
+    const MaskType activeType = (m_activeMask >= 0 && m_activeMask < m_adj.masks.size())
+                                     ? m_adj.masks[m_activeMask].type
+                                     : MaskType::None;
+    if (activeType == MaskType::Shape) {
+        m_activeShape = m_shapeMaskIndices.indexOf(m_activeMask);
+    } else {
+        m_activeShape = -1;
+    }
+    m_selectedShapes.clear();
+    if (m_activeShape >= 0) m_selectedShapes.insert(m_activeShape);
+    if (activeType == MaskType::TextBox) {
+        m_activeText = m_textMaskIndices.indexOf(m_activeMask);
+    } else {
+        m_activeText = -1;
+    }
+    updateShapeMarkers();
+    m_canvas->setActiveTextIndex(m_activeText);
     retone();
     markEdited();
     emit masksChanged();
