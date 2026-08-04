@@ -15,6 +15,12 @@ bool save(const QString &imagePath, const Adjustments &adj);
 // Fills `out` and returns true if a sidecar was read successfully.
 bool load(const QString &imagePath, Adjustments &out);
 
+// 1-5 star rating, stored alongside the adjustments in the same sidecar JSON
+// (preserved across save() calls even though it isn't part of Adjustments).
+// 0 = unrated. loadRating returns 0 if no sidecar or no rating field exists.
+int loadRating(const QString &imagePath);
+bool saveRating(const QString &imagePath, int rating);
+
 // A small cached JPEG rendering of the edited photo (`<image>.nte.thumb.jpg`),
 // so the filmstrip can show the edited look without re-decoding the RAW and
 // re-applying adjustments on every session load.

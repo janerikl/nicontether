@@ -53,6 +53,7 @@ add_executable(nikontether
     src/edit/HealTool.cpp
     src/edit/TextTool.cpp
     src/edit/ShapeTool.cpp
+    src/edit/InpaintTool.cpp
     src/edit/NewDocumentDialog.cpp
     src/edit/NewDocumentSize.cpp
 )

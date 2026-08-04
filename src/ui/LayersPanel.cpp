@@ -314,13 +314,31 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     shapesLayout->addLayout(shapeButtons);
     m_shapesSectionDock = addSection("layerSectionShapes", "Shapes", shapesContent);
 
-    // Stack the seven sections top-to-bottom.
+    // Remove Object section: a flat checkable list (no grouping/reordering
+    // needed), one row per cached content-aware fill, plus a Delete button —
+    // mirrors the masks list's eye-toggle + Delete pattern above.
+    auto *removalsContent = new QWidget;
+    auto *removalsLayout = new QVBoxLayout(removalsContent);
+    removalsLayout->setContentsMargins(4, 4, 4, 4);
+    m_removalList = new QListWidget;
+    m_removalList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_removalList->setMinimumHeight(100);
+    removalsLayout->addWidget(m_removalList, 1);
+    auto *removalButtons = new QHBoxLayout;
+    m_deleteRemoval = new QPushButton("Delete");
+    removalButtons->addWidget(m_deleteRemoval);
+    removalButtons->addStretch(1);
+    removalsLayout->addLayout(removalButtons);
+    m_removalsSectionDock = addSection("layerSectionRemovals", "Remove Object", removalsContent);
+
+    // Stack the eight sections top-to-bottom.
     m_inner->splitDockWidget(m_toneSectionDock, m_colorSectionDock, Qt::Vertical);
     m_inner->splitDockWidget(m_colorSectionDock, m_toneCurveSectionDock, Qt::Vertical);
     m_inner->splitDockWidget(m_toneCurveSectionDock, m_levelsSectionDock, Qt::Vertical);
     m_inner->splitDockWidget(m_levelsSectionDock, m_detailEffectsSectionDock, Qt::Vertical);
     m_inner->splitDockWidget(m_detailEffectsSectionDock, m_masksSectionDock, Qt::Vertical);
     m_inner->splitDockWidget(m_masksSectionDock, m_shapesSectionDock, Qt::Vertical);
+    m_inner->splitDockWidget(m_shapesSectionDock, m_removalsSectionDock, Qt::Vertical);
 
     root->addWidget(m_inner, 2);
 
@@ -349,7 +367,10 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
             [this](QListWidgetItem *item) {
                 if (m_syncing) return;
                 int i = m_maskList->row(item);
-                if (m_hasBackground && i == m_masks.size()) return; // Background has no visibility toggle
+                if (m_hasBackground && i == m_masks.size()) {
+                    emit maskVisibleChanged(-1, item->checkState() == Qt::Checked); // Background row
+                    return;
+                }
                 emit maskVisibleChanged(i, item->checkState() == Qt::Checked);
             });
     connect(m_maskList->model(), &QAbstractItemModel::rowsMoved, this,
@@ -400,10 +421,13 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 emitAdjust();
             });
     connect(m_detailEffectsPanel, &DetailEffectsPanel::adjustChanged, this,
-            [this](int clarity, int sharpen, int vignette) {
+            [this](int clarity, int sharpen, int vignette, int lightAngle,
+                   int lightIntensity) {
                 m_curAdjust.clarity = clarity;
                 m_curAdjust.sharpen = sharpen;
                 m_curAdjust.vignette = vignette;
+                m_curAdjust.lightAngle = lightAngle;
+                m_curAdjust.lightIntensity = lightIntensity;
                 emitAdjust();
             });
     connect(m_maskPanel, &MaskPanel::maskTypeChanged, this, &LayersPanel::maskTypeChanged);
@@ -431,6 +455,24 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     connect(m_ungroupShapes, &QPushButton::clicked, this,
             [this] { emit ungroupShapesRequested(); });
 
+    connect(m_removalList, &QListWidget::currentRowChanged, this, [this](int uiRow) {
+        if (m_syncing) return;
+        int idx = (uiRow >= 0 && uiRow < m_removals.size()) ? m_removals.size() - 1 - uiRow : -1;
+        emit selectRemovalRequested(idx);
+    });
+    connect(m_removalList, &QListWidget::itemChanged, this, [this](QListWidgetItem *item) {
+        if (m_syncing) return;
+        int uiRow = m_removalList->row(item);
+        int idx = m_removals.size() - 1 - uiRow;
+        if (idx >= 0 && idx < m_removals.size())
+            emit removalVisibleChanged(idx, item->checkState() == Qt::Checked);
+    });
+    connect(m_deleteRemoval, &QPushButton::clicked, this, [this] {
+        int uiRow = m_removalList->currentRow();
+        int idx = (uiRow >= 0 && uiRow < m_removals.size()) ? m_removals.size() - 1 - uiRow : -1;
+        if (idx >= 0) emit deleteRemovalRequested(idx);
+    });
+
     clear();
 }
 
@@ -439,9 +481,12 @@ void LayersPanel::clear() {
     m_active = -1;
     m_shapes.clear();
     m_activeShape = -1;
+    m_removals.clear();
+    m_activeRemoval = -1;
     m_syncing = true;
     m_maskList->clear();
     m_shapeList->clear();
+    m_removalList->clear();
     m_imagePosX->setValue(0);
     m_imagePosY->setValue(0);
     m_imageScaleX->setValue(100);
@@ -455,10 +500,12 @@ void LayersPanel::clear() {
     setEnabled(false);
 }
 
-void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground) {
+void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground,
+                            bool backgroundHidden) {
     m_masks = masks;
     m_active = activeIndex;
     m_hasBackground = hasBackground;
+    m_backgroundHidden = backgroundHidden;
     setEnabled(true);
     rebuildList();
     loadActive();
@@ -469,6 +516,13 @@ void LayersPanel::setShapes(const QVector<ShapeOp> &shapes, int activeIndex) {
     m_activeShape = activeIndex;
     setEnabled(true);
     rebuildShapeList();
+}
+
+void LayersPanel::setRemovals(const QVector<RemoveObjectOp> &removals, int activeIndex) {
+    m_removals = removals;
+    m_activeRemoval = activeIndex;
+    setEnabled(true);
+    rebuildRemovalList();
 }
 
 void LayersPanel::setLevelsPreviewImage(const QImage &img) {
@@ -482,7 +536,7 @@ void LayersPanel::setMaskBrushRadius(double radiusNorm) {
 QVector<QDockWidget *> LayersPanel::sectionDocks() const {
     return {m_toneSectionDock, m_colorSectionDock, m_toneCurveSectionDock,
             m_levelsSectionDock, m_detailEffectsSectionDock, m_masksSectionDock,
-            m_shapesSectionDock};
+            m_shapesSectionDock, m_removalsSectionDock};
 }
 
 QByteArray LayersPanel::innerDockState() const {
@@ -517,8 +571,11 @@ void LayersPanel::rebuildList() {
     }
     if (m_hasBackground) {
         // Pinned to the bottom of the stack, like Photoshop's Background layer.
+        // Unlike other rows it can't be dragged, but it can be hidden (eye
+        // checkbox) and deleted (see loadActive()'s isBackground handling).
         auto *bg = new QListWidgetItem(QStringLiteral("Background \xF0\x9F\x94\x92")); // trailing lock emoji
-        bg->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled); // no drag, no checkbox
+        bg->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+        bg->setCheckState(m_backgroundHidden ? Qt::Unchecked : Qt::Checked);
         m_maskList->addItem(bg);
     }
     const int row = (m_active >= 0) ? m_active
@@ -564,14 +621,33 @@ void LayersPanel::rebuildShapeList() {
     m_syncing = false;
 }
 
+// Flat list, most-recent removal first (top of stack), same eye-toggle
+// pattern as the masks list; each row's UI position maps to
+// m_removals.size() - 1 - uiRow to keep index 0 (oldest) at the bottom.
+void LayersPanel::rebuildRemovalList() {
+    m_syncing = true;
+    m_removalList->clear();
+    for (int i = m_removals.size() - 1; i >= 0; --i) {
+        const RemoveObjectOp &r = m_removals[i];
+        auto *item = new QListWidgetItem(QString("Object Removal %1").arg(i + 1));
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(r.visible ? Qt::Checked : Qt::Unchecked);
+        m_removalList->addItem(item);
+        if (i == m_activeRemoval) m_removalList->setCurrentItem(item);
+    }
+    m_deleteRemoval->setEnabled(m_activeRemoval >= 0 && m_activeRemoval < m_removals.size());
+    m_syncing = false;
+}
+
 void LayersPanel::loadActive() {
     const bool has = m_active >= 0 && m_active < m_masks.size();
     const bool isBackground = m_hasBackground && m_active == -1;
     m_syncing = true;
     for (QWidget *w : std::initializer_list<QWidget *>{
-             m_name, m_opacity, m_blend, m_delete, m_levelsPanel})
+             m_name, m_opacity, m_blend, m_levelsPanel})
         w->setEnabled(has);
     m_duplicate->setEnabled(has || isBackground);
+    m_delete->setEnabled(has || isBackground); // background delete handled specially, see deleteMaskRequested
     if (has) {
         const Mask &m = m_masks[m_active];
         m_name->setText(m.name);
@@ -586,7 +662,8 @@ void LayersPanel::loadActive() {
         m_toneCurvePanel->setCurve(m_curAdjust.curve);
         m_levelsPanel->setLevels(m_curAdjust.levels);
         m_detailEffectsPanel->setAdjustments(m_curAdjust.clarity, m_curAdjust.sharpen,
-                                              m_curAdjust.vignette);
+                                              m_curAdjust.vignette, m_curAdjust.lightAngle,
+                                              m_curAdjust.lightIntensity);
         m_maskPanel->setMask(m, true);
         const bool imageLayer = m.isImageLayer();
         m_imagePosX->setEnabled(imageLayer);

@@ -92,6 +92,13 @@ struct MaskAdjust {
     int sharpen = 0;
     int vignette = 0;
 
+    // Artificial directional lighting: fakes a light source raking across a
+    // surface estimated from the image's own luminance (see applyLighting in
+    // Adjustments.cpp). `lightAngle` (0..360°) only matters when
+    // `lightIntensity` (-100..100, 0 = off) is non-zero.
+    int lightAngle = 0;
+    int lightIntensity = 0;
+
     // Tone curve + Levels, same semantics as the global fields.
     QVector<QPointF> curve;
     Levels levels;
@@ -107,7 +114,7 @@ struct MaskAdjust {
                !saturation && !vibrance && !temperature && !tint &&
                std::abs(wbR - 1.0) < 1e-4 && std::abs(wbG - 1.0) < 1e-4 &&
                std::abs(wbB - 1.0) < 1e-4 && !denoise && !clarity && !sharpen &&
-               !vignette && !hasCurve() && levels.isIdentity();
+               !vignette && !lightIntensity && !hasCurve() && levels.isIdentity();
     }
     bool operator==(const MaskAdjust &o) const {
         return brightness == o.brightness && contrast == o.contrast &&
@@ -117,6 +124,7 @@ struct MaskAdjust {
                wbR == o.wbR && wbG == o.wbG && wbB == o.wbB &&
                denoise == o.denoise && clarity == o.clarity &&
                sharpen == o.sharpen && vignette == o.vignette &&
+               lightAngle == o.lightAngle && lightIntensity == o.lightIntensity &&
                curve == o.curve && levels == o.levels;
     }
     bool operator!=(const MaskAdjust &o) const { return !(*this == o); }
@@ -299,24 +307,6 @@ struct HealOp {
     }
 };
 
-// A single object-removal: a brush stroke (oriented-image coords, pre-crop,
-// same convention as HealOp) marking an unwanted object, plus the
-// content-aware fill computed once (via InpaintTool::inpaint) when the stroke
-// was released. Non-destructive: `mask`/`fill` are cached so redisplay never
-// recomputes the (expensive) inpaint; `rect` is `fill`'s placement.
-struct RemoveObjectOp {
-    QVector<QPointF> stroke; // brush path, for display/re-editing only
-    double radius = 20.0;    // brush radius used for this stroke
-    QRect rect;              // placement of `fill` (oriented-image coords)
-    QImage mask;             // full-oriented-image-size coverage mask
-    QImage fill;             // cached content-aware fill, sized to `rect`
-    bool visible = true;
-    bool operator==(const RemoveObjectOp &o) const {
-        return stroke == o.stroke && radius == o.radius && rect == o.rect &&
-               visible == o.visible; // mask/fill compared by identity is meaningless; rect+stroke suffice
-    }
-};
-
 // One text overlay. `pos` is in oriented-image pixel space, pre-crop (same
 // convention as HealOp), so text stays anchored to photo content across crop
 // changes. Font/outline/shadow metrics are absolute image-space pixels, same
@@ -424,6 +414,33 @@ struct ShapeOp {
     bool operator!=(const ShapeOp &o) const { return !(*this == o); }
 };
 
+// A content-aware "remove object" region: the user paints a brush stroke
+// over an unwanted object; on release, RetouchTab runs InpaintTool::inpaint
+// once and caches the result here so it never needs recomputing on repaint
+// (unlike heals, this doesn't re-derive the fill from the image each time —
+// the sampled/synthesized pixels are baked into `fill` at stroke-release
+// time). `rect`/`mask`/`fill` are in oriented-image coordinates, pre-crop
+// (same convention as HealOp/ShapeOp). `mask` and `fill` are both sized to
+// `rect`: `mask` marks which pixels of `rect` are part of the removed
+// region (alpha>0 = filled), `fill` holds the corresponding replacement
+// pixels. `visible` is the Layers-panel eye toggle, mirroring ShapeOp.
+struct RemoveObjectOp {
+    QVector<QPointF> stroke; // brush-stroke centreline, oriented-image coords (for redisplay/hit-testing)
+    double radius = 20.0;    // brush radius, oriented-image pixels
+    QRect rect;              // bounding box of mask/fill, oriented-image coords, pre-crop
+    QImage mask;             // same size as rect; alpha>0 marks filled pixels
+    QImage fill;             // same size as rect; cached inpainted result
+
+    bool visible = true;
+
+    bool operator==(const RemoveObjectOp &o) const {
+        return stroke == o.stroke && std::abs(radius - o.radius) < 1e-9 &&
+               rect == o.rect && mask == o.mask && fill == o.fill &&
+               visible == o.visible;
+    }
+    bool operator!=(const RemoveObjectOp &o) const { return !(*this == o); }
+};
+
 // Non-destructive edit parameters applied on top of an immutable base image.
 // Unless noted, sliders are in [-100, 100] with 0 = no change.
 struct Adjustments {
@@ -447,6 +464,13 @@ struct Adjustments {
     int clarity = 0;         // midtone local contrast
     int sharpen = 0;         // 0..100 unsharp amount
     int vignette = 0;        // darken (-) / lighten (+) the corners
+
+    // Artificial directional lighting: fakes a light source raking across a
+    // surface estimated from the image's own luminance (see applyLighting in
+    // Adjustments.cpp). `lightAngle` (0..360°) only matters when
+    // `lightIntensity` (-100..100, 0 = off) is non-zero.
+    int lightAngle = 0;
+    int lightIntensity = 0;
 
     // Flat-color painterly/posterize stylization: blurs away fine detail,
     // then quantizes the image to a small palette (fewer colours as the
@@ -479,8 +503,8 @@ struct Adjustments {
     // Shape overlays (oriented-image coords, pre-crop; see ShapeOp comment).
     QVector<ShapeOp> shapes;
 
-    // Object-removal ops (oriented-image coords; applied before crop, same
-    // stage as heals). See RemoveObjectOp comment.
+    // Content-aware object-removal regions (oriented-image coords, pre-crop;
+    // applied same stage as heals, before crop; see RemoveObjectOp comment).
     QVector<RemoveObjectOp> removals;
 
     // Geometry
@@ -488,14 +512,18 @@ struct Adjustments {
     bool flipH = false;
     bool flipV = false;
     QRect cropRect;            // oriented-image coords; null = no crop
+    double cropAngle = 0.0;    // degrees, clockwise; straightens image before cropRect is applied
 
     // Canvas background color (view-only — never affects the rendered/exported
     // image, only what ImageCanvas paints behind the photo). Persisted per-image
     // in the sidecar like everything else here, so it's just carried along.
     QColor backgroundColor = QColor(30, 30, 30);
 
-    // Background (base) layer visibility/deletion — view/composite-only like
-    // backgroundColor above, persisted per-image in the sidecar.
+    // Base (background) layer visibility/deletion, toggled from the Layers
+    // panel's pinned Background row. `backgroundDeleted` is a permanent,
+    // one-way version of hidden — once set, the base photo is dropped from
+    // compositing entirely (rendered transparent) and the Background row
+    // stops appearing, leaving only whatever mask/shape/text layers remain.
     bool backgroundHidden = false;
     bool backgroundDeleted = false;
 
@@ -509,6 +537,7 @@ struct Adjustments {
                wbR == o.wbR && wbG == o.wbG && wbB == o.wbB &&
                denoise == o.denoise && clarity == o.clarity &&
                sharpen == o.sharpen && vignette == o.vignette &&
+               lightAngle == o.lightAngle && lightIntensity == o.lightIntensity &&
                flatStyle == o.flatStyle &&
                curve == o.curve && levels == o.levels &&
                colorRanges == o.colorRanges &&
@@ -516,6 +545,7 @@ struct Adjustments {
                shapes == o.shapes && removals == o.removals &&
                rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
                flipV == o.flipV && cropRect == o.cropRect &&
+               std::abs(cropAngle - o.cropAngle) < 1e-9 &&
                backgroundColor == o.backgroundColor &&
                backgroundHidden == o.backgroundHidden &&
                backgroundDeleted == o.backgroundDeleted;
@@ -543,6 +573,15 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
                         QVector<BrushRasterCache> *brushCache = nullptr,
                         int maskSnapshotIndex = -1,
                         QImage *maskSnapshotOut = nullptr);
+
+// Composites only MaskType::Paint layers (the free-draw brush/paint tool) on
+// top of `img`. Call this after text/shapes have been composited so paint
+// strokes render above other elements by default; applyAdjustments excludes
+// Paint layers from its own masks pass for this reason. `brushCache`, if
+// given, is used/updated for incremental stroke rasterization, same as
+// applyAdjustments.
+void applyPaintMasks(QImage &img, const QVector<Mask> &masks,
+                     QVector<BrushRasterCache> *brushCache = nullptr);
 
 // Build a tinted, semi-transparent overlay (ARGB, alpha = mask weight × maxAlpha)
 // visualizing a single mask's coverage, for live "see the mask" feedback while

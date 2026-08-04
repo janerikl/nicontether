@@ -441,9 +441,12 @@ QRectF imageLayerFrame(int canvasW, int canvasH, const Mask &m) {
 // LayersPanel list shows index 0 at the top row), but compositing must apply
 // the bottom-most layer first so a higher layer paints over a lower one —
 // hence the reverse loop.
+enum class MaskPass { All, ExcludePaint, PaintOnly };
+
 void applyMasks(QImage &img, const QVector<Mask> &masks,
                QVector<BrushRasterCache> *brushCache = nullptr,
-               int snapshotAfterIndex = -1, QImage *snapshotOut = nullptr) {
+               int snapshotAfterIndex = -1, QImage *snapshotOut = nullptr,
+               MaskPass pass = MaskPass::All) {
     const int w = img.width(), h = img.height();
     if (w == 0 || h == 0) return;
     const double W = w;
@@ -452,6 +455,11 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         brushCache->resize(masks.size());
     for (int mi = masks.size() - 1; mi >= 0; --mi) {
         const Mask &m = masks[mi];
+        if ((pass == MaskPass::ExcludePaint && m.type == MaskType::Paint) ||
+            (pass == MaskPass::PaintOnly && m.type != MaskType::Paint)) {
+            if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
+            continue;
+        }
         if (!m.visible || m.opacity <= 0.0) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
@@ -736,6 +744,128 @@ void applyVignette(QImage &img, int vignette) {
     }
 }
 
+// Artificial directional lighting: derives a fake "height map" from the
+// image's own (blurred) luminance, differentiates it to get fake surface
+// normals, and shades those normals against a light direction set by `angle`.
+// Runs at a downsampled working resolution (<=512px longest edge) so cost is
+// independent of source resolution; only the final per-pixel multiply runs
+// at full res, matching applyVignette's cost profile.
+void applyLighting(QImage &img, int angle, int intensity) {
+    if (intensity == 0) return;
+    const int w = img.width(), h = img.height();
+    if (w < 2 || h < 2) return;
+
+    const int longEdge = std::max(w, h);
+    const int workLong = std::min(longEdge, 512);
+    const double scale = double(workLong) / double(longEdge);
+    const int ww = std::max(2, int(std::lround(w * scale)));
+    const int wh = std::max(2, int(std::lround(h * scale)));
+
+    // Downsampled luminance buffer (box-average of the source, cheap enough
+    // for a 512px-capped target regardless of source size).
+    std::vector<float> luma(size_t(ww) * wh, 0.0f);
+    {
+        std::vector<double> sum(size_t(ww) * wh, 0.0);
+        std::vector<int> count(size_t(ww) * wh, 0);
+        for (int y = 0; y < h; ++y) {
+            const QRgba64 *line = reinterpret_cast<const QRgba64 *>(img.constScanLine(y));
+            int wy = std::min(wh - 1, int(y * scale));
+            for (int x = 0; x < w; ++x) {
+                const QRgba64 p = line[x];
+                int wx = std::min(ww - 1, int(x * scale));
+                double l = 0.2126 * p.red() + 0.7152 * p.green() + 0.0722 * p.blue();
+                size_t idx = size_t(wy) * ww + wx;
+                sum[idx] += l;
+                count[idx] += 1;
+            }
+        }
+        for (size_t i = 0; i < sum.size(); ++i)
+            luma[i] = count[i] > 0 ? float(sum[i] / count[i]) : 0.0f;
+    }
+
+    // Height proxy: small box blur of the luminance buffer (avoids amplifying
+    // sensor/JPEG noise into speckle when we differentiate it next).
+    auto at = [&](const std::vector<float> &buf, int x, int y) -> float {
+        x = std::clamp(x, 0, ww - 1);
+        y = std::clamp(y, 0, wh - 1);
+        return buf[size_t(y) * ww + x];
+    };
+    std::vector<float> height(luma.size(), 0.0f);
+    {
+        const int r = 2;
+        for (int y = 0; y < wh; ++y) {
+            for (int x = 0; x < ww; ++x) {
+                float s = 0.0f;
+                int n = 0;
+                for (int dy = -r; dy <= r; ++dy)
+                    for (int dx = -r; dx <= r; ++dx) {
+                        s += at(luma, x + dx, y + dy);
+                        ++n;
+                    }
+                height[size_t(y) * ww + x] = s / n;
+            }
+        }
+    }
+
+    // Sobel gradient -> fake normal -> Lambertian shading multiplier, kept at
+    // working resolution; upsampled (bilinear) into the full-res multiply.
+    const double kGradientScale = 1.0 / (8.0 * 65535.0 / 4.0);
+    const double kZ = 0.8;   // implied "steepness" of the fake relief
+    const double lightZ = 0.5; // light elevation; keeps it off edge-on/overhead
+    const double angleRad = angle * M_PI / 180.0;
+    double lx = std::cos(angleRad), ly = std::sin(angleRad), lz = lightZ;
+    double llen = std::sqrt(lx * lx + ly * ly + lz * lz);
+    lx /= llen; ly /= llen; lz /= llen;
+    // Baseline dot product for a perfectly flat surface (N = (0,0,1)); a flat
+    // image must produce zero shading change, so this is subtracted below.
+    const double flatDot = lz;
+    const double strength = intensity / 100.0;
+    const double kGain = 0.6;
+
+    std::vector<float> factor(luma.size(), 1.0f);
+    for (int y = 0; y < wh; ++y) {
+        for (int x = 0; x < ww; ++x) {
+            double gx = (at(height, x + 1, y - 1) + 2 * at(height, x + 1, y) + at(height, x + 1, y + 1)) -
+                        (at(height, x - 1, y - 1) + 2 * at(height, x - 1, y) + at(height, x - 1, y + 1));
+            double gy = (at(height, x - 1, y + 1) + 2 * at(height, x, y + 1) + at(height, x + 1, y + 1)) -
+                        (at(height, x - 1, y - 1) + 2 * at(height, x, y - 1) + at(height, x + 1, y - 1));
+            double dx = gx * kGradientScale, dy = gy * kGradientScale;
+            double nx = -dx, ny = -dy, nz = kZ;
+            double nlen = std::sqrt(nx * nx + ny * ny + nz * nz);
+            nx /= nlen; ny /= nlen; nz /= nlen;
+            double ndotl = (nx * lx + ny * ly + nz * lz) - flatDot;
+            double f = 1.0 + strength * ndotl * kGain;
+            factor[size_t(y) * ww + x] = float(std::clamp(f, 0.3, 2.0));
+        }
+    }
+
+    // Bilinear-sample the working-res factor map at full resolution and
+    // multiply into RGB, same shape as applyVignette's final loop.
+    for (int y = 0; y < h; ++y) {
+        QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
+        double fy = (y + 0.5) * scale - 0.5;
+        int y0 = std::clamp(int(std::floor(fy)), 0, wh - 1);
+        int y1 = std::min(y0 + 1, wh - 1);
+        double ty = std::clamp(fy - y0, 0.0, 1.0);
+        for (int x = 0; x < w; ++x) {
+            double fx = (x + 0.5) * scale - 0.5;
+            int x0 = std::clamp(int(std::floor(fx)), 0, ww - 1);
+            int x1 = std::min(x0 + 1, ww - 1);
+            double tx = std::clamp(fx - x0, 0.0, 1.0);
+            double f00 = factor[size_t(y0) * ww + x0];
+            double f10 = factor[size_t(y0) * ww + x1];
+            double f01 = factor[size_t(y1) * ww + x0];
+            double f11 = factor[size_t(y1) * ww + x1];
+            double f = f00 * (1 - tx) * (1 - ty) + f10 * tx * (1 - ty) +
+                       f01 * (1 - tx) * ty + f11 * tx * ty;
+            QRgba64 p = line[x];
+            line[x] = qRgba64(clamp16(int(p.red() * f)),
+                              clamp16(int(p.green() * f)),
+                              clamp16(int(p.blue() * f)), p.alpha());
+        }
+    }
+}
+
 // Flat-color painterly/posterize stylization. Blurs away fine detail/noise
 // (so regions merge into flat shapes rather than posterizing pixel noise),
 // then quantizes the image to a small palette via k-means, mapping every
@@ -843,6 +973,7 @@ QImage applyLayerContent(const QImage &src, const MaskAdjust &a) {
     applyDenoise(img, a.denoise);
     applyClarity(img, a.clarity);
     applySharpen(img, a.sharpen);
+    applyLighting(img, a.lightAngle, a.lightIntensity);
     applyVignette(img, a.vignette);
     return img;
 }
@@ -965,11 +1096,17 @@ bool Adjustments::hasCurve() const {
     return false;
 }
 
+void applyPaintMasks(QImage &img, const QVector<Mask> &masks,
+                     QVector<BrushRasterCache> *brushCache) {
+    if (masks.isEmpty()) return;
+    applyMasks(img, masks, brushCache, -1, nullptr, MaskPass::PaintOnly);
+}
+
 bool hasToneEdits(const Adjustments &adj) {
     return adj.brightness || adj.contrast || adj.highlights || adj.shadows ||
            adj.saturation || adj.vibrance || adj.temperature || adj.tint ||
            adj.denoise || adj.clarity || adj.sharpen || adj.vignette ||
-           adj.flatStyle ||
+           adj.lightIntensity || adj.flatStyle ||
            std::abs(adj.wbR - 1.0) > 1e-4 || std::abs(adj.wbG - 1.0) > 1e-4 ||
            std::abs(adj.wbB - 1.0) > 1e-4 || adj.hasCurve() ||
            !adj.levels.isIdentity() || !adj.colorRanges.isEmpty() ||
@@ -1010,13 +1147,18 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
     }
 
     // --- Additional layers (blend per-layer full content by weight) ---
+    // Paint-layer strokes are excluded here and composited later, on top of
+    // text/shapes (see applyPaintMasks), so the paint/brush tool draws above
+    // other elements by default instead of being baked under them.
     if (!adj.masks.isEmpty())
-        applyMasks(img, adj.masks, brushCache, maskSnapshotIndex, maskSnapshotOut);
+        applyMasks(img, adj.masks, brushCache, maskSnapshotIndex, maskSnapshotOut,
+                  MaskPass::ExcludePaint);
 
     // --- Denoise / clarity / sharpen / vignette (base layer only; layers have their own) ---
     applyDenoise(img, adj.denoise);
     applyClarity(img, adj.clarity);
     applySharpen(img, adj.sharpen);
+    applyLighting(img, adj.lightAngle, adj.lightIntensity);
     applyVignette(img, adj.vignette);
     applyFlatStyle(img, adj.flatStyle);
 
@@ -1039,6 +1181,8 @@ QString historyStepLabel(const Adjustments &prev, const Adjustments &curr) {
     if (curr.clarity != prev.clarity)         return QStringLiteral("Clarity");
     if (curr.sharpen != prev.sharpen)         return QStringLiteral("Sharpen");
     if (curr.vignette != prev.vignette)       return QStringLiteral("Vignette");
+    if (curr.lightAngle != prev.lightAngle || curr.lightIntensity != prev.lightIntensity)
+        return QStringLiteral("Lighting");
     if (curr.flatStyle != prev.flatStyle)     return QStringLiteral("Style");
     if (curr.curve != prev.curve)             return QStringLiteral("Curve");
     if (curr.levels != prev.levels)           return QStringLiteral("Levels");

@@ -552,6 +552,30 @@ void ImageCanvas::setEraseMode(bool on) {
     update();
 }
 
+void ImageCanvas::setRemoveObjectMode(bool on) {
+    m_removeObjectMode = on;
+    if (!on) m_removeObjectDragging = false;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+void ImageCanvas::setRemoveObjectBusy(bool busy) {
+    m_removeObjectBusy = busy;
+    if (busy) m_removeObjectDragging = false;
+    update();
+}
+
+void ImageCanvas::setRemovalMarkers(const QVector<RemovalMarker> &markers) {
+    m_removalMarkers = markers;
+    if (m_activeRemovalIndex >= m_removalMarkers.size()) m_activeRemovalIndex = -1;
+    update();
+}
+
+void ImageCanvas::setActiveRemovalIndex(int index) {
+    m_activeRemovalIndex = index;
+    update();
+}
+
 void ImageCanvas::setZoomMode(bool on) {
     m_zoomMode = on;
     if (on) setCursor(zoomCursor());
@@ -611,13 +635,14 @@ void ImageCanvas::setCropAspect(double widthOverHeight) {
     if (m_cropAspect > 0 && !QRect(m_p0, m_p1).normalized().isEmpty()) {
         m_p1 = constrainedCorner(m_p1);
         update();
-        emit cropSelected(selectionInImage());
+        emit cropSelected(selectionInImage(), m_cropAngle);
     }
 }
 
 void ImageCanvas::clearSelection() {
     m_drag = Drag::None;
     m_p0 = m_p1 = QPoint();
+    m_cropAngle = 0.0;
     update();
 }
 
@@ -731,18 +756,34 @@ QPoint ImageCanvas::constrainedCorner(const QPoint &pos) const {
     return m_p0 + QPoint(int(sx * w), int(sy * h));
 }
 
+QPointF ImageCanvas::cropLocalPoint(const QPoint &pos) const {
+    QRect r = selectionRect();
+    if (m_cropAngle == 0.0 || r.isEmpty()) return QPointF(pos);
+    QPointF center = r.center();
+    QTransform t;
+    t.translate(center.x(), center.y());
+    t.rotate(-m_cropAngle);
+    t.translate(-center.x(), -center.y());
+    return t.map(QPointF(pos));
+}
+
+bool ImageCanvas::cropRectContains(const QPoint &pos) const {
+    return selectionRect().contains(cropLocalPoint(pos).toPoint());
+}
+
 ImageCanvas::Handle ImageCanvas::handleAt(const QPoint &pos) const {
     QRect r = selectionRect();
     if (r.isEmpty()) return Handle::None;
+    QPointF local = cropLocalPoint(pos);
     const int t = 10; // grab tolerance in widget px
-    auto near = [&](int a, int b) { return std::abs(a - b) <= t; };
-    bool onLeft   = near(pos.x(), r.left());
-    bool onRight  = near(pos.x(), r.right());
-    bool onTop    = near(pos.y(), r.top());
-    bool onBottom = near(pos.y(), r.bottom());
+    auto near = [&](double a, double b) { return std::abs(a - b) <= t; };
+    bool onLeft   = near(local.x(), r.left());
+    bool onRight  = near(local.x(), r.right());
+    bool onTop    = near(local.y(), r.top());
+    bool onBottom = near(local.y(), r.bottom());
     // Only count edge hits when the other axis is within the rect span (± tol).
-    bool inX = pos.x() >= r.left() - t && pos.x() <= r.right() + t;
-    bool inY = pos.y() >= r.top() - t && pos.y() <= r.bottom() + t;
+    bool inX = local.x() >= r.left() - t && local.x() <= r.right() + t;
+    bool inY = local.y() >= r.top() - t && local.y() <= r.bottom() + t;
     if (onTop && onLeft)       return Handle::TopLeft;
     if (onTop && onRight)      return Handle::TopRight;
     if (onBottom && onLeft)    return Handle::BottomLeft;
@@ -752,6 +793,22 @@ ImageCanvas::Handle ImageCanvas::handleAt(const QPoint &pos) const {
     if (onLeft && inY)         return Handle::Left;
     if (onRight && inY)        return Handle::Right;
     return Handle::None;
+}
+
+// Photoshop-style rotate ring: only the four corners rotate (not the edge
+// midpoints), and only in the ring just beyond the corner's resize-handle
+// tolerance, so a normal corner-resize drag still takes priority.
+bool ImageCanvas::cropInRotateZone(const QPoint &pos) const {
+    QRect r = selectionRect();
+    if (r.isEmpty()) return false;
+    QPointF local = cropLocalPoint(pos);
+    const double innerT = 10.0, outerT = 26.0;
+    const QPointF corners[4] = { r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight() };
+    for (const QPointF &c : corners) {
+        double d = std::hypot(local.x() - c.x(), local.y() - c.y());
+        if (d > innerT && d <= outerT) return true;
+    }
+    return false;
 }
 
 QRect ImageCanvas::selectionInImage() const {
@@ -783,17 +840,43 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         return;
     }
     QRect tr = targetRect();
+    if (m_showCheckerboard) {
+        static const int kTile = 10;
+        static QPixmap checker;
+        if (checker.isNull()) {
+            checker = QPixmap(kTile * 2, kTile * 2);
+            QPainter cp(&checker);
+            cp.fillRect(checker.rect(), QColor(90, 90, 90));
+            cp.fillRect(0, 0, kTile, kTile, QColor(120, 120, 120));
+            cp.fillRect(kTile, kTile, kTile, kTile, QColor(120, 120, 120));
+        }
+        p.drawTiledPixmap(tr, checker);
+    }
     p.setRenderHint(QPainter::SmoothPixmapTransform, m_scale < 1.0);
     p.drawImage(tr, m_img);
 
     if (m_cropMode && (m_drag != Drag::None || !selectionRect().isEmpty())) {
-        QRect sel = selectionRect().intersected(tr);
+        QRect sel = selectionRect();
         if (!sel.isEmpty()) {
-            QRegion outside(tr);
-            outside = outside.subtracted(QRegion(sel));
-            p.setClipRegion(outside);
-            p.fillRect(tr, QColor(0, 0, 0, 120));
-            p.setClipping(false);
+            p.save();
+            QPointF center = sel.center();
+            p.translate(center);
+            p.rotate(m_cropAngle);
+            p.translate(-center);
+            // Darken everything outside sel but inside tr. tr is mapped into
+            // sel's local (unrotated) frame so it lines up correctly once the
+            // painter's own rotation above is applied.
+            QTransform inv;
+            inv.translate(center.x(), center.y());
+            inv.rotate(-m_cropAngle);
+            inv.translate(-center.x(), -center.y());
+            QPainterPath outside;
+            outside.addPolygon(inv.map(QPolygonF(QRectF(tr))));
+            outside.closeSubpath();
+            QPainterPath selPath;
+            selPath.addRect(sel);
+            outside = outside.subtracted(selPath);
+            p.fillPath(outside, QColor(0, 0, 0, 120));
             p.setPen(QPen(Qt::white, 1, Qt::DashLine));
             p.drawRect(sel);
 
@@ -823,6 +906,7 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
             p.drawLine(mx - leg / 2, b, mx + leg / 2, b);
             p.drawLine(l, my - leg / 2, l, my + leg / 2);
             p.drawLine(r, my - leg / 2, r, my + leg / 2);
+            p.restore();
         }
     }
 
@@ -860,6 +944,39 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         p.setPen(QPen(QColor(255, 90, 90, 220), 1));
         p.setBrush(QColor(255, 60, 60, 40));
         p.drawEllipse(QPointF(m_mousePos), rad, rad);
+    }
+
+    if (m_removeObjectMode && underMouse() && !m_removeObjectBusy) {
+        double rad = m_brushRadius * m_scale;
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(120, 200, 255, 220), 1));
+        p.setBrush(QColor(90, 170, 255, 40));
+        p.drawEllipse(QPointF(m_mousePos), rad, rad);
+    }
+
+    // Object-removal markers: outline every removal's bounding box, and
+    // highlight whichever one is selected in the Layers panel — only while
+    // the remove-object tool itself is active (mirrors every other tool's
+    // marker convention, e.g. text/shape below), so the outline doesn't
+    // linger on canvas (or leak into exports/screenshots) once the user has
+    // moved on to a different tool.
+    if (m_removeObjectMode && !m_removalMarkers.isEmpty()) {
+        p.setRenderHint(QPainter::Antialiasing, true);
+        for (int i = 0; i < m_removalMarkers.size(); ++i) {
+            if (i == m_activeRemovalIndex) continue; // drawn highlighted below
+            const RemovalMarker &m = m_removalMarkers[i];
+            QRectF r(m_topLeft + m.rect.topLeft() * m_scale, m.rect.size() * m_scale);
+            p.setPen(QPen(QColor(200, 200, 200, 160), 1, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(r);
+        }
+        if (m_activeRemovalIndex >= 0 && m_activeRemovalIndex < m_removalMarkers.size()) {
+            const RemovalMarker &m = m_removalMarkers[m_activeRemovalIndex];
+            QRectF r(m_topLeft + m.rect.topLeft() * m_scale, m.rect.size() * m_scale);
+            p.setPen(QPen(QColor(120, 200, 255), 2, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(r);
+        }
     }
 
     // Text tool: outline every placed text, highlight + rotate handle on the
@@ -1325,6 +1442,18 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         return;
     }
 
+    // Remove-object brush: paints a stroke over an unwanted object; on
+    // release, RetouchTab runs the content-aware fill.
+    if (m_removeObjectMode && !m_removeObjectBusy && ev->button() == Qt::LeftButton) {
+        QPointF n = normPointAt(ev->pos());
+        m_removeObjectDragging = true;
+        m_lastRemoveObjectNorm = n;
+        m_mousePos = ev->pos();
+        emit removeObjectAt(n);
+        update();
+        return;
+    }
+
     // Crop mode.
     if (m_cropMode && ev->button() == Qt::LeftButton) {
         Handle h = handleAt(ev->pos());
@@ -1332,7 +1461,12 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
             m_drag = Drag::Resizing;
             m_activeHandle = h;
             m_rectAtDragStart = selectionRect();
-        } else if (selectionRect().contains(ev->pos())) {
+        } else if (cropInRotateZone(ev->pos())) {
+            m_drag = Drag::Rotating;
+            m_rectAtDragStart = selectionRect();
+            m_cropDragStartMouse = ev->pos();
+            m_cropRotateStartAngle = m_cropAngle;
+        } else if (cropRectContains(ev->pos())) {
             m_drag = Drag::Moving;
             m_moveStart = ev->pos();
             m_rectAtMoveStart = selectionRect();
@@ -1340,6 +1474,7 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         } else {
             m_drag = Drag::Creating;
             m_p0 = m_p1 = ev->pos();
+            m_cropAngle = 0.0;
         }
         update();
         return;
@@ -1439,6 +1574,20 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
             if (dx * dx + dy * dy > 0.004 * 0.004) { // throttle stroke samples
                 m_lastEraseNorm = n;
                 emit eraseAt(n);
+            }
+        }
+        update();
+        return;
+    }
+    if (m_removeObjectMode) {
+        m_mousePos = ev->pos();
+        if (m_removeObjectDragging) {
+            QPointF n = normPointAt(ev->pos());
+            double dx = n.x() - m_lastRemoveObjectNorm.x();
+            double dy = n.y() - m_lastRemoveObjectNorm.y();
+            if (dx * dx + dy * dy > 0.004 * 0.004) { // throttle stroke samples
+                m_lastRemoveObjectNorm = n;
+                emit removeObjectAt(n);
             }
         }
         update();
@@ -1628,10 +1777,29 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         m_p0 = r.topLeft();
         m_p1 = r.bottomRight();
         update();
+    } else if (m_drag == Drag::Rotating) {
+        QPointF anchor = m_rectAtDragStart.center();
+        double a0 = std::atan2(m_cropDragStartMouse.y() - anchor.y(),
+                               m_cropDragStartMouse.x() - anchor.x());
+        double a1 = std::atan2(ev->pos().y() - anchor.y(), ev->pos().x() - anchor.x());
+        double deltaDeg = (a1 - a0) * 180.0 / M_PI;
+        m_cropAngle = m_cropRotateStartAngle + deltaDeg;
+        update();
     } else if (m_drag == Drag::Resizing) {
         QRect tr = targetRect();
         QRect r = m_rectAtDragStart;
+        // Unrotate the mouse into the rect's local frame using the FIXED
+        // drag-start center (not the live selectionRect(), which is what
+        // we're actively resizing) so the pivot doesn't shift mid-drag.
         QPoint pos = ev->pos();
+        if (m_cropAngle != 0.0) {
+            QPointF center = r.center();
+            QTransform t;
+            t.translate(center.x(), center.y());
+            t.rotate(-m_cropAngle);
+            t.translate(-center.x(), -center.y());
+            pos = t.map(QPointF(ev->pos())).toPoint();
+        }
         // Move the edge(s) owned by the active handle to follow the cursor,
         // clamped to the image bounds.
         int L = r.left(), T = r.top(), R = r.right(), B = r.bottom();
@@ -1763,8 +1931,10 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
             case Handle::Left:
             case Handle::Right:       c = Qt::SizeHorCursor; break;
             case Handle::None:
-                c = selectionRect().contains(ev->pos()) ? Qt::SizeAllCursor
-                                                        : Qt::CrossCursor;
+                // cropInRotateZone also yields CrossCursor, same as the
+                // default — matches the rotate-handle cursor convention used
+                // by the text/shape tools elsewhere in this function.
+                c = cropRectContains(ev->pos()) ? Qt::SizeAllCursor : Qt::CrossCursor;
                 break;
         }
         setCursor(c);
@@ -1883,6 +2053,12 @@ void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
         update();
         return;
     }
+    if (m_removeObjectDragging && ev->button() == Qt::LeftButton) {
+        m_removeObjectDragging = false;
+        emit removeObjectFinished();
+        update();
+        return;
+    }
     if (m_imageDragging && ev->button() == Qt::LeftButton) {
         m_imageDragging = false;
         m_imageActiveHandle = Handle::None;
@@ -1905,7 +2081,7 @@ void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
         m_activeHandle = Handle::None;
         setCursor(m_cropMode ? Qt::CrossCursor : Qt::ArrowCursor);
         update();
-        emit cropSelected(selectionInImage());
+        emit cropSelected(selectionInImage(), m_cropAngle);
         return;
     }
     if (m_panning && (ev->button() == Qt::LeftButton || ev->button() == Qt::MiddleButton)) {
@@ -1986,6 +2162,15 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
             int step = ev->angleDelta().y() > 0 ? 2 : -2;
             m_brushRadius = std::clamp(m_brushRadius + step, kHealBrushMin, kHealBrushMax);
             emit eraseBrushRadiusChanged(m_brushRadius);
+            update();
+            ev->accept();
+            return;
+        }
+        // In remove-object mode, ctrl+wheel resizes its brush the same way.
+        if (m_removeObjectMode) {
+            int step = ev->angleDelta().y() > 0 ? 2 : -2;
+            m_brushRadius = std::clamp(m_brushRadius + step, kHealBrushMin, kHealBrushMax);
+            emit removeObjectBrushRadiusChanged(m_brushRadius);
             update();
             ev->accept();
             return;
@@ -2121,6 +2306,12 @@ void ImageCanvas::setBackgroundColor(const QColor &color) {
     m_backgroundColor = color;
     update();
     emit backgroundColorChanged(m_backgroundColor);
+}
+
+void ImageCanvas::setShowCheckerboard(bool on) {
+    if (m_showCheckerboard == on) return;
+    m_showCheckerboard = on;
+    update();
 }
 
 void ImageCanvas::contextMenuEvent(QContextMenuEvent *ev) {

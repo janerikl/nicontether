@@ -146,8 +146,8 @@ void applyTextOp(QImage &img, const TextOp &op) {
     }
 }
 
-void applyTexts(QImage &img, const QVector<TextOp> &texts, const QPoint &cropOffset,
-                double scale) {
+void applyTexts(QImage &img, const QVector<TextOp> &texts, const QTransform &orientedToGeom,
+                double geomRotationDeg, double scale) {
     if (texts.isEmpty()) return;
 
     const QImage::Format origFormat = img.format();
@@ -156,7 +156,8 @@ void applyTexts(QImage &img, const QVector<TextOp> &texts, const QPoint &cropOff
     for (const TextOp &op : texts) {
         if (op.text.trimmed().isEmpty()) continue;
         TextOp local = op;
-        local.pos = (op.pos - QPointF(cropOffset)) * scale;
+        local.pos = orientedToGeom.map(op.pos) * scale;
+        local.rotation = op.rotation + geomRotationDeg;
         local.pixelSize *= scale;
         local.outlineWidth *= scale;
         local.shadowOffset *= scale;

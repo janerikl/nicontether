@@ -23,15 +23,19 @@ public:
     // No-op if no item matches the path.
     void updateThumbnail(const QString &path, const QImage &image);
     void setBadge(const QString &path, Badge state);
+    // Update a thumbnail's path and displayed filename in place after an
+    // on-disk rename. No-op if no item matches oldPath.
+    void renamePath(const QString &oldPath, const QString &newPath);
 
     // Paths of all multi-selected thumbnails (for sync-edits across a shoot).
     QStringList selectedPaths() const;
 
 signals:
     void frameSelected(const QString &path);
-    void retouchRequested(const QString &path);
     void syncEditsRequested(); // "Sync Edits to Selected" chosen from the menu
     void deleteRequested(const QStringList &paths); // "Delete" chosen from the menu
+    void renameRequested(const QString &path); // "Rename" chosen from the menu
+    void ratingChanged(const QString &path, int rating); // star chosen from the Rating submenu (0 = clear)
 
 protected:
     void contextMenuEvent(QContextMenuEvent *) override;

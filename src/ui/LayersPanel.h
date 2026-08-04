@@ -39,12 +39,18 @@ class LayersPanel : public QWidget {
 public:
     explicit LayersPanel(QWidget *parent = nullptr);
 
-    void setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground);
+    void setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground,
+                  bool backgroundHidden = false);
     // Shapes section: a nested view of Adjustments::shapes — grouped shapes
     // (shared groupId, always kept contiguous) show as a collapsible "Group"
     // parent row with the members nested underneath; ungrouped shapes are
     // top-level rows. Top of the list = topmost/frontmost in the stack.
     void setShapes(const QVector<ShapeOp> &shapes, int activeIndex);
+    // Remove Object section: a flat list of Adjustments::removals, one row
+    // per content-aware fill (visibility checkbox + Delete button), mirroring
+    // the Shapes section's per-row eye toggle. Top of the list = most
+    // recently created removal.
+    void setRemovals(const QVector<RemoveObjectOp> &removals, int activeIndex);
     void clear();
 
     // Pushes a rendered preview into the selected layer's Levels histogram
@@ -95,18 +101,26 @@ signals:
     void groupShapesRequested();
     void ungroupShapesRequested();
 
+    void selectRemovalRequested(int index);
+    void removalVisibleChanged(int index, bool visible);
+    void deleteRemovalRequested(int index);
+
 private:
     void emitAdjust();
     void emitImageTransform();
     void loadActive();
     void rebuildList();
     void rebuildShapeList();
+    void rebuildRemovalList();
 
     QVector<Mask> m_masks;
     int m_active = -1;
     bool m_hasBackground = false;
+    bool m_backgroundHidden = false;
     QVector<ShapeOp> m_shapes;
     int m_activeShape = -1;
+    QVector<RemoveObjectOp> m_removals;
+    int m_activeRemoval = -1;
     bool m_syncing = false;
     MaskAdjust m_curAdjust; // last-loaded active layer's adjustment, patched per-section
 
@@ -137,6 +151,9 @@ private:
     QPushButton *m_groupShapes = nullptr;
     QPushButton *m_ungroupShapes = nullptr;
 
+    QListWidget *m_removalList = nullptr;
+    QPushButton *m_deleteRemoval = nullptr;
+
     QDockWidget *m_toneSectionDock = nullptr;
     QDockWidget *m_colorSectionDock = nullptr;
     QDockWidget *m_toneCurveSectionDock = nullptr;
@@ -144,4 +161,5 @@ private:
     QDockWidget *m_detailEffectsSectionDock = nullptr;
     QDockWidget *m_masksSectionDock = nullptr;
     QDockWidget *m_shapesSectionDock = nullptr;
+    QDockWidget *m_removalsSectionDock = nullptr;
 };

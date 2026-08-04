@@ -3,6 +3,7 @@
 #include <QWidget>
 #include <QImage>
 #include <QRect>
+#include <QTransform>
 #include <QColor>
 #include <QSet>
 #include <QMap>
@@ -13,6 +14,7 @@
 class ImageCanvas;
 class QTimer;
 class QThread;
+class QProgressDialog;
 template <typename T> class QFutureWatcher;
 
 // Runs applyAdjustments off the GUI thread. Lives on its own QThread; one job
@@ -64,6 +66,17 @@ public:
     void clearHeals();
     void setEraseMode(bool on);
     void setEraseBrush(int radiusDisplayPx);
+
+    // Remove Object tool: paint a stroke over an unwanted object; on stroke
+    // release, a content-aware fill (InpaintTool) is computed once and
+    // cached as a new, non-destructive RemoveObjectOp layer.
+    void setRemoveObjectMode(bool on);
+    void setRemoveObjectBrush(int radiusDisplayPx);
+    const QVector<RemoveObjectOp> &removals() const { return m_adj.removals; }
+    int activeRemovalIndex() const { return m_activeRemoval; }
+    void selectRemoval(int index);
+    void setRemovalVisible(int index, bool visible);
+    void deleteRemoval(int index);
 
     // Text tool.
     void setTextMode(bool on);
@@ -129,6 +142,14 @@ public:
     void moveMask(int from, int to);                 // reorder within the stack
     const QVector<Mask> &masks() const { return m_adj.masks; }
     int activeMaskIndex() const { return m_activeMask; }
+
+    // Base (background) layer. `hasBackgroundLayer` is false once the base
+    // has been permanently deleted (a document with only a blank/untitled
+    // canvas never had one either — see the QSize constructor).
+    bool hasBackgroundLayer() const { return !m_path.isEmpty() && !m_adj.backgroundDeleted; }
+    bool isBackgroundHidden() const { return m_adj.backgroundHidden; }
+    void setBackgroundVisible(bool visible);
+    void deleteBackground(); // permanent: drops the base photo, keeps other layers
     void showOriginal(bool on); // press-and-hold before/after
     void zoomFit();
     void setZoomPercent(double percent);
@@ -177,10 +198,12 @@ signals:
     void maskBrushChanged(double radiusNorm); // ctrl+wheel resized the mask brush
     void textsChanged();   // text list, active text, or its style changed
     void shapesChanged();  // shape list, active shape, or its style changed
+    void removeObjectBrushChanged(int radiusDisplayPx); // ctrl+wheel resized the brush
+    void removalsChanged(); // removal list or active removal changed
 
 private slots:
     void onDecodeFinished();
-    void onCanvasCrop(const QRect &r);
+    void onCanvasCrop(const QRect &r, double angleDegrees);
     void onColorPicked(const QColor &c);
     void onColorRangePickStarted(const QColor &c);
     void onColorRangeDragged(int dxPixels);
@@ -218,6 +241,8 @@ private slots:
                                      double scaleX, double scaleY);
     void onEraseAt(const QPointF &ptNorm);
     void onEraseFinished();
+    void onRemoveObjectAt(const QPointF &ptNorm);
+    void onRemoveObjectFinished();
     void onRenderDone(const QImage &result, const QImage &maskSnapshot);
     void onMaskRadial(const QPointF &centerNorm, double radiusNorm);
     void onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm);
@@ -226,6 +251,10 @@ private slots:
 
 private:
     void rebuildGeom();  // recompute oriented(+crop) full image + display base
+    // Rotates a geom-space (display, unscaled) delta vector back into
+    // oriented-space by -m_geomRotationDeg — unlike a point, a delta has no
+    // translation component to run through m_geomToOriented.
+    QPointF orientedDelta(const QPointF &geomDelta) const;
     void retone();       // fast preview (defers clarity/sharpen while dragging)
     void retoneFull();   // full preview incl. clarity/sharpen (after idle)
     void requestRender(const QImage &src, const Adjustments &adj, int maskSnapshotIndex = -1); // coalesced, async
@@ -236,6 +265,11 @@ private:
     void updateHealSpots();   // push heal-op markers (display coords) to the canvas
     void updateTextMarkers(); // push text-op markers (display coords) to the canvas
     void updateShapeMarkers(); // push shape-op markers (display coords) to the canvas
+    void updateRemovalMarkers(); // push removal-op markers (display coords) to the canvas
+    // Oriented (rotate/flip), pre-crop image with heals AND already-committed
+    // removals baked in — the "source" a new removal's inpaint reads from,
+    // and the same image rebuildGeom() paints new removals onto.
+    QImage orientedPreCropSource() const;
     void pushMaskGizmo();     // sync active mask geometry to the canvas
     void kickoffImageLayerDecode(const QString &path); // async-decode an image layer's source
     QString copyImageLayerAsset(const QString &sourcePath); // copy a layer source next to m_path so it survives move/delete
@@ -267,12 +301,35 @@ private:
     bool m_dirty = false; // unsaved changes since last save/load
     int m_healRadiusDisplay = 20; // brush radius in display pixels
     int m_eraseRadiusDisplay = 20; // erase brush radius in display pixels
+    int m_removeObjectRadiusDisplay = 24; // remove-object brush radius in display pixels
+    int m_activeRemoval = -1; // index into m_adj.removals, or -1
+    // In-progress remove-object stroke (oriented-image coords, pre-crop),
+    // accumulated between press and release, and the mask painted for it so
+    // far; committed as a new RemoveObjectOp on release.
+    QVector<QPointF> m_removeObjectStroke;
+    QImage m_removeObjectMaskDraft; // full oriented-image size, alpha = coverage so far
+    bool m_removeObjectDragging = false;
+    double m_removeObjectRadiusUsed = 24.0; // last dab's radius (oriented-image px), for the new op
+    // The content-aware fill for a committed stroke runs on a QtConcurrent
+    // worker thread (InpaintTool::inpaint is too slow to run on the GUI
+    // thread without freezing it); these track that in-flight job so a
+    // second stroke can't be started until it finishes, and drive a progress
+    // dialog fed by InpaintTool's onProgress callback.
+    bool m_removeObjectBusy = false;
+    QProgressDialog *m_removeObjectProgress = nullptr;
     int m_crIndex = -1;      // colorRanges entry being dragged, or -1
     int m_crBaseAmount = 0;  // that entry's amount at drag start
     QRect m_pendingCrop; // in oriented-image coords, awaiting Apply
+    double m_pendingCropAngle = 0.0; // straighten angle for m_pendingCrop, awaiting Apply
 
-    QImage m_geomImg;            // oriented (+crop unless cropMode), full res, untoned
-    QPoint m_geomCropOffset;     // crop top-left baked into m_geomImg/m_scaled, or (0,0)
+    QImage m_geomImg;            // oriented (+crop/straighten unless cropMode), full res, untoned
+    // Maps oriented (pre-crop) pixel coords <-> m_geomImg pixel coords (unscaled).
+    // Identity when uncropped or in crop mode; a rotate-about-crop-center-then-
+    // translate affine when a straightened crop is committed. m_geomRotationDeg
+    // is that same crop's angle (0 otherwise), added to heal/text/shape ops'
+    // own rotation so their orientation follows the straightened content.
+    QTransform m_orientedToGeom, m_geomToOriented;
+    double m_geomRotationDeg = 0.0;
     QImage m_scaled;             // display base, untoned
     double m_scaleFromGeom = 1.0;
 
@@ -293,6 +350,12 @@ private:
 
     QImage m_lastEdited;          // most recent edited render (for before/after)
     bool m_showingOriginal = false;
+
+    // Paint-layer strokes are composited on the GUI thread after text/shapes
+    // (see onRenderDone) so the paint tool draws on top of other elements;
+    // this caches their incremental rasterization the same way RenderWorker's
+    // m_brushCache does for the other mask types.
+    QVector<BrushRasterCache> m_paintCache;
 
     bool m_maskPreviewEnabled = false; // Layers dock visible -> compute per-layer histogram source
     QImage m_maskPreviewImage;

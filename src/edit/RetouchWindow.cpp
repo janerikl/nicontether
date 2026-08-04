@@ -19,6 +19,7 @@
 
 #include <QScrollArea>
 #include <QSettings>
+#include <QTimer>
 #include <QCloseEvent>
 #include <QKeySequence>
 #include <QShortcut>
@@ -63,12 +64,12 @@
 
 namespace {
 // Small programmatically-drawn icons for the left tool bar (no image assets
-// in this project). Each icon is drawn twice: a neutral dark-grey Off state
+// in this project). Each icon is drawn twice: a neutral grey Off state
 // and a light On state so the active (checked) tool stands out clearly.
 constexpr int kIconPx = 28;
-const QColor kIconOff(70, 70, 70);       // idle: dark grey
+const QColor kIconOff(220, 220, 220);    // idle: same bright grey as the hover background, for visibility
 const QColor kIconOn(235, 235, 235);     // active: light
-const QColor kIconDisabled(70, 70, 70, 90); // disabled: idle color, faded
+const QColor kIconDisabled(220, 220, 220, 90); // disabled: idle color, faded
 const QColor kIconHover(20, 20, 20);      // hover (idle tool): near-black, for contrast against the lighter hover background
 
 QPixmap drawZoom(const QColor &c) {
@@ -204,6 +205,26 @@ QPixmap drawErase(const QColor &c) {
     return pm;
 }
 
+// Dashed lasso outline with a small "x" motif: content-aware object removal.
+QPixmap drawRemoveObject(const QColor &c) {
+    QPixmap pm(kIconPx, kIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(c, 2);
+    pen.setStyle(Qt::DashLine);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QRectF(4, 4, 20, 20));
+    QPen xPen(c, 2.2);
+    xPen.setStyle(Qt::SolidLine);
+    xPen.setCapStyle(Qt::RoundCap);
+    p.setPen(xPen);
+    p.drawLine(QPointF(10, 10), QPointF(18, 18));
+    p.drawLine(QPointF(18, 10), QPointF(10, 18));
+    return pm;
+}
+
 // Simple, bold paintbrush: a solid filled bristle tip plus a thick handle.
 QPixmap drawBrushTool(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
@@ -288,6 +309,7 @@ QIcon makeEraseIcon() { return makeToolIcon(drawErase); }
 QIcon makeBrushToolIcon() { return makeToolIcon(drawBrushTool); }
 QIcon makeTextIcon() { return makeToolIcon(drawTextTool); }
 QIcon makeShapeIcon() { return makeToolIcon(drawShapeTool); }
+QIcon makeRemoveObjectIcon() { return makeToolIcon(drawRemoveObject); }
 
 // Two-state icon like makeToolIcon, but with the flyout corner marker baked in.
 // Used for the mask tool button, whose glyph reflects its active subtool.
@@ -538,12 +560,14 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     m_filmstrip = new FilmstripWidget;
     connect(m_filmstrip, &FilmstripWidget::frameSelected, this,
             &RetouchWindow::onFilmstripSelected);
-    connect(m_filmstrip, &FilmstripWidget::retouchRequested, this,
-            &RetouchWindow::onFilmstripSelected);
     connect(m_filmstrip, &FilmstripWidget::syncEditsRequested, this,
             &RetouchWindow::onSyncEdits);
     connect(m_filmstrip, &FilmstripWidget::deleteRequested, this,
             &RetouchWindow::onDeleteRequested);
+    connect(m_filmstrip, &FilmstripWidget::renameRequested, this,
+            &RetouchWindow::onRenameRequested);
+    connect(m_filmstrip, &FilmstripWidget::ratingChanged, this,
+            &RetouchWindow::onRatingChanged);
     connect(m_filmstrip, &FilmstripWidget::itemSelectionChanged, this,
             &RetouchWindow::updateEditClipboardActions);
 
@@ -668,7 +692,19 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     // Restore runs *after* setMode so persisted show/hide of the editing docks
     // (including Layers) wins; then Controls visibility is re-asserted by app
     // logic.
+    //
+    // The actual restoreGeometry()/restoreState() calls are deferred to the
+    // next event-loop iteration (see restoreWindowState() below): QMainWindow
+    // only applies saved *dock sizes* correctly once the window has a real,
+    // laid-out geometry, which isn't the case yet here (show() hasn't run).
+    // Calling restoreState() this early silently drops splitter sizes (e.g.
+    // the Levels dock height), even though dock position/visibility restore
+    // fine.
     setMode(Mode::Retouch);
+    QTimer::singleShot(0, this, &RetouchWindow::restoreWindowState);
+}
+
+void RetouchWindow::restoreWindowState() {
     QSettings settings;
     if (settings.contains("window/state")) {
         if (settings.contains("window/geometry"))
@@ -810,6 +846,13 @@ void RetouchWindow::buildToolPanel() {
     m_eraseToggle->setToolTip("Erase (E) — paint transparency onto the selected image layer; Ctrl+wheel resizes brush");
     m_toolsBar->addWidget(m_eraseToggle);
 
+    m_removeObjectToggle = new QToolButton;
+    m_removeObjectToggle->setIcon(makeRemoveObjectIcon());
+    m_removeObjectToggle->setCheckable(true);
+    m_removeObjectToggle->setShortcut(QKeySequence(Qt::Key_J));
+    m_removeObjectToggle->setToolTip("Remove Object (J) — paint over an object to remove it; Ctrl+wheel resizes brush");
+    m_toolsBar->addWidget(m_removeObjectToggle);
+
     m_textToggle = new QToolButton;
     m_textToggle->setIcon(makeTextIcon());
     m_textToggle->setCheckable(true);
@@ -860,7 +903,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
-            if (tab) { tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
+            { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
+            if (tab) { tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(0);
             m_toolOptionsBar->setVisible(true);
@@ -880,7 +924,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
+            { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(1);
             m_toolOptionsBar->setVisible(true);
@@ -903,7 +948,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
+            { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(2);
             m_toolOptionsBar->setVisible(true);
@@ -926,7 +972,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
+            { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsBar->setVisible(false); // layers/masks use their own docks
             if (m_layersDock) { m_layersDock->show(); m_layersDock->raise(); }
@@ -949,7 +996,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
+            { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(3);
             m_toolOptionsBar->setVisible(true);
@@ -978,7 +1026,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
+            { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(4);
             m_toolOptionsBar->setVisible(true);
@@ -988,6 +1037,30 @@ void RetouchWindow::buildToolPanel() {
         if (tab && tab->isReady()) {
             tab->setEraseBrush(m_eraseBrush->value());
             tab->setEraseMode(on);
+        }
+    });
+    connect(m_removeObjectToggle, &QToolButton::toggled, this, [this](bool on) {
+        RetouchTab *tab = currentTab();
+        if (on) {
+            { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
+            { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
+            { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
+            { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
+            { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+            { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+            { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
+            { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
+            { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
+            if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
+            m_toolOptionsStack->setCurrentIndex(7);
+            m_toolOptionsBar->setVisible(true);
+        } else {
+            m_toolOptionsBar->setVisible(false);
+        }
+        if (tab && tab->isReady()) {
+            tab->setRemoveObjectBrush(m_removeObjectBrush->value());
+            tab->setRemoveObjectMode(on);
         }
     });
     connect(m_textToggle, &QToolButton::toggled, this, [this](bool on) {
@@ -1001,7 +1074,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setShapeMode(false); }
+            { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(5);
             m_toolOptionsBar->setVisible(true);
@@ -1022,7 +1096,8 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); }
+            { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setRemoveObjectMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(6);
             m_toolOptionsBar->setVisible(true);
@@ -1423,6 +1498,24 @@ void RetouchWindow::buildToolOptionsBar() {
     shapeRow->addStretch(1);
     m_toolOptionsStack->addWidget(shapePage);
 
+    // --- Remove Object page (index 7) ---
+    auto *removeObjectPage = new QWidget;
+    auto *removeObjectRow = new QHBoxLayout(removeObjectPage);
+    removeObjectRow->setContentsMargins(4, 2, 4, 2);
+    m_removeObjectBrush = new QSlider(Qt::Horizontal);
+    m_removeObjectBrush->setRange(8, 150);
+    m_removeObjectBrush->setValue(30);
+    m_removeObjectBrush->setMinimumWidth(160);
+    removeObjectRow->addWidget(new QLabel("Brush size:"));
+    removeObjectRow->addWidget(m_removeObjectBrush);
+    removeObjectRow->addStretch(1);
+    m_toolOptionsStack->addWidget(removeObjectPage);
+
+    connect(m_removeObjectBrush, &QSlider::valueChanged, this, [this](int v) {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->setRemoveObjectBrush(v);
+    });
+
     connect(m_shapeType, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         RetouchTab *tab = currentTab();
         if (!tab) return;
@@ -1558,6 +1651,13 @@ void RetouchWindow::buildDock() {
     m_vignette = makeSlider(fxForm, "Vignette");
     m_flatStyle = makeSlider(fxForm, "Style (flat/posterize)", 0, 100);
     outer->addLayout(fxForm);
+
+    outer->addSpacing(6);
+    outer->addWidget(new QLabel("<b>Lighting</b>"));
+    auto *lightForm = new QFormLayout;
+    m_lightAngle = makeSlider(lightForm, "Light Angle", 0, 360);
+    m_lightIntensity = makeSlider(lightForm, "Light Intensity");
+    outer->addLayout(lightForm);
 
     outer->addSpacing(8);
     outer->addWidget(new QLabel("<b>Orientation</b>"));
@@ -1811,6 +1911,19 @@ void RetouchWindow::buildLayersDock() {
         RetouchTab *tab = currentTab();
         if (tab) { tab->ungroupSelectedShapes(); refreshMaskPanel(); }
     });
+    connect(m_layersPanel, &LayersPanel::selectRemovalRequested, this, [this](int index) {
+        RetouchTab *tab = currentTab();
+        if (tab) { tab->selectRemoval(index); refreshMaskPanel(); }
+    });
+    connect(m_layersPanel, &LayersPanel::removalVisibleChanged, this,
+            [this](int index, bool visible) {
+                RetouchTab *tab = currentTab();
+                if (tab) { tab->setRemovalVisible(index, visible); refreshMaskPanel(); }
+            });
+    connect(m_layersPanel, &LayersPanel::deleteRemovalRequested, this, [this](int index) {
+        RetouchTab *tab = currentTab();
+        if (tab) { tab->deleteRemoval(index); refreshMaskPanel(); }
+    });
 }
 
 void RetouchWindow::refreshMaskPanel() {
@@ -1821,6 +1934,7 @@ void RetouchWindow::refreshMaskPanel() {
             m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex(),
                                     !tab->path().isEmpty());
             m_layersPanel->setShapes(tab->shapes(), tab->activeShapeIndex());
+            m_layersPanel->setRemovals(tab->removals(), tab->activeRemovalIndex());
         } else {
             m_layersPanel->clear();
         }
@@ -1837,6 +1951,12 @@ void RetouchWindow::refreshMaskPanel() {
         m_healToggle->setEnabled(isImageLayer);
         if (!isImageLayer && m_healToggle->isChecked())
             m_healToggle->setChecked(false);
+    }
+    if (m_removeObjectToggle) {
+        // Acts on the composited base image (like Heal), not a specific layer.
+        m_removeObjectToggle->setEnabled(ready);
+        if (!ready && m_removeObjectToggle->isChecked())
+            m_removeObjectToggle->setChecked(false);
     }
 }
 
@@ -2162,6 +2282,14 @@ void RetouchWindow::wireTabSignals(RetouchTab *tab) {
         QSignalBlocker b(m_eraseBrush);
         m_eraseBrush->setValue(radius); // reflect ctrl+wheel resize in the dock
     });
+    connect(tab, &RetouchTab::removeObjectBrushChanged, this, [this, tab](int radius) {
+        if (tab != currentTab() || !m_removeObjectBrush) return;
+        QSignalBlocker b(m_removeObjectBrush);
+        m_removeObjectBrush->setValue(radius); // reflect ctrl+wheel resize in the dock
+    });
+    connect(tab, &RetouchTab::removalsChanged, this, [this, tab] {
+        if (tab == currentTab()) refreshMaskPanel();
+    });
     connect(tab, &RetouchTab::maskBrushChanged, this, [this, tab](double radiusNorm) {
         if (tab != currentTab() || !m_layersPanel) return;
         m_layersPanel->setMaskBrushRadius(radiusNorm); // reflect ctrl+wheel resize in the dock
@@ -2358,6 +2486,11 @@ void RetouchWindow::deselectAllTools() {
         m_shapeToggle->setChecked(false);
     }
     if (tab) tab->setShapeMode(false);
+    if (m_removeObjectToggle) {
+        QSignalBlocker b(m_removeObjectToggle);
+        m_removeObjectToggle->setChecked(false);
+    }
+    if (tab) tab->setRemoveObjectMode(false);
     if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
     if (tab) tab->setColorRangePickMode(false);
     if (m_toolOptionsBar) m_toolOptionsBar->setVisible(false);
@@ -2442,6 +2575,47 @@ void RetouchWindow::onDeleteRequested(const QStringList &paths) {
         m_statusLabel->setText(QString("Deleted %1 photo(s)").arg(deleted));
 }
 
+void RetouchWindow::onRenameRequested(const QString &path) {
+    // RetouchTab doesn't support having its path changed out from under it,
+    // so require the tab to be closed first rather than leaving it pointing
+    // at a stale path.
+    if (m_openTabs.contains(path)) {
+        m_statusLabel->setText("Close this photo's tab before renaming it");
+        return;
+    }
+
+    QFileInfo info(path);
+    bool ok = false;
+    const QString newBase = QInputDialog::getText(
+        this, "Rename Photo", "New name:", QLineEdit::Normal, info.fileName(), &ok);
+    if (!ok || newBase.isEmpty() || newBase == info.fileName()) return;
+
+    const QString newPath = info.dir().filePath(newBase);
+    if (QFile::exists(newPath)) {
+        m_statusLabel->setText("A file with that name already exists");
+        return;
+    }
+    if (!QFile::rename(path, newPath)) {
+        m_statusLabel->setText("Rename failed");
+        return;
+    }
+    if (EditSidecar::exists(path))
+        QFile::rename(EditSidecar::pathFor(path), EditSidecar::pathFor(newPath));
+    if (QFile::exists(EditSidecar::thumbnailPathFor(path)))
+        QFile::rename(EditSidecar::thumbnailPathFor(path), EditSidecar::thumbnailPathFor(newPath));
+
+    m_filmstrip->renamePath(path, newPath);
+    m_filmstripPaths.remove(path);
+    m_filmstripPaths.insert(newPath);
+    m_statusLabel->setText(QString("Renamed to %1").arg(newBase));
+}
+
+void RetouchWindow::onRatingChanged(const QString &path, int rating) {
+    EditSidecar::saveRating(path, rating);
+    m_statusLabel->setText(rating > 0 ? QString("Rated %1 star(s)").arg(rating)
+                                       : QString("Rating cleared"));
+}
+
 void RetouchWindow::syncDockFromTab() {
     RetouchTab *tab = currentTab();
     if (!tab || !tab->isReady()) return;
@@ -2460,6 +2634,8 @@ void RetouchWindow::syncDockFromTab() {
     set(m_clarity, a.clarity);
     set(m_sharpen, a.sharpen);
     set(m_vignette, a.vignette);
+    set(m_lightAngle, a.lightAngle);
+    set(m_lightIntensity, a.lightIntensity);
     set(m_flatStyle, a.flatStyle);
     m_curve->setCurve(a.curve);
     m_syncing = false;
@@ -2482,6 +2658,8 @@ void RetouchWindow::onToneChanged() {
     a.clarity = m_clarity->value();
     a.sharpen = m_sharpen->value();
     a.vignette = m_vignette->value();
+    a.lightAngle = m_lightAngle->value();
+    a.lightIntensity = m_lightIntensity->value();
     a.flatStyle = m_flatStyle->value();
     tab->setAdjustments(a);
 }
@@ -2490,8 +2668,8 @@ void RetouchWindow::setDockEnabled(bool enabled) {
     const QList<QWidget *> widgets = {
         m_brightness, m_contrast, m_highlights, m_shadows, m_saturation,
         m_vibrance, m_temperature, m_tint, m_denoise, m_clarity, m_sharpen, m_vignette,
-        m_flatStyle,
-        m_curve, m_wbPick, m_beforeAfter,
+        m_lightAngle, m_lightIntensity,
+        m_flatStyle, m_curve, m_wbPick, m_beforeAfter,
         m_zoomSlider, m_zoomFit, m_toolZoom,
         m_rotLeft, m_rotRight, m_flipH, m_flipV,
         m_cropToggle, m_cropReset, m_cropAspect,

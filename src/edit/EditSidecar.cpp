@@ -5,6 +5,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QBuffer>
+#include <QByteArray>
 
 namespace {
 
@@ -74,8 +76,13 @@ bool exists(const QString &imagePath) {
 }
 
 bool save(const QString &imagePath, const Adjustments &a) {
+    // Rating lives in the same sidecar file but isn't part of Adjustments, so
+    // carry over whatever was there before this rewrite.
+    int existingRating = loadRating(imagePath);
+
     QJsonObject o;
     o["version"] = 6;
+    if (existingRating > 0) o["rating"] = existingRating;
     o["brightness"] = a.brightness;
     o["contrast"] = a.contrast;
     o["highlights"] = a.highlights;
@@ -91,17 +98,22 @@ bool save(const QString &imagePath, const Adjustments &a) {
     o["clarity"] = a.clarity;
     o["sharpen"] = a.sharpen;
     o["vignette"] = a.vignette;
+    o["lightAngle"] = a.lightAngle;
+    o["lightIntensity"] = a.lightIntensity;
     o["flatStyle"] = a.flatStyle;
     o["rotationQuadrants"] = a.rotationQuadrants;
     o["flipH"] = a.flipH;
     o["flipV"] = a.flipV;
     o["backgroundColor"] = a.backgroundColor.name(QColor::HexRgb);
+    o["backgroundHidden"] = a.backgroundHidden;
+    o["backgroundDeleted"] = a.backgroundDeleted;
     if (!a.cropRect.isNull()) {
         QJsonObject c;
         c["x"] = a.cropRect.x();
         c["y"] = a.cropRect.y();
         c["w"] = a.cropRect.width();
         c["h"] = a.cropRect.height();
+        c["angle"] = a.cropAngle;
         o["crop"] = c;
     }
     o["curve"] = curveToJson(a.curve);
@@ -182,6 +194,8 @@ bool save(const QString &imagePath, const Adjustments &a) {
             ad["clarity"] = m.adj.clarity;
             ad["sharpen"] = m.adj.sharpen;
             ad["vignette"] = m.adj.vignette;
+            ad["lightAngle"] = m.adj.lightAngle;
+            ad["lightIntensity"] = m.adj.lightIntensity;
             ad["curve"] = curveToJson(m.adj.curve);
             if (!m.adj.levels.isIdentity()) ad["levels"] = levelsToJson(m.adj.levels);
             j["adj"] = ad;
@@ -271,6 +285,38 @@ bool save(const QString &imagePath, const Adjustments &a) {
         o["shapes"] = shapes;
     }
 
+    if (!a.removals.isEmpty()) {
+        // Cached fill/mask images are embedded as base64-encoded PNG so a
+        // reloaded sidecar restores the exact same content-aware result
+        // without recomputing InpaintTool::inpaint from scratch (unlike
+        // heals, which cheaply re-derive their pixels on every load).
+        auto imageToBase64Png = [](const QImage &img) -> QString {
+            if (img.isNull()) return QString();
+            QByteArray bytes;
+            QBuffer buf(&bytes);
+            buf.open(QIODevice::WriteOnly);
+            img.save(&buf, "PNG");
+            return QString::fromLatin1(bytes.toBase64());
+        };
+        QJsonArray removals;
+        for (const RemoveObjectOp &r : a.removals) {
+            QJsonObject j;
+            QJsonArray stroke;
+            for (const QPointF &p : r.stroke) stroke.append(QJsonArray{p.x(), p.y()});
+            j["stroke"] = stroke;
+            j["radius"] = r.radius;
+            j["rectX"] = r.rect.x();
+            j["rectY"] = r.rect.y();
+            j["rectW"] = r.rect.width();
+            j["rectH"] = r.rect.height();
+            j["mask"] = imageToBase64Png(r.mask);
+            j["fill"] = imageToBase64Png(r.fill);
+            j["visible"] = r.visible;
+            removals.append(j);
+        }
+        o["removals"] = removals;
+    }
+
     QFile f(pathFor(imagePath));
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
     f.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
@@ -301,16 +347,21 @@ bool load(const QString &imagePath, Adjustments &out) {
     a.clarity = o["clarity"].toInt();
     a.sharpen = o["sharpen"].toInt();
     a.vignette = o["vignette"].toInt();
+    a.lightAngle = o["lightAngle"].toInt();
+    a.lightIntensity = o["lightIntensity"].toInt();
     a.flatStyle = o["flatStyle"].toInt();
     a.rotationQuadrants = o["rotationQuadrants"].toInt();
     a.flipH = o["flipH"].toBool();
     a.flipV = o["flipV"].toBool();
     a.backgroundColor = QColor(o["backgroundColor"].toString(QStringLiteral("#1e1e1e")));
     if (!a.backgroundColor.isValid()) a.backgroundColor = QColor(30, 30, 30);
+    a.backgroundHidden = o["backgroundHidden"].toBool();
+    a.backgroundDeleted = o["backgroundDeleted"].toBool();
     if (o.contains("crop")) {
         QJsonObject c = o["crop"].toObject();
         a.cropRect = QRect(c["x"].toInt(), c["y"].toInt(),
                            c["w"].toInt(), c["h"].toInt());
+        a.cropAngle = c["angle"].toDouble();
     }
     a.curve = curveFromJson(o["curve"].toArray());
     if (o.contains("levels")) a.levels = levelsFromJson(o["levels"].toObject());
@@ -390,6 +441,8 @@ bool load(const QString &imagePath, Adjustments &out) {
         m.adj.clarity = ad["clarity"].toInt();
         m.adj.sharpen = ad["sharpen"].toInt();
         m.adj.vignette = ad["vignette"].toInt();
+        m.adj.lightAngle = ad["lightAngle"].toInt();
+        m.adj.lightIntensity = ad["lightIntensity"].toInt();
         m.adj.curve = curveFromJson(ad["curve"].toArray());
         if (ad.contains("levels")) m.adj.levels = levelsFromJson(ad["levels"].toObject());
         a.masks.append(m);
@@ -456,6 +509,28 @@ bool load(const QString &imagePath, Adjustments &out) {
         s.groupId = j["groupId"].toString();
         a.shapes.append(s);
     }
+    auto imageFromBase64Png = [](const QString &b64) -> QImage {
+        if (b64.isEmpty()) return QImage();
+        QByteArray bytes = QByteArray::fromBase64(b64.toLatin1());
+        QImage img;
+        img.loadFromData(bytes, "PNG");
+        return img;
+    };
+    for (const QJsonValue &v : o["removals"].toArray()) {
+        QJsonObject j = v.toObject();
+        RemoveObjectOp r;
+        for (const QJsonValue &pv : j["stroke"].toArray()) {
+            QJsonArray p = pv.toArray();
+            r.stroke.append(QPointF(p.at(0).toDouble(), p.at(1).toDouble()));
+        }
+        r.radius = j["radius"].toDouble(20.0);
+        r.rect = QRect(j["rectX"].toInt(0), j["rectY"].toInt(0),
+                       j["rectW"].toInt(0), j["rectH"].toInt(0));
+        r.mask = imageFromBase64Png(j["mask"].toString());
+        r.fill = imageFromBase64Png(j["fill"].toString());
+        r.visible = j["visible"].toBool(true);
+        if (!r.rect.isEmpty() && !r.fill.isNull()) a.removals.append(r);
+    }
     out = a;
     return true;
 }
@@ -478,6 +553,36 @@ QImage loadThumbnail(const QString &imagePath) {
     QImage img;
     img.load(thumbnailPathFor(imagePath), "JPEG");
     return img;
+}
+
+int loadRating(const QString &imagePath) {
+    QFile f(pathFor(imagePath));
+    if (!f.open(QIODevice::ReadOnly)) return 0;
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) return 0;
+    return doc.object()["rating"].toInt(0);
+}
+
+bool saveRating(const QString &imagePath, int rating) {
+    QFile f(pathFor(imagePath));
+    QJsonObject o;
+    if (f.open(QIODevice::ReadOnly)) {
+        QJsonParseError err;
+        QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &err);
+        if (err.error == QJsonParseError::NoError && doc.isObject()) o = doc.object();
+        f.close();
+    }
+    if (rating > 0)
+        o["rating"] = rating;
+    else
+        o.remove("rating");
+    if (!o.contains("version")) o["version"] = 6;
+
+    QFile out(pathFor(imagePath));
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+    out.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
+    return true;
 }
 
 } // namespace EditSidecar

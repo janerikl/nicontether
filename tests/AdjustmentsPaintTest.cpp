@@ -29,6 +29,7 @@ int main() {
         adj.masks.append(paint);
 
         QImage out = applyAdjustments(base, adj);
+        applyPaintMasks(out, adj.masks);
         QRgb center = out.pixel(2, 2);
         assert(qRed(center) > 250 && qGreen(center) < 5 && qBlue(center) < 5);
     }
@@ -48,6 +49,7 @@ int main() {
         adj.masks.append(paint);
 
         QImage out = applyAdjustments(base, adj);
+        applyPaintMasks(out, adj.masks);
         QRgb center = out.pixel(2, 2);
         assert(qRed(center) == 0 && qGreen(center) == 0 && qBlue(center) == 0);
     }
@@ -70,6 +72,7 @@ int main() {
         adj.masks.append(paint);
 
         QImage out = applyAdjustments(base, adj);
+        applyPaintMasks(out, adj.masks);
         int r = qRed(out.pixel(2, 2));
         assert(r > 90 && r < 110); // ~100, halfway between 0 and 200
     }
@@ -314,6 +317,111 @@ int main() {
         QImage resumedIncremental = applyAdjustments(base, adj, &cache);
         QImage resumedFromScratch = applyAdjustments(base, adj, nullptr);
         assert(resumedIncremental == resumedFromScratch);
+    }
+
+    // Artificial lighting: a flat/uniform image must be unaffected regardless
+    // of intensity/angle (verifies the flat-normal baseline is subtracted so
+    // a constant light-elevation term doesn't uniformly shift brightness).
+    {
+        QImage base(40, 40, QImage::Format_ARGB32);
+        base.fill(QColor(128, 128, 128));
+
+        Adjustments adj;
+        adj.lightAngle = 45;
+        adj.lightIntensity = 80;
+
+        QImage out = applyAdjustments(base, adj);
+        QImage plain = base.convertToFormat(QImage::Format_RGBA64);
+        for (int y = 10; y < 30; ++y)
+            for (int x = 10; x < 30; ++x)
+                assert(out.pixel(x, y) == plain.pixel(x, y));
+    }
+
+    // Zero intensity is a true no-op regardless of angle.
+    {
+        QImage base(40, 40, QImage::Format_ARGB32);
+        base.fill(QColor(60, 90, 200));
+
+        Adjustments adjOff;
+        adjOff.lightAngle = 200;
+        adjOff.lightIntensity = 0;
+        Adjustments adjNone;
+
+        QImage outOff = applyAdjustments(base, adjOff);
+        QImage outNone = applyAdjustments(base, adjNone);
+        assert(outOff == outNone);
+    }
+
+    // A hard vertical brightness step (simulated bump/edge) shades
+    // asymmetrically depending on light direction, and flips with the sign
+    // of intensity.
+    {
+        QImage base(40, 40, QImage::Format_ARGB32);
+        for (int y = 0; y < 40; ++y)
+            for (int x = 0; x < 40; ++x)
+                base.setPixel(x, y, (x < 20 ? QColor(60, 60, 60) : QColor(200, 200, 200)).rgb());
+
+        auto meanNearEdge = [](const QImage &img) {
+            long sum = 0;
+            int n = 0;
+            for (int y = 15; y < 25; ++y)
+                for (int x = 17; x < 23; ++x) {
+                    QRgba64 p = img.pixelColor(x, y).rgba64();
+                    sum += p.red();
+                    ++n;
+                }
+            return double(sum) / n;
+        };
+
+        Adjustments adjRight;
+        adjRight.lightAngle = 0; // light from +x
+        adjRight.lightIntensity = 90;
+        Adjustments adjLeft;
+        adjLeft.lightAngle = 180; // light from -x
+        adjLeft.lightIntensity = 90;
+
+        QImage outRight = applyAdjustments(base, adjRight);
+        QImage outLeft = applyAdjustments(base, adjLeft);
+        assert(meanNearEdge(outRight) != meanNearEdge(outLeft));
+
+        Adjustments adjNeg = adjRight;
+        adjNeg.lightIntensity = -90;
+        QImage outNeg = applyAdjustments(base, adjNeg);
+        // Flipping the sign of intensity should flip which side is favored,
+        // i.e. move the edge brightness in the opposite direction from the
+        // positive-intensity result relative to the untouched base.
+        QImage outPlain = base.convertToFormat(QImage::Format_RGBA64);
+        double baseline = meanNearEdge(outPlain);
+        double diffPos = meanNearEdge(outRight) - baseline;
+        double diffNeg = meanNearEdge(outNeg) - baseline;
+        assert(diffPos * diffNeg <= 0.0);
+    }
+
+    // operator==/hasToneEdits/historyStepLabel recognize lighting fields.
+    {
+        Adjustments a, b;
+        b.lightAngle = 30;
+        b.lightIntensity = 50;
+        assert(a != b);
+        assert(hasToneEdits(b));
+        assert(historyStepLabel(a, b) == QStringLiteral("Lighting"));
+    }
+
+    // Lighting fields round-trip through the sidecar format.
+    {
+        QTemporaryDir dir;
+        assert(dir.isValid());
+        const QString path = dir.filePath("photo.nef");
+
+        Adjustments adj;
+        adj.lightAngle = 275;
+        adj.lightIntensity = -42;
+        assert(EditSidecar::save(path, adj));
+
+        Adjustments loaded;
+        assert(EditSidecar::load(path, loaded));
+        assert(loaded.lightAngle == 275);
+        assert(loaded.lightIntensity == -42);
     }
 
     std::printf("AdjustmentsPaintTest: all assertions passed\n");

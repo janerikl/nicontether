@@ -78,6 +78,17 @@ void FilmstripWidget::setBadge(const QString &path, Badge state) {
     }
 }
 
+void FilmstripWidget::renamePath(const QString &oldPath, const QString &newPath) {
+    for (int i = 0; i < count(); ++i) {
+        QListWidgetItem *it = item(i);
+        if (it->data(Qt::UserRole).toString() == oldPath) {
+            it->setData(Qt::UserRole, newPath);
+            it->setText(QFileInfo(newPath).fileName());
+            return;
+        }
+    }
+}
+
 QPixmap FilmstripWidget::iconFor(const QImage &image) const {
     if (!image.isNull()) {
         return QPixmap::fromImage(image).scaled(
@@ -133,7 +144,19 @@ void FilmstripWidget::contextMenuEvent(QContextMenuEvent *ev) {
         delTargets = QStringList{path};
 
     QMenu menu(this);
-    QAction *retouch = menu.addAction("Open in Retouch");
+    QAction *rename = menu.addAction("Rename");
+    QMenu *ratingMenu = menu.addMenu("Rating");
+    static const QString kStars[5] = {
+        QStringLiteral("★☆☆☆☆"),
+        QStringLiteral("★★☆☆☆"),
+        QStringLiteral("★★★☆☆"),
+        QStringLiteral("★★★★☆"),
+        QStringLiteral("★★★★★"),
+    };
+    QAction *starActions[5];
+    for (int i = 0; i < 5; ++i)
+        starActions[i] = ratingMenu->addAction(kStars[i]);
+    QAction *clearRating = ratingMenu->addAction("Clear Rating");
     const int selCount = selectedItems().size();
     QAction *sync = menu.addAction(
         selCount > 1 ? QString("Sync Edits to %1 Selected").arg(selCount)
@@ -142,10 +165,20 @@ void FilmstripWidget::contextMenuEvent(QContextMenuEvent *ev) {
         delTargets.size() > 1 ? QString("Delete %1 Photos").arg(delTargets.size())
                               : QString("Delete Photo"));
     QAction *chosen = menu.exec(ev->globalPos());
-    if (chosen == retouch)
-        emit retouchRequested(path);
+    if (chosen == rename)
+        emit renameRequested(path);
+    else if (chosen == clearRating)
+        emit ratingChanged(path, 0);
     else if (chosen == sync)
         emit syncEditsRequested();
     else if (chosen == del)
         emit deleteRequested(delTargets);
+    else {
+        for (int i = 0; i < 5; ++i) {
+            if (chosen == starActions[i]) {
+                emit ratingChanged(path, i + 1);
+                break;
+            }
+        }
+    }
 }

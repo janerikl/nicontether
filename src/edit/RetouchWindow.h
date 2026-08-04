@@ -61,6 +61,8 @@ private slots:
     void onTabChanged(int index);
     void onTabCloseRequested(int index);
     void onDeleteRequested(const QStringList &paths);
+    void onRenameRequested(const QString &path);
+    void onRatingChanged(const QString &path, int rating);
     void onToneChanged();
     void onExport();
 
@@ -113,6 +115,7 @@ private:
     LevelsPanel *m_levelsPanel = nullptr;
     void buildViewMenu();
     void applyDefaultDockLayout(); // re-apply the default dock arrangement (used on first launch + Reset Panels)
+    void restoreWindowState(); // deferred restoreGeometry()/restoreState(), run after the window is shown
     void buildHistoryDock();
     void buildLevelsDock();
     void refreshHistoryPanel();  // rebuild the list from the current tab
@@ -131,6 +134,8 @@ private:
     QSlider *m_clarity = nullptr;
     QSlider *m_sharpen = nullptr;
     QSlider *m_vignette = nullptr;
+    QSlider *m_lightAngle = nullptr;
+    QSlider *m_lightIntensity = nullptr;
     QSlider *m_flatStyle = nullptr;
     CurveEditor *m_curve = nullptr;
     QPushButton *m_wbPick = nullptr;
@@ -157,6 +162,8 @@ private:
     FlyoutToolButton *m_maskToggle = nullptr; // left icon bar: local-mask tool
     QToolButton *m_eraseToggle = nullptr; // left icon bar: erase tool
     QSlider *m_eraseBrush = nullptr;
+    QToolButton *m_removeObjectToggle = nullptr; // left icon bar: remove-object tool
+    QSlider *m_removeObjectBrush = nullptr;
     QToolButton *m_textToggle = nullptr; // left icon bar: text tool
     class QFontComboBox *m_textFont = nullptr;
     class QSpinBox *m_textSize = nullptr;

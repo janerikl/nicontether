@@ -84,6 +84,22 @@ public:
     void setSelectedShapeIndices(const QSet<int> &indices);
 
     void setEraseMode(bool on); // erase brush: punches transparency into the selected image layer
+    void setRemoveObjectMode(bool on); // remove-object brush: paint over an unwanted object
+    // While a stroke's content-aware fill is being computed on a worker
+    // thread, ignore new remove-object presses so a second stroke can't be
+    // started until the first finishes (see RetouchTab::onRemoveObjectFinished).
+    void setRemoveObjectBusy(bool busy);
+
+    // An existing RemoveObjectOp's on-canvas footprint (its bounding rect),
+    // in the same pixel space as the QImage passed to setImage() (display-
+    // scaled, already oriented/cropped). Index corresponds 1:1 to
+    // Adjustments::removals.
+    struct RemovalMarker {
+        QRectF rect;
+    };
+    void setRemovalMarkers(const QVector<RemovalMarker> &markers);
+    void setActiveRemovalIndex(int index); // -1 = none; drawn with a highlighted outline
+
     void setZoomMode(bool on); // zoom tool: enables marquee-drag zoom + Ctrl+wheel
     void setBrushRadius(int displayPx);
 
@@ -110,9 +126,14 @@ public:
     void setBackgroundColor(const QColor &color);
     QColor backgroundColor() const { return m_backgroundColor; }
 
+    // When on, the photo rect is painted with a Photoshop-style checkerboard
+    // instead of the solid background color, showing through transparent
+    // pixels left by a hidden/deleted base layer.
+    void setShowCheckerboard(bool on);
+
 signals:
     void backgroundColorChanged(const QColor &color);
-    void cropSelected(const QRect &imageRect);
+    void cropSelected(const QRect &imageRect, double angleDegrees);
     void commitCropRequested();
     void colorPicked(const QColor &color);
 
@@ -168,9 +189,12 @@ signals:
                                    double scaleX, double scaleY);
     void eraseAt(const QPointF &ptNorm); // one erase-stroke sample (width-normalized)
     void eraseFinished();                // drag released -> commit history
+    void removeObjectAt(const QPointF &ptNorm); // one remove-object stroke sample (width-normalized)
+    void removeObjectFinished();                // drag released -> run inpaint + commit history
     void zoomChanged(double percent);
     void healBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while healing
     void eraseBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while erasing
+    void removeObjectBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while remove-object brushing
     void maskBrushRadiusChanged(double radiusNorm); // ctrl+wheel resize while brush-masking
     void imageLayerTransformChanged(const QPointF &offsetNorm, const QPointF &scaleNorm,
                                     bool lockRatio);
@@ -200,17 +224,22 @@ protected:
     void contextMenuEvent(QContextMenuEvent *) override;
 
 private:
-    enum class Drag { None, Creating, Moving, Resizing };
+    enum class Drag { None, Creating, Moving, Resizing, Rotating };
     enum class Handle { None, TopLeft, Top, TopRight, Right,
                         BottomRight, Bottom, BottomLeft, Left };
 
     QRect targetRect() const;          // where the image is painted (zoom+pan)
     QRectF imageLayerFrameRect() const;
     Handle imageLayerHandleAt(const QPoint &pos) const;
-    QRect selectionRect() const;       // current rubber band in widget coords
+    QRect selectionRect() const;       // current rubber band in widget coords, unrotated
     QRect selectionInImage() const;    // current rubber band mapped to image coords
     QPoint constrainedCorner(const QPoint &pos) const; // apply aspect + bounds
     Handle handleAt(const QPoint &pos) const; // which crop handle is under pos
+    // True when pos is just outside a corner handle (Photoshop-style rotate
+    // ring): inside the handle itself resizes, just beyond it rotates.
+    bool cropInRotateZone(const QPoint &pos) const;
+    QPointF cropLocalPoint(const QPoint &pos) const; // pos unrotated into selectionRect()'s local frame
+    bool cropRectContains(const QPoint &pos) const;
     int textMarkerAt(const QPoint &pos) const; // which text body is under pos, or -1
     QPointF textRotateHandlePos(const TextMarker &m) const; // widget coords
     // Which corner handle (of the active text's box) is under `pos`, or None.
@@ -295,6 +324,12 @@ private:
     bool m_eraseMode = false;
     bool m_eraseDragging = false;
     QPointF m_lastEraseNorm{-1, -1};
+    bool m_removeObjectMode = false;
+    bool m_removeObjectDragging = false;
+    bool m_removeObjectBusy = false; // an inpaint is computing; ignore new presses
+    QPointF m_lastRemoveObjectNorm{-1, -1};
+    QVector<RemovalMarker> m_removalMarkers; // display-image-space, index-aligned with Adjustments::removals
+    int m_activeRemovalIndex = -1;
     bool m_zoomMode = false; // gates marquee-drag zoom + Ctrl+wheel zoom
     int m_brushRadius = 20; // display px, for the brush cursor
 
@@ -320,6 +355,9 @@ private:
     QRect m_rectAtMoveStart;
     Handle m_activeHandle = Handle::None;
     QRect m_rectAtDragStart; // selection rect (widget coords) captured at press
+    double m_cropAngle = 0.0;        // degrees, clockwise, about selectionRect().center()
+    QPoint m_cropDragStartMouse;     // widget px, captured at Rotating drag start
+    double m_cropRotateStartAngle = 0.0; // m_cropAngle at Rotating drag start
 
     bool m_imageDragging = false;
     Handle m_imageActiveHandle = Handle::None;
@@ -347,4 +385,5 @@ private:
 
     bool m_dragHighlight = false; // a valid image drag is hovering the canvas
     QColor m_backgroundColor = QColor(30, 30, 30);
+    bool m_showCheckerboard = false;
 };

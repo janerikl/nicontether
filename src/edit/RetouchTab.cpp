@@ -5,6 +5,10 @@
 #include "edit/HealTool.h"
 #include "edit/TextTool.h"
 #include "edit/ShapeTool.h"
+#include "edit/InpaintTool.h"
+
+#include <QPainter>
+#include <QPolygonF>
 
 #include <QVBoxLayout>
 #include <QFutureWatcher>
@@ -17,6 +21,8 @@
 #include <QThread>
 #include <QtConcurrent>
 #include <QFont>
+#include <QProgressDialog>
+#include <QPointer>
 #include <algorithm>
 #include <cmath>
 
@@ -59,7 +65,7 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     m_watcher = new QFutureWatcher<QImage>(this);
     connect(m_watcher, &QFutureWatcher<QImage>::finished, this,
             &RetouchTab::onDecodeFinished);
-    m_watcher->setFuture(QtConcurrent::run(RawLoader::load, m_path));
+    m_watcher->setFuture(QtConcurrent::run(RawLoader::loadAny, m_path));
 }
 
 RetouchTab::RetouchTab(const QSize &blankSize, QWidget *parent)
@@ -131,6 +137,8 @@ void RetouchTab::setupCanvasAndWiring() {
             &RetouchTab::onShapeGroupResizeRequested);
     connect(m_canvas, &ImageCanvas::eraseAt, this, &RetouchTab::onEraseAt);
     connect(m_canvas, &ImageCanvas::eraseFinished, this, &RetouchTab::onEraseFinished);
+    connect(m_canvas, &ImageCanvas::removeObjectAt, this, &RetouchTab::onRemoveObjectAt);
+    connect(m_canvas, &ImageCanvas::removeObjectFinished, this, &RetouchTab::onRemoveObjectFinished);
     connect(m_canvas, &ImageCanvas::zoomChanged, this, &RetouchTab::zoomChanged);
     connect(m_canvas, &ImageCanvas::healBrushRadiusChanged, this, [this](int r) {
         m_healRadiusDisplay = r; // keep in sync so heal ops use the new size
@@ -139,6 +147,10 @@ void RetouchTab::setupCanvasAndWiring() {
     connect(m_canvas, &ImageCanvas::eraseBrushRadiusChanged, this, [this](int r) {
         m_eraseRadiusDisplay = r; // keep in sync so erase dabs use the new size
         emit eraseBrushChanged(r);
+    });
+    connect(m_canvas, &ImageCanvas::removeObjectBrushRadiusChanged, this, [this](int r) {
+        m_removeObjectRadiusDisplay = r; // keep in sync so new dabs use the new size
+        emit removeObjectBrushChanged(r);
     });
     connect(m_canvas, &ImageCanvas::maskRadialDragged, this, &RetouchTab::onMaskRadial);
     connect(m_canvas, &ImageCanvas::maskLinearDragged, this, &RetouchTab::onMaskLinear);
@@ -312,26 +324,88 @@ void RetouchTab::saveEdits() {
     emit editStateChanged(false, hasEdits());
 }
 
-void RetouchTab::rebuildGeom() {
-    if (m_base.isNull()) return;
-    // Orient (no crop) → heal in oriented space → crop. Healing before crop
-    // keeps heal coordinates independent of the crop rectangle.
+// Orient (no crop) → heal → paint cached removal fills, all in oriented,
+// pre-crop space. Doing this before crop keeps heal/removal coordinates
+// independent of the crop rectangle (same convention as HealOp).
+QImage RetouchTab::orientedPreCropSource() const {
     Adjustments orientAdj;
     orientAdj.rotationQuadrants = m_adj.rotationQuadrants;
     orientAdj.flipH = m_adj.flipH;
     orientAdj.flipV = m_adj.flipV;
-    QImage oriented = applyAdjustments(m_base, orientAdj);
+    QImage baseSrc = m_base;
+    if (m_adj.backgroundHidden || m_adj.backgroundDeleted) {
+        // Hidden/deleted base: composite a fully transparent image of the
+        // same size in its place so mask/shape/text layers above it (and the
+        // canvas checkerboard) still render correctly.
+        baseSrc = QImage(m_base.size(), QImage::Format_RGBA64);
+        baseSrc.fill(Qt::transparent);
+    }
+    QImage oriented = applyAdjustments(baseSrc, orientAdj);
     if (!m_adj.heals.isEmpty()) applyHeal(oriented, m_adj.heals);
 
+    if (!m_adj.removals.isEmpty()) {
+        oriented = oriented.convertToFormat(QImage::Format_ARGB32);
+        QPainter p(&oriented);
+        for (const RemoveObjectOp &op : m_adj.removals) {
+            if (!op.visible || op.fill.isNull() || op.rect.isEmpty()) continue;
+            p.drawImage(op.rect.topLeft(), op.fill);
+        }
+    }
+    return oriented;
+}
+
+QPointF RetouchTab::orientedDelta(const QPointF &geomDelta) const {
+    if (m_geomRotationDeg == 0.0) return geomDelta;
+    QTransform r;
+    r.rotate(-m_geomRotationDeg);
+    return r.map(geomDelta);
+}
+
+void RetouchTab::rebuildGeom() {
+    if (m_base.isNull()) return;
+    QImage oriented = orientedPreCropSource();
+
     m_geomImg = oriented;
-    m_geomCropOffset = QPoint();
+    m_orientedToGeom = QTransform();
+    m_geomToOriented = QTransform();
+    m_geomRotationDeg = 0.0;
     if (!m_cropMode && !m_adj.cropRect.isNull()) {
         QRect r = m_adj.cropRect.intersected(oriented.rect());
         if (r.isValid() && !r.isEmpty()) {
-            m_geomImg = oriented.copy(r);
-            m_geomCropOffset = r.topLeft();
+            if (m_adj.cropAngle == 0.0) {
+                m_geomImg = oriented.copy(r);
+                m_orientedToGeom.translate(-r.x(), -r.y());
+            } else {
+                QPointF center = r.center();
+                QTransform rot;
+                rot.translate(center.x(), center.y());
+                rot.rotate(m_adj.cropAngle);
+                rot.translate(-center.x(), -center.y());
+                QRectF rotatedBounds = rot.mapRect(QRectF(oriented.rect()));
+                QImage canvas(rotatedBounds.size().toSize(), QImage::Format_ARGB32_Premultiplied);
+                canvas.fill(Qt::transparent);
+                QPainter cp(&canvas);
+                cp.setRenderHint(QPainter::SmoothPixmapTransform);
+                cp.translate(-rotatedBounds.topLeft());
+                cp.setTransform(rot, true);
+                cp.drawImage(0, 0, oriented);
+                cp.end();
+                QPointF cropTopLeftInCanvas = QPointF(r.topLeft()) - rotatedBounds.topLeft();
+                m_geomImg = canvas.copy(QRect(cropTopLeftInCanvas.toPoint(), r.size()));
+                m_geomRotationDeg = m_adj.cropAngle;
+                // oriented -> geom: rotate about the crop rect's own center,
+                // then place that (invariant) center at the cropped image's
+                // own center — see RetouchTab.h's m_orientedToGeom comment.
+                QPointF half(r.width() / 2.0, r.height() / 2.0);
+                m_orientedToGeom.translate(half.x(), half.y());
+                m_orientedToGeom.rotate(m_adj.cropAngle);
+                m_orientedToGeom.translate(-center.x(), -center.y());
+            }
+            m_geomToOriented = m_orientedToGeom.inverted();
         }
     }
+
+    m_canvas->setShowCheckerboard(m_adj.backgroundHidden || m_adj.backgroundDeleted);
 
     if (qMax(m_geomImg.width(), m_geomImg.height()) > kDisplayMaxDim) {
         m_scaled = m_geomImg.scaled(kDisplayMaxDim, kDisplayMaxDim,
@@ -345,6 +419,7 @@ void RetouchTab::rebuildGeom() {
     updateHealSpots();
     updateTextMarkers();
     updateShapeMarkers();
+    updateRemovalMarkers();
     retone();
 }
 
@@ -354,11 +429,11 @@ void RetouchTab::updateTextMarkers() {
     QVector<ImageCanvas::TextMarker> markers;
     for (const TextOp &op : m_adj.texts) {
         TextOp local = op;
-        local.pos = (op.pos - QPointF(m_geomCropOffset)) * m_scaleFromGeom;
+        local.pos = m_orientedToGeom.map(op.pos) * m_scaleFromGeom;
         local.pixelSize *= m_scaleFromGeom;
         ImageCanvas::TextMarker m;
         m.rect = textOpBounds(local);
-        m.rotation = op.rotation;
+        m.rotation = op.rotation + m_geomRotationDeg;
         markers.append(m);
     }
     m_canvas->setTextMarkers(markers);
@@ -373,11 +448,12 @@ void RetouchTab::updateShapeMarkers() {
     for (const ShapeOp &op : m_adj.shapes) {
         ImageCanvas::ShapeMarker m;
         m.type = op.type;
-        m.rect = QRectF((op.rect.topLeft() - QPointF(m_geomCropOffset)) * m_scaleFromGeom,
-                        op.rect.size() * m_scaleFromGeom);
-        m.p1 = (op.p1 - QPointF(m_geomCropOffset)) * m_scaleFromGeom;
-        m.p2 = (op.p2 - QPointF(m_geomCropOffset)) * m_scaleFromGeom;
-        m.rotation = op.rotation;
+        QPointF center = m_orientedToGeom.map(op.rect.center()) * m_scaleFromGeom;
+        m.rect = QRectF(QPointF(0, 0), op.rect.size() * m_scaleFromGeom);
+        m.rect.moveCenter(center);
+        m.p1 = m_orientedToGeom.map(op.p1) * m_scaleFromGeom;
+        m.p2 = m_orientedToGeom.map(op.p2) * m_scaleFromGeom;
+        m.rotation = (op.type == ShapeType::Line) ? op.rotation : op.rotation + m_geomRotationDeg;
         markers.append(m);
     }
     m_canvas->setShapeMarkers(markers);
@@ -389,16 +465,32 @@ void RetouchTab::updateShapeMarkers() {
 // (m_scaled) pixel space so the canvas can draw hover-highlight markers.
 void RetouchTab::updateHealSpots() {
     QVector<ImageCanvas::HealMarker> spots;
-    QPoint offset = (!m_cropMode && !m_adj.cropRect.isNull())
-                        ? m_adj.cropRect.topLeft() : QPoint(0, 0);
     for (const HealOp &op : m_adj.heals) {
         ImageCanvas::HealMarker m;
-        m.pos = QPointF((op.x - offset.x()) * m_scaleFromGeom,
-                         (op.y - offset.y()) * m_scaleFromGeom);
+        m.pos = m_orientedToGeom.map(QPointF(op.x, op.y)) * m_scaleFromGeom;
         m.radius = op.radius * m_scaleFromGeom;
         spots.append(m);
     }
     m_canvas->setHealSpots(spots);
+}
+
+// Convert stored removal ops (oriented-image, pre-crop coords) into the
+// display (m_scaled) pixel space so the canvas can draw/hit-test their
+// bounding-box outline, mirroring updateShapeMarkers.
+void RetouchTab::updateRemovalMarkers() {
+    QVector<ImageCanvas::RemovalMarker> markers;
+    for (const RemoveObjectOp &op : m_adj.removals) {
+        ImageCanvas::RemovalMarker m;
+        // Bounding-box highlight only (no rotation field on RemovalMarker),
+        // so under a straightened crop this is the axis-aligned bounds of
+        // the rotated rect — a close-enough approximation for a cosmetic
+        // hover outline.
+        QRectF b = m_orientedToGeom.map(QPolygonF(QRectF(op.rect))).boundingRect();
+        m.rect = QRectF(b.topLeft() * m_scaleFromGeom, b.size() * m_scaleFromGeom);
+        markers.append(m);
+    }
+    m_canvas->setRemovalMarkers(markers);
+    m_canvas->setActiveRemovalIndex(m_activeRemoval);
 }
 
 void RetouchTab::retone() {
@@ -444,13 +536,15 @@ void RetouchTab::onRenderDone(const QImage &result, const QImage &maskSnapshot) 
         if (m_textEditIndex >= 0 && m_textEditIndex < m_adj.texts.size()) {
             QVector<TextOp> texts = m_adj.texts;
             texts[m_textEditIndex].color.setAlpha(0);
-            applyTexts(m_lastEdited, texts, m_geomCropOffset, m_scaleFromGeom);
+            applyTexts(m_lastEdited, texts, m_orientedToGeom, m_geomRotationDeg, m_scaleFromGeom);
         } else {
-            applyTexts(m_lastEdited, m_adj.texts, m_geomCropOffset, m_scaleFromGeom);
+            applyTexts(m_lastEdited, m_adj.texts, m_orientedToGeom, m_geomRotationDeg, m_scaleFromGeom);
         }
     }
     if (!m_adj.shapes.isEmpty())
-        applyShapes(m_lastEdited, m_adj.shapes, m_geomCropOffset, m_scaleFromGeom);
+        applyShapes(m_lastEdited, m_adj.shapes, m_orientedToGeom, m_geomRotationDeg, m_scaleFromGeom);
+    if (!m_adj.masks.isEmpty())
+        applyPaintMasks(m_lastEdited, m_adj.masks, &m_paintCache);
     if (!maskSnapshot.isNull()) m_maskPreviewImage = maskSnapshot;
     if (!m_showingOriginal) m_canvas->setImage(m_lastEdited);
     emit previewUpdated();
@@ -598,6 +692,47 @@ void RetouchTab::setEraseBrush(int radiusDisplayPx) {
     m_canvas->setBrushRadius(radiusDisplayPx);
 }
 
+void RetouchTab::setRemoveObjectMode(bool on) {
+    m_canvas->setRemoveObjectMode(on);
+    if (!on) {
+        m_removeObjectDragging = false;
+        m_removeObjectStroke.clear();
+        m_removeObjectMaskDraft = QImage();
+    }
+    if (on) m_canvas->setFocus();
+}
+
+void RetouchTab::setRemoveObjectBrush(int radiusDisplayPx) {
+    m_removeObjectRadiusDisplay = radiusDisplayPx;
+    m_canvas->setBrushRadius(radiusDisplayPx);
+}
+
+void RetouchTab::selectRemoval(int index) {
+    m_activeRemoval = (index >= 0 && index < m_adj.removals.size()) ? index : -1;
+    updateRemovalMarkers();
+    emit removalsChanged();
+}
+
+void RetouchTab::setRemovalVisible(int index, bool visible) {
+    if (index < 0 || index >= m_adj.removals.size()) return;
+    if (m_adj.removals[index].visible == visible) return;
+    m_adj.removals[index].visible = visible;
+    rebuildGeom();
+    markEdited();
+    emit removalsChanged();
+}
+
+void RetouchTab::deleteRemoval(int index) {
+    if (index < 0 || index >= m_adj.removals.size()) return;
+    m_adj.removals.removeAt(index);
+    if (m_activeRemoval == index) m_activeRemoval = -1;
+    else if (m_activeRemoval > index) --m_activeRemoval;
+    rebuildGeom();
+    markEdited();
+    emit removalsChanged();
+}
+
+
 void RetouchTab::setTextMode(bool on) {
     m_textMode = on;
     m_canvas->setTextMode(on);
@@ -612,7 +747,7 @@ void RetouchTab::onTextPlaceRequested(const QPoint &imgPoint) {
     if (m_scaleFromGeom <= 0) return;
     double inv = 1.0 / m_scaleFromGeom;
     TextOp op = m_textDefaults;
-    op.pos = QPointF(imgPoint.x() * inv, imgPoint.y() * inv) + QPointF(m_geomCropOffset);
+    op.pos = m_geomToOriented.map(QPointF(imgPoint.x() * inv, imgPoint.y() * inv));
     op.text.clear();
     m_adj.texts.append(op);
     m_activeText = m_adj.texts.size() - 1;
@@ -646,7 +781,7 @@ void RetouchTab::onTextMoved(int index, const QPointF &newImgPos) {
     if (index < 0 || index >= m_adj.texts.size() || m_scaleFromGeom <= 0) return;
     double inv = 1.0 / m_scaleFromGeom;
     m_adj.texts[index].pos =
-        QPointF(newImgPos.x() * inv, newImgPos.y() * inv) + QPointF(m_geomCropOffset);
+        m_geomToOriented.map(QPointF(newImgPos.x() * inv, newImgPos.y() * inv));
     updateTextMarkers();
     retone();
     markEdited();
@@ -654,7 +789,7 @@ void RetouchTab::onTextMoved(int index, const QPointF &newImgPos) {
 
 void RetouchTab::onTextRotated(int index, double newRotationDegrees) {
     if (index < 0 || index >= m_adj.texts.size()) return;
-    m_adj.texts[index].rotation = newRotationDegrees;
+    m_adj.texts[index].rotation = newRotationDegrees - m_geomRotationDeg;
     updateTextMarkers();
     retone();
     markEdited();
@@ -666,7 +801,7 @@ void RetouchTab::onTextEditRequested(int index) {
     m_newTextIndex = -1;
     m_textEditIndex = index;
     const TextOp &op = m_adj.texts[index];
-    QPointF displayPos = (op.pos - QPointF(m_geomCropOffset)) * m_scaleFromGeom;
+    QPointF displayPos = m_orientedToGeom.map(op.pos) * m_scaleFromGeom;
     QFont font(op.family);
     font.setPixelSize(std::max(1, int(std::lround(op.pixelSize * m_scaleFromGeom))));
     font.setBold(op.bold);
@@ -844,11 +979,15 @@ void RetouchTab::onShapeCreateRequested(ShapeType type, const QRectF &imageRect)
     ShapeOp op = m_shapeDefaults;
     op.type = type;
     if (type == ShapeType::Line) {
-        op.p1 = imageRect.topLeft() * inv + QPointF(m_geomCropOffset);
-        op.p2 = imageRect.bottomRight() * inv + QPointF(m_geomCropOffset);
+        op.p1 = m_geomToOriented.map(imageRect.topLeft() * inv);
+        op.p2 = m_geomToOriented.map(imageRect.bottomRight() * inv);
     } else {
-        op.rect = QRectF(imageRect.topLeft() * inv, imageRect.size() * inv)
-                      .translated(QPointF(m_geomCropOffset));
+        QPointF center = m_geomToOriented.map(imageRect.center() * inv);
+        QSizeF size = imageRect.size() * inv;
+        op.rect = QRectF(center - QPointF(size.width() / 2.0, size.height() / 2.0), size);
+        // Drawn axis-aligned on screen; op.rotation + m_geomRotationDeg must
+        // net to 0 so it still shows axis-aligned (see updateShapeMarkers).
+        op.rotation = -m_geomRotationDeg;
     }
     m_adj.shapes.append(op);
     m_activeShape = m_adj.shapes.size() - 1;
@@ -936,7 +1075,7 @@ void RetouchTab::onShapeGroupMoveStarted(const QList<int> &indices) {
 
 void RetouchTab::onShapeGroupMoveRequested(const QList<int> &indices, const QPointF &deltaImage) {
     if (m_scaleFromGeom <= 0) return;
-    QPointF delta = deltaImage / m_scaleFromGeom;
+    QPointF delta = orientedDelta(deltaImage / m_scaleFromGeom);
     for (int idx : indices) {
         if (idx < 0 || idx >= m_adj.shapes.size() || !m_shapeGroupStartRect.contains(idx)) continue;
         ShapeOp &op = m_adj.shapes[idx];
@@ -962,11 +1101,17 @@ void RetouchTab::onShapeGroupResizeRequested(const QList<int> &indices, const QP
                                              double scaleX, double scaleY) {
     if (m_scaleFromGeom <= 0) return;
     double inv = 1.0 / m_scaleFromGeom;
-    QPointF anchor = anchorImage * inv + QPointF(m_geomCropOffset);
+    // anchorImage/scaleX/scaleY are defined in display (geom-local) space —
+    // do the actual scaling there, converting each point in and back out via
+    // the oriented<->geom affine, so a straightened crop's tilt doesn't skew
+    // the scale axes.
+    QPointF anchor = anchorImage * inv; // already geom-local (display, unscaled)
     double strokeScale = std::sqrt(std::abs(scaleX * scaleY));
-    auto scalePoint = [&](const QPointF &p) {
-        return QPointF(anchor.x() + (p.x() - anchor.x()) * scaleX,
+    auto scalePoint = [&](const QPointF &pOriented) {
+        QPointF p = m_orientedToGeom.map(pOriented);
+        QPointF scaled(anchor.x() + (p.x() - anchor.x()) * scaleX,
                        anchor.y() + (p.y() - anchor.y()) * scaleY);
+        return m_geomToOriented.map(scaled);
     };
     for (int idx : indices) {
         if (idx < 0 || idx >= m_adj.shapes.size() || !m_shapeGroupStartRect.contains(idx)) continue;
@@ -992,7 +1137,7 @@ void RetouchTab::onShapeGroupResizeRequested(const QList<int> &indices, const QP
 // accumulate it onto the shape's current (already-moved) position.
 void RetouchTab::onShapeMoved(int index, const QPointF &deltaImage) {
     if (index < 0 || index >= m_adj.shapes.size() || m_scaleFromGeom <= 0) return;
-    QPointF delta = deltaImage / m_scaleFromGeom;
+    QPointF delta = orientedDelta(deltaImage / m_scaleFromGeom);
     ShapeOp &op = m_adj.shapes[index];
     if (op.type == ShapeType::Line) {
         op.p1 = m_shapeMoveStartP1 + delta;
@@ -1008,8 +1153,12 @@ void RetouchTab::onShapeMoved(int index, const QPointF &deltaImage) {
 void RetouchTab::onShapeResized(int index, const QRectF &newImageRect) {
     if (index < 0 || index >= m_adj.shapes.size() || m_scaleFromGeom <= 0) return;
     double inv = 1.0 / m_scaleFromGeom;
-    m_adj.shapes[index].rect = QRectF(newImageRect.topLeft() * inv + QPointF(m_geomCropOffset),
-                                      newImageRect.size() * inv);
+    // newImageRect is unrotated local (marker.rotation is applied separately
+    // by the renderer about its center) — map the center through the full
+    // affine and keep the (unscaled) local size, mirroring updateShapeMarkers.
+    QPointF center = m_geomToOriented.map(newImageRect.center() * inv);
+    QSizeF size = newImageRect.size() * inv;
+    m_adj.shapes[index].rect = QRectF(center - QPointF(size.width() / 2.0, size.height() / 2.0), size);
     updateShapeMarkers();
     retone();
     markEdited();
@@ -1018,8 +1167,8 @@ void RetouchTab::onShapeResized(int index, const QRectF &newImageRect) {
 void RetouchTab::onShapeLineEndpointsChanged(int index, const QPointF &p1, const QPointF &p2) {
     if (index < 0 || index >= m_adj.shapes.size() || m_scaleFromGeom <= 0) return;
     double inv = 1.0 / m_scaleFromGeom;
-    m_adj.shapes[index].p1 = p1 * inv + QPointF(m_geomCropOffset);
-    m_adj.shapes[index].p2 = p2 * inv + QPointF(m_geomCropOffset);
+    m_adj.shapes[index].p1 = m_geomToOriented.map(p1 * inv);
+    m_adj.shapes[index].p2 = m_geomToOriented.map(p2 * inv);
     updateShapeMarkers();
     retone();
     markEdited();
@@ -1027,7 +1176,11 @@ void RetouchTab::onShapeLineEndpointsChanged(int index, const QPointF &p1, const
 
 void RetouchTab::onShapeRotated(int index, double newRotationDegrees) {
     if (index < 0 || index >= m_adj.shapes.size()) return;
-    m_adj.shapes[index].rotation = newRotationDegrees;
+    // The rotate handle isn't offered for Line (see shapeRotateHandlePos's
+    // type check), so only non-Line markers ever carry +m_geomRotationDeg
+    // baked into the dragged value — matches updateShapeMarkers.
+    bool isLine = m_adj.shapes[index].type == ShapeType::Line;
+    m_adj.shapes[index].rotation = newRotationDegrees - (isLine ? 0.0 : m_geomRotationDeg);
     updateShapeMarkers();
     retone();
     markEdited();
@@ -1267,12 +1420,12 @@ void RetouchTab::clearHeals() {
 void RetouchTab::onHealAt(const QPoint &imgPoint) {
     if (m_scaleFromGeom <= 0 || m_geomImg.isNull()) return;
     double inv = 1.0 / m_scaleFromGeom; // display(scaled) -> geom(full, cropped)
-    // Convert cropped-geom coords to oriented coords (heals live pre-crop).
-    QPoint offset = (!m_cropMode && !m_adj.cropRect.isNull())
-                        ? m_adj.cropRect.topLeft() : QPoint(0, 0);
+    // Convert cropped(+straightened)-geom coords to oriented coords (heals
+    // live pre-crop, pre-straighten).
+    QPointF oriented = m_geomToOriented.map(QPointF(imgPoint) * inv);
     HealOp op;
-    op.x = int(imgPoint.x() * inv) + offset.x();
-    op.y = int(imgPoint.y() * inv) + offset.y();
+    op.x = int(oriented.x());
+    op.y = int(oriented.y());
     op.radius = qMax(2, int(m_healRadiusDisplay * inv));
     m_adj.heals.append(op);
     rebuildGeom();
@@ -1297,6 +1450,142 @@ void RetouchTab::onEraseAt(const QPointF &ptNorm) {
 
 void RetouchTab::onEraseFinished() {
     markEdited(); // schedule one coalesced undo step for the whole drag
+}
+
+// A remove-object dab was placed on the canvas (point in display-image,
+// width-normalized coords — same space as onEraseAt). Accumulates the stroke
+// and paints its coverage into a full-oriented-image-sized mask draft; the
+// actual content-aware fill is only computed once, on release, so dragging
+// stays smooth and the fill never gets recomputed on repaint.
+void RetouchTab::onRemoveObjectAt(const QPointF &ptNorm) {
+    if (m_scaleFromGeom <= 0 || m_geomImg.isNull() || m_scaled.isNull()) return;
+    double px = ptNorm.x() * m_scaled.width();
+    double py = ptNorm.y() * m_scaled.width();
+    double inv = 1.0 / m_scaleFromGeom; // display(scaled) -> geom(full, cropped)
+    QPointF pt = m_geomToOriented.map(QPointF(px, py) * inv);
+    double radius = qMax(2.0, m_removeObjectRadiusDisplay * inv);
+
+    if (m_removeObjectMaskDraft.isNull()) {
+        // Oriented (pre-crop) image size — same space heals/removals live in.
+        QSize orientedSize = orientedPreCropSource().size();
+        m_removeObjectMaskDraft = QImage(orientedSize, QImage::Format_ARGB32);
+        m_removeObjectMaskDraft.fill(Qt::transparent);
+    }
+    m_removeObjectStroke.append(pt);
+    m_removeObjectRadiusUsed = radius;
+
+    QPainter mp(&m_removeObjectMaskDraft);
+    mp.setRenderHint(QPainter::Antialiasing, true);
+    mp.setPen(Qt::NoPen);
+    mp.setBrush(Qt::white);
+    mp.drawEllipse(pt, radius, radius);
+    mp.end();
+}
+
+// Drag released: run the content-aware fill once over the accumulated
+// stroke's coverage and bake it into a new, non-destructive RemoveObjectOp
+// (visible/deletable from the Layers panel, like a Shape layer). The fill
+// itself (InpaintTool::inpaint) is slow enough to freeze the UI if run
+// inline, so it's kicked off on a QtConcurrent worker thread behind a
+// QProgressDialog; ImageCanvas ignores new remove-object presses
+// (setRemoveObjectBusy) until it finishes.
+void RetouchTab::onRemoveObjectFinished() {
+    if (m_removeObjectBusy || m_removeObjectMaskDraft.isNull() || m_removeObjectStroke.isEmpty()) {
+        m_removeObjectStroke.clear();
+        m_removeObjectMaskDraft = QImage();
+        return;
+    }
+
+    // Bounding box of the painted coverage, padded a touch so the inpaint
+    // has known pixels right at the mask edge to blend against.
+    QRect rect;
+    {
+        const QImage &m = m_removeObjectMaskDraft;
+        int minX = m.width(), minY = m.height(), maxX = -1, maxY = -1;
+        for (int y = 0; y < m.height(); ++y) {
+            const QRgb *row = reinterpret_cast<const QRgb *>(m.constScanLine(y));
+            for (int x = 0; x < m.width(); ++x) {
+                if (qAlpha(row[x]) > 0) {
+                    minX = qMin(minX, x); maxX = qMax(maxX, x);
+                    minY = qMin(minY, y); maxY = qMax(maxY, y);
+                }
+            }
+        }
+        if (maxX < minX || maxY < minY) {
+            m_removeObjectStroke.clear();
+            m_removeObjectMaskDraft = QImage();
+            return;
+        }
+        int pad = 2;
+        rect = QRect(QPoint(minX - pad, minY - pad), QPoint(maxX + pad, maxY + pad))
+                   .intersected(m.rect());
+    }
+
+    QImage source = orientedPreCropSource();
+    QImage maskDraft = m_removeObjectMaskDraft;
+    QVector<QPointF> stroke = m_removeObjectStroke;
+    double radiusUsed = m_removeObjectRadiusUsed;
+    QImage opMask = maskDraft.copy(rect);
+
+    // Clear the in-progress-stroke state right away so a fresh stroke could
+    // in principle start accumulating; ImageCanvas additionally hard-blocks
+    // new remove-object presses via setRemoveObjectBusy while this job runs.
+    m_removeObjectStroke.clear();
+    m_removeObjectMaskDraft = QImage();
+
+    m_removeObjectBusy = true;
+    m_canvas->setRemoveObjectBusy(true);
+
+    m_removeObjectProgress = new QProgressDialog(tr("Removing object…"), QString(), 0, 100, this);
+    m_removeObjectProgress->setWindowModality(Qt::WindowModal);
+    m_removeObjectProgress->setMinimumDuration(300); // don't flash for small/fast removals
+    m_removeObjectProgress->setAutoClose(false);
+    m_removeObjectProgress->setAutoReset(false);
+    m_removeObjectProgress->setValue(0);
+
+    auto *watcher = new QFutureWatcher<QImage>(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished, this,
+            [this, watcher, rect, stroke, radiusUsed, opMask] {
+        QImage fill = watcher->result();
+        watcher->deleteLater();
+        if (m_removeObjectProgress) {
+            m_removeObjectProgress->close();
+            m_removeObjectProgress->deleteLater();
+            m_removeObjectProgress = nullptr;
+        }
+        m_removeObjectBusy = false;
+        m_canvas->setRemoveObjectBusy(false);
+
+        if (!fill.isNull()) {
+            RemoveObjectOp op;
+            op.stroke = stroke;
+            op.radius = radiusUsed;
+            op.rect = rect;
+            op.mask = opMask;
+            op.fill = fill;
+            op.visible = true;
+            m_adj.removals.append(op);
+            m_activeRemoval = m_adj.removals.size() - 1;
+
+            rebuildGeom();
+            markEdited();
+            emit removalsChanged();
+        }
+    });
+
+    // The progress callback runs on the worker thread; marshal it back to
+    // the GUI thread via a context-object invokeMethod. `self` is a QPointer
+    // (safe to read/null-check from another thread) so this is a no-op if
+    // the tab/window is closed while the fill is still computing.
+    QPointer<RetouchTab> self(this);
+    watcher->setFuture(QtConcurrent::run([self, source, maskDraft, rect]() {
+        return InpaintTool::inpaint(source, maskDraft, rect, [self](int percent) {
+            if (!self) return;
+            QMetaObject::invokeMethod(self, [self, percent] {
+                if (self && self->m_removeObjectProgress) self->m_removeObjectProgress->setValue(percent);
+            }, Qt::QueuedConnection);
+        });
+    }));
 }
 
 // ---- Local adjustment masks ------------------------------------------------
@@ -1431,6 +1720,24 @@ void RetouchTab::deleteActiveMask() {
     m_activeMask = m_adj.masks.isEmpty() ? -1
                                          : qMin(m_activeMask, m_adj.masks.size() - 1);
     pushMaskGizmo();
+    retone();
+    markEdited();
+    emit masksChanged();
+}
+
+void RetouchTab::setBackgroundVisible(bool visible) {
+    if (m_adj.backgroundDeleted || m_adj.backgroundHidden == !visible) return;
+    m_adj.backgroundHidden = !visible;
+    rebuildGeom();
+    retone();
+    markEdited();
+    emit masksChanged();
+}
+
+void RetouchTab::deleteBackground() {
+    if (m_adj.backgroundDeleted) return;
+    m_adj.backgroundDeleted = true;
+    rebuildGeom();
     retone();
     markEdited();
     emit masksChanged();
@@ -1630,9 +1937,10 @@ void RetouchTab::onColorPicked(const QColor &c) {
     emit wbPicked();
 }
 
-void RetouchTab::onCanvasCrop(const QRect &r) {
+void RetouchTab::onCanvasCrop(const QRect &r, double angleDegrees) {
     if (r.isEmpty() || m_scaleFromGeom <= 0) {
         m_pendingCrop = QRect();
+        m_pendingCropAngle = 0.0;
         emit cropPending(false);
         return;
     }
@@ -1640,13 +1948,16 @@ void RetouchTab::onCanvasCrop(const QRect &r) {
     m_pendingCrop = QRect(int(r.x() * inv), int(r.y() * inv),
                           int(r.width() * inv), int(r.height() * inv))
                         .intersected(m_geomImg.rect());
+    m_pendingCropAngle = angleDegrees;
     emit cropPending(!m_pendingCrop.isEmpty());
 }
 
 void RetouchTab::applyCrop() {
     if (m_pendingCrop.isEmpty()) return;
     m_adj.cropRect = m_pendingCrop;
+    m_adj.cropAngle = m_pendingCropAngle;
     m_pendingCrop = QRect();
+    m_pendingCropAngle = 0.0;
     m_cropMode = false;
     m_canvas->setCropMode(false);
     m_canvas->clearSelection();
@@ -1658,7 +1969,9 @@ void RetouchTab::applyCrop() {
 
 void RetouchTab::resetCrop() {
     m_adj.cropRect = QRect();
+    m_adj.cropAngle = 0.0;
     m_pendingCrop = QRect();
+    m_pendingCropAngle = 0.0;
     m_canvas->clearSelection();
     emit cropPending(false);
     rebuildGeom();
@@ -1670,7 +1983,8 @@ QImage RetouchTab::renderFullRes() const {
     // m_geomImg is the full-res oriented + healed + cropped base; apply tone,
     // then composite text last so it stays unaffected by tone/colour.
     QImage out = applyAdjustments(m_geomImg, toneOnly(m_adj));
-    if (!m_adj.texts.isEmpty()) applyTexts(out, m_adj.texts, m_geomCropOffset);
-    if (!m_adj.shapes.isEmpty()) applyShapes(out, m_adj.shapes, m_geomCropOffset);
+    if (!m_adj.texts.isEmpty()) applyTexts(out, m_adj.texts, m_orientedToGeom, m_geomRotationDeg);
+    if (!m_adj.shapes.isEmpty()) applyShapes(out, m_adj.shapes, m_orientedToGeom, m_geomRotationDeg);
+    if (!m_adj.masks.isEmpty()) applyPaintMasks(out, m_adj.masks);
     return out;
 }
