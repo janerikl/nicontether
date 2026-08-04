@@ -5,18 +5,36 @@
 #include "edit/RetouchTab.h"
 #include "ui/AppIcon.h"
 #include <QElapsedTimer>
+#include <QDir>
+#include <QFile>
 #include <cstdio>
 #include <cstring>
 
+namespace {
+// One-time migration from the app's former name ("NikonTether") so a
+// rename doesn't silently orphan a user's existing window layout/recent-
+// files/camera-preference settings under ~/.config/NikonTether. Copies
+// (doesn't move) the old config dir the first time the new one is missing.
+void migrateLegacySettings() {
+    QDir oldDir(QDir::homePath() + "/.config/NikonTether");
+    QDir newDir(QDir::homePath() + "/.config/Photonloom");
+    if (!oldDir.exists() || newDir.exists()) return;
+    QDir().mkpath(newDir.absolutePath());
+    for (const QString &name : oldDir.entryList(QDir::Files))
+        QFile::copy(oldDir.filePath(name), newDir.filePath(name));
+}
+} // namespace
+
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
-    app.setApplicationName("NikonTether");
-    app.setOrganizationName("NikonTether");
+    migrateLegacySettings();
+    app.setApplicationName("Photonloom");
+    app.setOrganizationName("Photonloom");
     app.setWindowIcon(makeShutterIcon());
 
     if (argc >= 2 && std::strcmp(argv[1], "--export-icon") == 0) {
         if (argc < 3) {
-            fprintf(stderr, "usage: nikontether --export-icon <path.png>\n");
+            fprintf(stderr, "usage: photonloom --export-icon <path.png>\n");
             return 2;
         }
         QPixmap pm = makeShutterIcon().pixmap(256, 256);

@@ -1,4 +1,5 @@
 #include "edit/EditSidecar.h"
+#include "edit/ZipFile.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -84,26 +85,15 @@ ShapeType shapeTypeFromName(const QString &name) {
     return ShapeType::Rectangle;
 }
 
-} // namespace
-
-namespace EditSidecar {
-
-QString pathFor(const QString &imagePath) {
-    return imagePath + ".nte.json";
-}
-
-bool exists(const QString &imagePath) {
-    return QFileInfo::exists(pathFor(imagePath));
-}
-
-bool save(const QString &imagePath, const Adjustments &a) {
-    // Rating lives in the same sidecar file but isn't part of Adjustments, so
-    // carry over whatever was there before this rewrite.
-    int existingRating = loadRating(imagePath);
-
+// Builds the full Adjustments JSON blob (masks/tone/crop/heals/removals —
+// everything except the sidecar-only `rating` field, which lives outside
+// Adjustments). Shared by the per-photo sidecar (EditSidecar::save, which
+// writes this at the top level) and self-contained project files
+// (EditSidecar::saveProject, which nest it under an "adjustments" key
+// alongside the embedded base image).
+QJsonObject adjustmentsToJson(const Adjustments &a) {
     QJsonObject o;
     o["version"] = 7;
-    if (existingRating > 0) o["rating"] = existingRating;
     o["brightness"] = a.brightness;
     o["contrast"] = a.contrast;
     o["highlights"] = a.highlights;
@@ -317,19 +307,12 @@ bool save(const QString &imagePath, const Adjustments &a) {
         o["removals"] = removals;
     }
 
-    QFile f(pathFor(imagePath));
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
-    f.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
-    return true;
+    return o;
 }
 
-bool load(const QString &imagePath, Adjustments &out) {
-    QFile f(pathFor(imagePath));
-    if (!f.open(QIODevice::ReadOnly)) return false;
-    QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &err);
-    if (err.error != QJsonParseError::NoError || !doc.isObject()) return false;
-    QJsonObject o = doc.object();
+// Reverse of adjustmentsToJson. Shared by EditSidecar::load and
+// EditSidecar::loadProject.
+Adjustments adjustmentsFromJson(const QJsonObject &o) {
     const int fileVersion = o["version"].toInt(6);
 
     Adjustments a;
@@ -657,7 +640,83 @@ bool load(const QString &imagePath, Adjustments &out) {
         }
     }
 
-    out = a;
+    return a;
+}
+
+} // namespace
+
+namespace EditSidecar {
+
+QString pathFor(const QString &imagePath) {
+    return imagePath + ".nte.json";
+}
+
+bool exists(const QString &imagePath) {
+    return QFileInfo::exists(pathFor(imagePath));
+}
+
+bool save(const QString &imagePath, const Adjustments &a) {
+    // Rating lives in the same sidecar file but isn't part of Adjustments, so
+    // carry over whatever was there before this rewrite.
+    int existingRating = loadRating(imagePath);
+    QJsonObject o = adjustmentsToJson(a);
+    if (existingRating > 0) o["rating"] = existingRating;
+
+    QFile f(pathFor(imagePath));
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+    f.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
+    return true;
+}
+
+bool load(const QString &imagePath, Adjustments &out) {
+    QFile f(pathFor(imagePath));
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) return false;
+    out = adjustmentsFromJson(doc.object());
+    return true;
+}
+
+// Self-contained project file: a real zip archive (see ZipFile.h) holding
+// "project.json" (the same Adjustments blob as a sidecar, nested under
+// "adjustments") and "base.png" (the tab's own base pixels as plain binary
+// PNG, not base64-inflated) — so the file has no dependency on an external
+// photo on disk (used for File > New documents, and as a "Save As project"
+// option for any document). Both entries are deflate-compressed by libzip,
+// and storing the PNG as raw bytes rather than base64 avoids the ~33% size
+// penalty base64 would add on top of PNG's own compression.
+bool saveProject(const QString &path, const QImage &base, const Adjustments &a) {
+    QJsonObject root;
+    root["projectFormat"] = 1;
+    root["adjustments"] = adjustmentsToJson(a);
+
+    QByteArray pngBytes;
+    QBuffer buf(&pngBytes);
+    buf.open(QIODevice::WriteOnly);
+    if (!base.save(&buf, "PNG")) return false;
+
+    QMap<QString, QByteArray> entries;
+    entries["project.json"] = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    entries["base.png"] = pngBytes;
+    return ZipFile::write(path, entries);
+}
+
+// Fills `base`/`out` and returns true if a project file was read successfully.
+bool loadProject(const QString &path, QImage &base, Adjustments &out) {
+    QMap<QString, QByteArray> entries;
+    if (!ZipFile::read(path, entries)) return false;
+    if (!entries.contains("project.json") || !entries.contains("base.png")) return false;
+
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(entries["project.json"], &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) return false;
+
+    QImage img;
+    if (!img.loadFromData(entries["base.png"], "PNG")) return false;
+
+    base = img;
+    out = adjustmentsFromJson(doc.object()["adjustments"].toObject());
     return true;
 }
 

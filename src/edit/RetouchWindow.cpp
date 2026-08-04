@@ -438,7 +438,7 @@ QIcon makeCurtainIcon(bool open) {
 } // namespace
 
 RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
-    setWindowTitle("NikonTether");
+    setWindowTitle("Photonloom");
     resize(1200, 820);
 
     auto *toolbar = addToolBar("Main");
@@ -462,6 +462,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     m_saveAction = new QAction("Save", this);
     m_saveAction->setShortcut(QKeySequence::Save); // Ctrl+S
     m_saveAllAction = new QAction("Save All", this);
+    m_saveAsProjectAction = new QAction("Save As Photonloom Project…", this);
     m_exportAction = new QAction("Export…", this);
     // Open Session/Photos moved out of the toolbar (still in the File menu)
     // to make room for the contextual tool-options row below.
@@ -474,6 +475,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     connect(openPhotosAction, &QAction::triggered, this, &RetouchWindow::onOpenPhotos);
     connect(m_saveAction, &QAction::triggered, this, &RetouchWindow::onSave);
     connect(m_saveAllAction, &QAction::triggered, this, &RetouchWindow::onSaveAll);
+    connect(m_saveAsProjectAction, &QAction::triggered, this, &RetouchWindow::onSaveAsProject);
     connect(m_exportAction, &QAction::triggered, this, &RetouchWindow::onExport);
 
     m_fileMenu = menuBar()->addMenu("File");
@@ -493,6 +495,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     m_recentFilesEndSeparator = m_fileMenu->addSeparator();
     m_fileMenu->addAction(m_saveAction);
     m_fileMenu->addAction(m_saveAllAction);
+    m_fileMenu->addAction(m_saveAsProjectAction);
     m_fileMenu->addSeparator();
     m_fileMenu->addAction(m_exportAction);
     rebuildRecentSessionsMenu();
@@ -2891,7 +2894,8 @@ void RetouchWindow::onOpenPhotos() {
     const QStringList files = QFileDialog::getOpenFileNames(
         this, "Open photos for editing",
         QDir(QDir::homePath()).filePath("Pictures/Tether"),
-        "RAW images (*.nef *.NEF *.cr2 *.cr3 *.arw *.dng *.raf *.rw2 *.orf);;All files (*)");
+        "RAW images (*.nef *.NEF *.cr2 *.cr3 *.arw *.dng *.raf *.rw2 *.orf);;"
+        "Photonloom Project (*.ploom);;All files (*)");
     for (const QString &f : files)
         openPhoto(f);
 }
@@ -2906,32 +2910,26 @@ void RetouchWindow::onSave() {
     RetouchTab *tab = currentTab();
     if (!tab || !tab->isReady()) return;
     if (tab->path().isEmpty()) {
+        // A File > New document has no original photo to sidecar against, so
+        // saving it means writing a self-contained Photonloom project file
+        // (base pixels + all layers/adjustments in one file) rather than
+        // flattening to a plain PNG.
         const QString path = QFileDialog::getSaveFileName(
-            this, "Save As", QDir(QDir::homePath()).filePath("Pictures/Tether/untitled.png"),
-            "PNG image (*.png)");
+            this, "Save As",
+            QDir(QDir::homePath()).filePath("Pictures/Tether/untitled.ploom"),
+            "Photonloom Project (*.ploom)");
         if (path.isEmpty()) return; // user cancelled
-        // Write the current base canvas to disk so the path has real image
-        // content, then re-key the tab exactly like any file-backed tab.
-        if (!tab->renderFullRes().save(path, "PNG")) {
-            QMessageBox::warning(this, "Save Failed", "Could not write image to " + path);
+        if (!tab->saveProjectFile(path)) {
+            QMessageBox::warning(this, "Save Failed", "Could not write project to " + path);
             return;
         }
-        QString oldKey;
-        for (auto it = m_openTabs.begin(); it != m_openTabs.end(); ++it) {
-            if (it.value() == tab) { oldKey = it.key(); break; }
-        }
-        if (!oldKey.isEmpty()) m_openTabs.remove(oldKey);
-        tab->assignPath(path);
-        m_openTabs.insert(path, tab);
-        int idx = m_tabs->indexOf(tab);
-        if (idx >= 0) m_tabs->setTabText(idx, QFileInfo(path).fileName());
-        // Deliberately NOT calling addToFilmstrip(path) here — per spec,
-        // auto-adding a saved-from-blank-canvas tab to the filmstrip is out
-        // of scope. The user can add it via File > Open Photos later if
-        // they want it in the strip.
+        reKeyTab(tab, path);
+        refreshMaskPanel(); // the tab's path (and Background layer's name) changed
+        m_statusLabel->setText("Saved project: " + QFileInfo(path).fileName());
+        return;
     }
     tab->saveEdits();
-    refreshMaskPanel(); // the tab's path (and Background layer's name) changed
+    refreshMaskPanel();
     m_statusLabel->setText("Saved edits: " + QFileInfo(tab->path()).fileName());
 }
 
@@ -2944,6 +2942,49 @@ void RetouchWindow::onSaveAll() {
         }
     }
     m_statusLabel->setText(QString("Saved edits for %1 photo(s)").arg(n));
+}
+
+// Save As Photonloom Project (*.ploom): available for any tab, not just
+// path-less ones — bundles the tab's base pixels and full adjustments into
+// one self-contained file, independent of whatever original photo it may
+// already be sidecar-linked to.
+void RetouchWindow::onSaveAsProject() {
+    RetouchTab *tab = currentTab();
+    if (!tab || !tab->isReady()) return;
+    const QString suggestedName =
+        (tab->path().isEmpty() ? QStringLiteral("untitled")
+                               : QFileInfo(tab->path()).completeBaseName()) +
+        ".ploom";
+    const QString path = QFileDialog::getSaveFileName(
+        this, "Save As Photonloom Project",
+        QDir(QDir::homePath()).filePath("Pictures/Tether/" + suggestedName),
+        "Photonloom Project (*.ploom)");
+    if (path.isEmpty()) return;
+    if (!tab->saveProjectFile(path)) {
+        QMessageBox::warning(this, "Save Failed", "Could not write project to " + path);
+        return;
+    }
+    reKeyTab(tab, path);
+    refreshMaskPanel();
+    m_statusLabel->setText("Saved project: " + QFileInfo(path).fileName());
+}
+
+// Re-keys `tab`'s entry in m_openTabs and its tab-bar label to `path` — used
+// whenever a tab's on-disk identity changes after a Save As (blank-canvas
+// PNG save, or Save As Project).
+void RetouchWindow::reKeyTab(RetouchTab *tab, const QString &path) {
+    QString oldKey;
+    for (auto it = m_openTabs.begin(); it != m_openTabs.end(); ++it) {
+        if (it.value() == tab) { oldKey = it.key(); break; }
+    }
+    if (!oldKey.isEmpty()) m_openTabs.remove(oldKey);
+    m_openTabs.insert(path, tab);
+    int idx = m_tabs->indexOf(tab);
+    if (idx >= 0) m_tabs->setTabText(idx, QFileInfo(path).fileName());
+    // Deliberately NOT calling addToFilmstrip(path) here — per spec,
+    // auto-adding a saved-from-blank-canvas tab to the filmstrip is out of
+    // scope. The user can add it via File > Open Photos later if they want
+    // it in the strip.
 }
 
 void RetouchWindow::onExport() {

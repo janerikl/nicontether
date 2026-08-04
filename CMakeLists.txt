@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(NikonTether LANGUAGES CXX)
+project(Photonloom LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,8 +15,9 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GPHOTO2 REQUIRED IMPORTED_TARGET libgphoto2)
 pkg_check_modules(LIBRAW REQUIRED IMPORTED_TARGET libraw)
+pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)
 
-add_executable(nikontether
+add_executable(photonloom
     src/main.cpp
     src/camera/CameraWorker.cpp
     src/camera/CameraController.cpp
@@ -51,6 +52,7 @@ add_executable(nikontether
     src/edit/ExportDialog.cpp
     src/edit/CurveEditor.cpp
     src/edit/EditSidecar.cpp
+    src/edit/ZipFile.cpp
     src/edit/HealTool.cpp
     src/edit/TextTool.cpp
     src/edit/ShapeTool.cpp
@@ -59,17 +61,17 @@ add_executable(nikontether
     src/edit/NewDocumentSize.cpp
 )
 
-target_include_directories(nikontether PRIVATE src)
-target_link_libraries(nikontether PRIVATE
-    Qt6::Widgets Qt6::Concurrent PkgConfig::GPHOTO2 PkgConfig::LIBRAW)
+target_include_directories(photonloom PRIVATE src)
+target_link_libraries(photonloom PRIVATE
+    Qt6::Widgets Qt6::Concurrent PkgConfig::GPHOTO2 PkgConfig::LIBRAW PkgConfig::LIBZIP)
 
 # `sudo cmake --install build` copies the binary to ${CMAKE_INSTALL_PREFIX}/bin
 # (default /usr/local/bin).
 include(GNUInstallDirs)
-install(TARGETS nikontether RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS photonloom RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Desktop launcher entry.
-install(FILES packaging/nikontether.desktop
+install(FILES packaging/photonloom.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 
 # Generate the launcher PNG from the same drawing code as the window icon.
@@ -79,11 +81,11 @@ install(CODE "
     file(MAKE_DIRECTORY \"\${ICON_DIR}\")
     execute_process(
         COMMAND \${CMAKE_COMMAND} -E env QT_QPA_PLATFORM=offscreen
-                \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/nikontether\" --export-icon \"\${ICON_DIR}/nikontether.png\"
+                \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/photonloom\" --export-icon \"\${ICON_DIR}/photonloom.png\"
         RESULT_VARIABLE _rc
     )
     if(NOT _rc EQUAL 0)
-        message(WARNING \"Failed to generate nikontether.png (code \${_rc})\")
+        message(WARNING \"Failed to generate photonloom.png (code \${_rc})\")
     endif()
 ")
 
@@ -102,9 +104,9 @@ add_test(NAME af_calibrator_test COMMAND af_calibrator_test)
 add_executable(grid_overlay_test tests/GridOverlayTest.cpp)
 target_include_directories(grid_overlay_test PRIVATE src)
 add_test(NAME grid_overlay_test COMMAND grid_overlay_test)
-add_executable(adjustments_paint_test tests/AdjustmentsPaintTest.cpp src/edit/Adjustments.cpp src/edit/EditSidecar.cpp src/edit/ShapeTool.cpp src/edit/TextTool.cpp)
+add_executable(adjustments_paint_test tests/AdjustmentsPaintTest.cpp src/edit/Adjustments.cpp src/edit/EditSidecar.cpp src/edit/ZipFile.cpp src/edit/ShapeTool.cpp src/edit/TextTool.cpp)
 target_include_directories(adjustments_paint_test PRIVATE src)
-target_link_libraries(adjustments_paint_test PRIVATE Qt6::Widgets)
+target_link_libraries(adjustments_paint_test PRIVATE Qt6::Widgets PkgConfig::LIBZIP)
 # The project forces a Release build (NDEBUG) by default, which would compile
 # out this test's assert()s; force them on regardless of build type.
 target_compile_options(adjustments_paint_test PRIVATE -UNDEBUG)
@@ -122,13 +124,14 @@ add_executable(layer_reorder_test
     src/edit/ImageCanvas.cpp
     src/edit/RetouchTab.cpp
     src/edit/EditSidecar.cpp
+    src/edit/ZipFile.cpp
     src/edit/HealTool.cpp
     src/edit/TextTool.cpp
     src/edit/ShapeTool.cpp
     src/edit/InpaintTool.cpp
 )
 target_include_directories(layer_reorder_test PRIVATE src)
-target_link_libraries(layer_reorder_test PRIVATE Qt6::Widgets Qt6::Concurrent PkgConfig::LIBRAW)
+target_link_libraries(layer_reorder_test PRIVATE Qt6::Widgets Qt6::Concurrent PkgConfig::LIBRAW PkgConfig::LIBZIP)
 target_compile_options(layer_reorder_test PRIVATE -UNDEBUG)
 add_test(NAME layer_reorder_test COMMAND layer_reorder_test)
 set_tests_properties(layer_reorder_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

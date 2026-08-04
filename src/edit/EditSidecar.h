@@ -15,6 +15,13 @@ bool save(const QString &imagePath, const Adjustments &adj);
 // Fills `out` and returns true if a sidecar was read successfully.
 bool load(const QString &imagePath, Adjustments &out);
 
+// Self-contained project file (base pixels + full Adjustments in one file,
+// no dependency on an external photo on disk) — see EditSidecar.cpp for
+// details. Path is used as given, unlike save()/load() which derive
+// `<imagePath>.nte.json` via pathFor().
+bool saveProject(const QString &path, const QImage &base, const Adjustments &adj);
+bool loadProject(const QString &path, QImage &base, Adjustments &out);
+
 // 1-5 star rating, stored alongside the adjustments in the same sidecar JSON
 // (preserved across save() calls even though it isn't part of Adjustments).
 // 0 = unrated. loadRating returns 0 if no sidecar or no rating field exists.

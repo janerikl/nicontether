@@ -1,9 +1,10 @@
-# NikonTether
+# Photonloom
 
-Linux tethered-capture app for Nikon cameras over USB. Live view, remote
-control of exposure/WB/quality/AF, and automatic download of NEF RAW files into
-a dated session folder with an instant preview (extracted from the JPEG that
-Nikon embeds in every NEF).
+Linux tethered-capture and photo-editing app. Started as a Nikon tethering
+tool — live view, remote control of exposure/WB/quality/AF, and automatic
+download of NEF RAW files into a dated session folder with an instant preview
+(extracted from the JPEG that Nikon embeds in every NEF) — and has since grown
+a full non-destructive RAW editor with layers, masks, paint, shapes, and text.
 
 Built with **C++/Qt 6** and **libgphoto2** (PTP).
 
@@ -21,7 +22,7 @@ sudo apt install gphoto2
 ```bash
 cmake -S . -B build -G Ninja
 cmake --build build
-./build/nikontether
+./build/photonloom
 ```
 
 ## Usage

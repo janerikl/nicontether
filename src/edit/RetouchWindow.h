@@ -57,6 +57,8 @@ private slots:
     void onNewDocument();
     void onSave();
     void onSaveAll();
+    void onSaveAsProject();
+    void reKeyTab(RetouchTab *tab, const QString &path);
     void onFilmstripSelected(const QString &path);
     void onTabChanged(int index);
     void onTabCloseRequested(int index);
@@ -97,6 +99,7 @@ private:
     // Promoted from constructor locals so mode chrome can enable/disable them.
     class QAction *m_saveAction = nullptr;
     class QAction *m_saveAllAction = nullptr;
+    class QAction *m_saveAsProjectAction = nullptr;
     class QAction *m_exportAction = nullptr;
 
     // File menu + anchors for the rebuildable recent-sessions section. The

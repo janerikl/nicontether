@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Photonloom
+Comment=Tethered capture and photo editing
+Exec=photonloom
+Icon=photonloom
+Terminal=false
+Categories=Graphics;Photography;

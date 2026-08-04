@@ -52,6 +52,33 @@ bool geometryDiffers(const Adjustments &a, const Adjustments &b) {
 
 RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     : QWidget(parent), m_path(path) {
+    // A self-contained project file carries its own base pixels (no
+    // external photo/RAW to decode), so it takes a completely different,
+    // synchronous load path instead of the RawLoader/QFutureWatcher one below.
+    if (path.endsWith(QStringLiteral(".ploom"), Qt::CaseInsensitive)) {
+        QImage base;
+        const bool ok = EditSidecar::loadProject(path, base, m_adj);
+        for (const Mask &m : m_adj.masks)
+            if (m.isImageLayer()) kickoffImageLayerDecode(m.sourceImagePath);
+        ensureBackgroundMask();
+        setupCanvasAndWiring();
+        if (!ok || base.isNull()) {
+            m_canvas->setPlaceholder("Failed to open project file");
+            emit decoded(false);
+            return;
+        }
+        m_base = base;
+        rebuildGeom();
+        retone();
+        emit decoded(true);
+        emit editStateChanged(m_dirty, hasEdits());
+        m_history = {m_adj};
+        m_histIndex = 0;
+        emit historyChanged(false, false);
+        emit historyListChanged();
+        return;
+    }
+
     // Restore previously-saved edits, if any (does not mark dirty).
     EditSidecar::load(m_path, m_adj);
     // Any image layers restored from the sidecar need their source photo
@@ -321,6 +348,17 @@ void RetouchTab::saveEdits() {
         EditSidecar::saveThumbnail(m_path, m_lastEdited);
     m_dirty = false;
     emit editStateChanged(false, hasEdits());
+}
+
+// Writes a self-contained .ploom project file (base pixels + full
+// Adjustments) at `path` and re-keys this tab to it, same as saveEdits()
+// does for the sidecar-per-photo format.
+bool RetouchTab::saveProjectFile(const QString &path) {
+    if (!EditSidecar::saveProject(path, m_base, m_adj)) return false;
+    m_path = path;
+    m_dirty = false;
+    emit editStateChanged(false, hasEdits());
+    return true;
 }
 
 // Orient (no crop) → heal → paint cached removal fills, all in oriented,

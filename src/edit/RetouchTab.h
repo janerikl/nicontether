@@ -184,6 +184,9 @@ public:
     bool isDirty() const { return m_dirty; }
     bool hasEdits() const;
     void saveEdits(); // write the sidecar and mark clean
+    // Write a self-contained .ploom project file (base pixels + all edits)
+    // at `path` and re-key this tab to it. Returns false on I/O failure.
+    bool saveProjectFile(const QString &path);
 
     void undo();
     void redo();

@@ -4,7 +4,7 @@
 #include <QStringList>
 
 // Small, UI-independent store for recently opened session folders. Backed by
-// QSettings (the existing "NikonTether" org/app scope). The list holds absolute
+// QSettings (the existing "Photonloom" org/app scope). The list holds absolute
 // folder paths, newest first, de-duplicated by path and capped at kMaxRecent.
 class RecentSessions {
 public:
