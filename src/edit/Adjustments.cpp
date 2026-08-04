@@ -1,5 +1,8 @@
 #include "edit/Adjustments.h"
 
+#include "edit/ShapeTool.h"
+#include "edit/TextTool.h"
+
 #include <QPainter>
 #include <QPainterPath>
 #include <QRectF>
@@ -406,6 +409,68 @@ void rasterizeText(const Mask &m, std::vector<uchar> &cov, int w, int h) {
     }
 }
 
+ShapeOp maskToShapeOp(const Mask &m); // fwd decl
+TextOp maskToTextOp(const Mask &m);   // fwd decl
+
+// Draws a Shape or TextBox mask's own content (fill/stroke, or glyphs/
+// outline/shadow/background) into a transparent w×h canvas via the existing
+// ShapeTool.cpp/TextTool.cpp drawing code, then splits the result into a
+// straight-alpha colour buffer (`loc`, for the generic per-pixel blend loop
+// below) and a coverage buffer (`cov`, read the same way rasterizeBrush/
+// rasterizeText's output is). `orientedToGeom`/`geomRotationDeg`/`scale` map
+// the mask's raw oriented-image pixel-space geometry into `img`'s local
+// pixel space, exactly like applyShapes/applyTexts.
+QImage rasterizeShapeOrTextBox(const Mask &m, std::vector<uchar> &cov, int w, int h,
+                               const QTransform &orientedToGeom, double geomRotationDeg,
+                               double scale) {
+    cov.assign(size_t(w) * h, 0);
+    QImage overlay(w, h, QImage::Format_ARGB32_Premultiplied);
+    overlay.fill(Qt::transparent);
+    if (w <= 0 || h <= 0) return QImage(w, h, QImage::Format_RGBA64);
+
+    if (m.type == MaskType::Shape) {
+        ShapeOp op = maskToShapeOp(m);
+        ShapeOp local = op;
+        if (op.type == ShapeType::Line) {
+            local.p1 = orientedToGeom.map(op.p1) * scale;
+            local.p2 = orientedToGeom.map(op.p2) * scale;
+        } else {
+            QPointF center = orientedToGeom.map(op.rect.center()) * scale;
+            local.rect = QRectF(QPointF(0, 0), op.rect.size() * scale);
+            local.rect.moveCenter(center);
+            local.rotation = op.rotation + geomRotationDeg;
+        }
+        local.strokeWidth *= scale;
+        applyShapeOp(overlay, local);
+    } else {
+        TextOp op = maskToTextOp(m);
+        TextOp local = op;
+        local.pos = orientedToGeom.map(op.pos) * scale;
+        local.rotation = op.rotation + geomRotationDeg;
+        local.pixelSize *= scale;
+        local.outlineWidth *= scale;
+        local.shadowOffset *= scale;
+        local.shadowBlur *= scale;
+        local.bgPadding *= scale;
+        applyTextOp(overlay, local);
+    }
+
+    QImage straight = overlay.convertToFormat(QImage::Format_ARGB32);
+    QImage loc(w, h, QImage::Format_RGBA64);
+    for (int y = 0; y < h; ++y) {
+        const QRgb *src = reinterpret_cast<const QRgb *>(straight.constScanLine(y));
+        QRgba64 *dst = reinterpret_cast<QRgba64 *>(loc.scanLine(y));
+        uchar *covLine = cov.data() + size_t(y) * w;
+        for (int x = 0; x < w; ++x) {
+            const QRgb px = src[x];
+            covLine[x] = uchar(qAlpha(px));
+            dst[x] = qRgba64(quint16(qRed(px) * 257), quint16(qGreen(px) * 257),
+                             quint16(qBlue(px) * 257), 65535);
+        }
+    }
+    return loc;
+}
+
 QImage applyLayerContent(const QImage &src, const MaskAdjust &a); // fwd decl
 
 // Scale `src` to cover a w×h target (aspect-fill) and crop to exactly that
@@ -432,6 +497,55 @@ QRectF imageLayerFrame(int canvasW, int canvasH, const Mask &m) {
     return QRectF(cx - w / 2.0, cy - h / 2.0, w, h);
 }
 
+// Mask::Shape/TextBox fields mirror ShapeOp/TextOp exactly (see the
+// TODO(shape-layer migration stage B) comments on Mask in Adjustments.h), so
+// rendering reuses ShapeTool.cpp's/TextTool.cpp's existing drawing code
+// (applyShapeOp/applyTextOp) rather than duplicating it — these just repack
+// the flattened Mask fields into the op structs those functions expect.
+ShapeOp maskToShapeOp(const Mask &m) {
+    ShapeOp op;
+    op.type = m.shapeType;
+    op.rect = m.shapeRect;
+    op.p1 = m.shapeP1;
+    op.p2 = m.shapeP2;
+    op.rotation = m.shapeRotation;
+    op.sides = m.shapeSides;
+    op.innerRadiusRatio = m.shapeInnerRadiusRatio;
+    op.fillEnabled = m.shapeFillEnabled;
+    op.fillColor = m.shapeFillColor;
+    op.strokeEnabled = m.shapeStrokeEnabled;
+    op.strokeColor = m.shapeStrokeColor;
+    op.strokeWidth = m.shapeStrokeWidth;
+    op.opacity = 1.0; // Mask::opacity is applied by applyMasks' generic weight/opacity path
+    op.visible = true; // visibility already gates entry into applyMasks' loop
+    return op;
+}
+
+TextOp maskToTextOp(const Mask &m) {
+    TextOp op;
+    op.pos = m.textBoxPos;
+    op.rotation = m.textBoxRotation;
+    op.text = m.textBoxText;
+    op.family = m.textBoxFamily;
+    op.pixelSize = m.textBoxPixelSize;
+    op.bold = m.textBoxBold;
+    op.italic = m.textBoxItalic;
+    op.color = m.textBoxColor;
+    op.outlineEnabled = m.textBoxOutlineEnabled;
+    op.outlineColor = m.textBoxOutlineColor;
+    op.outlineWidth = m.textBoxOutlineWidth;
+    op.shadowEnabled = m.textBoxShadowEnabled;
+    op.shadowOffset = m.textBoxShadowOffset;
+    op.shadowBlur = m.textBoxShadowBlur;
+    op.shadowOpacity = m.textBoxShadowOpacity;
+    op.shadowColor = m.textBoxShadowColor;
+    op.bgEnabled = m.textBoxBgEnabled;
+    op.bgColor = m.textBoxBgColor;
+    op.bgOpacity = m.textBoxBgOpacity;
+    op.bgPadding = m.textBoxBgPadding;
+    return op;
+}
+
 // Apply all layers, blending each layer's full tone/colour/detail content
 // into the composite-so-far by its per-pixel mask weight, opacity, and blend
 // mode. Image layers substitute a cover-fit of their own source photo for
@@ -441,12 +555,30 @@ QRectF imageLayerFrame(int canvasW, int canvasH, const Mask &m) {
 // LayersPanel list shows index 0 at the top row), but compositing must apply
 // the bottom-most layer first so a higher layer paints over a lower one —
 // hence the reverse loop.
-enum class MaskPass { All, ExcludePaint, PaintOnly };
+// Two-tier performance/correctness trade-off (see design doc section B):
+// Paint/Shape/TextBox are the "interactive" tier — cheap enough to
+// re-composite on every drag/paint/edit frame on the GUI thread (see
+// applyPaintMasks) — while Radial/Linear/Brush/Image/Text-clip-mask are the
+// "static" tier, composited once per full render on the worker thread
+// (see applyAdjustments). StaticOnly/InteractiveOnly let each tier run as
+// its own pass; a fresh full render (StaticOnly + InteractiveOnly back to
+// back) always produces the fully-correct true-stack-order composite, but a
+// GUI-thread top-up (InteractiveOnly alone, over a cached StaticOnly buffer)
+// always draws the interactive tier as a block on top of the static tier's
+// snapshot — so a Paint/Shape/TextBox layer positioned *below* a static-tier
+// layer in the stack will render correctly in an isolated snapshot but not
+// necessarily mid-drag against the cached buffer, until the next full
+// render. Any non-drag edit (selection change, property panel edit, etc.)
+// triggers a fresh full render, so this only matters transiently mid-drag —
+// an accepted trade-off.
+enum class MaskPass { All, StaticOnly, InteractiveOnly };
 
 void applyMasks(QImage &img, const QVector<Mask> &masks,
                QVector<BrushRasterCache> *brushCache = nullptr,
                int snapshotAfterIndex = -1, QImage *snapshotOut = nullptr,
-               MaskPass pass = MaskPass::All) {
+               MaskPass pass = MaskPass::All,
+               const QTransform &orientedToGeom = QTransform(),
+               double geomRotationDeg = 0.0, double scale = 1.0) {
     const int w = img.width(), h = img.height();
     if (w == 0 || h == 0) return;
     const double W = w;
@@ -455,8 +587,11 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         brushCache->resize(masks.size());
     for (int mi = masks.size() - 1; mi >= 0; --mi) {
         const Mask &m = masks[mi];
-        if ((pass == MaskPass::ExcludePaint && m.type == MaskType::Paint) ||
-            (pass == MaskPass::PaintOnly && m.type != MaskType::Paint)) {
+        const bool interactiveType = m.type == MaskType::Paint ||
+                                     m.type == MaskType::Shape ||
+                                     m.type == MaskType::TextBox;
+        if ((pass == MaskPass::StaticOnly && interactiveType) ||
+            (pass == MaskPass::InteractiveOnly && !interactiveType)) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
@@ -471,7 +606,10 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         }
         const bool paintLayer = m.type == MaskType::Paint;
         const bool textLayer = m.type == MaskType::Text;
-        if (!imageLayer && !paintLayer && !textLayer && m.adj.isZero()) {
+        const bool shapeLayer = m.type == MaskType::Shape;
+        const bool textBoxLayer = m.type == MaskType::TextBox;
+        if (!imageLayer && !paintLayer && !textLayer && !shapeLayer && !textBoxLayer &&
+            m.adj.isZero()) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
@@ -480,6 +618,10 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             continue;
         }
         if (textLayer && m.text.trimmed().isEmpty()) {
+            if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
+            continue;
+        }
+        if (textBoxLayer && m.textBoxText.trimmed().isEmpty()) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
@@ -530,6 +672,13 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         } else if (paintLayer) {
             loc = QImage(w, h, QImage::Format_RGBA64);
             loc.fill(m.paintColor); // fallback fill; per-dab colors applied below
+        } else if (shapeLayer || textBoxLayer) {
+            // Shape/TextBox carry their own fully-rendered colour (fill,
+            // stroke, glyphs, outline, shadow, background) — rasterize
+            // straight into `loc`/`cov` below instead of going through
+            // applyLayerContent (which would tone-adjust the composite-so-
+            // far, not this layer's own drawn content).
+            loc = rasterizeShapeOrTextBox(m, cov, w, h, orientedToGeom, geomRotationDeg, scale);
         } else {
             loc = applyLayerContent(img, m.adj);
         }
@@ -540,6 +689,8 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                            /*populateOut=*/false);
         else if (textLayer)
             rasterizeText(m, cov, w, h); // no incremental cache — cheap to redo each render
+        // shapeLayer/textBoxLayer already populated `cov` above (in
+        // rasterizeShapeOrTextBox), read straight from it, same as text.
         // With a cache, rasterizeBrush left the up-to-date buffers in the
         // cache itself (see populateOut above) — read from there directly to
         // avoid a full-image copy of masks that didn't change this frame.
@@ -997,6 +1148,11 @@ static bool hasMaskEdits(const Adjustments &adj) {
             if (m.text.trimmed().isEmpty()) continue;
             return true;
         }
+        if (m.type == MaskType::Shape) return true;
+        if (m.type == MaskType::TextBox) {
+            if (m.textBoxText.trimmed().isEmpty()) continue;
+            return true;
+        }
         if (m.adj.isZero()) continue;
         if (m.type == MaskType::Brush && m.stroke.isEmpty()) continue;
         return true;
@@ -1097,9 +1253,12 @@ bool Adjustments::hasCurve() const {
 }
 
 void applyPaintMasks(QImage &img, const QVector<Mask> &masks,
-                     QVector<BrushRasterCache> *brushCache) {
+                     QVector<BrushRasterCache> *brushCache,
+                     const QTransform &orientedToGeom, double geomRotationDeg,
+                     double scale) {
     if (masks.isEmpty()) return;
-    applyMasks(img, masks, brushCache, -1, nullptr, MaskPass::PaintOnly);
+    applyMasks(img, masks, brushCache, -1, nullptr, MaskPass::InteractiveOnly,
+              orientedToGeom, geomRotationDeg, scale);
 }
 
 bool hasToneEdits(const Adjustments &adj) {
@@ -1147,12 +1306,14 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
     }
 
     // --- Additional layers (blend per-layer full content by weight) ---
-    // Paint-layer strokes are excluded here and composited later, on top of
-    // text/shapes (see applyPaintMasks), so the paint/brush tool draws above
-    // other elements by default instead of being baked under them.
+    // Paint/Shape/TextBox (the "interactive" tier) are excluded here and
+    // composited later, by the GUI thread on top of this worker-computed
+    // buffer (see applyPaintMasks and the MaskPass comment above it), so
+    // dragging/painting one of them doesn't re-run this full tone/static-
+    // mask pass on every frame.
     if (!adj.masks.isEmpty())
         applyMasks(img, adj.masks, brushCache, maskSnapshotIndex, maskSnapshotOut,
-                  MaskPass::ExcludePaint);
+                  MaskPass::StaticOnly);
 
     // --- Denoise / clarity / sharpen / vignette (base layer only; layers have their own) ---
     applyDenoise(img, adj.denoise);

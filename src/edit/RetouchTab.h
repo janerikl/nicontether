@@ -120,7 +120,9 @@ public:
 
     // Local adjustment masks.
     void setMaskMode(bool on);              // enter/leave mask editing on the canvas
-    int addMask(MaskType type);             // append + select; returns its index
+    // append + select; returns its index. shapeType only applies when
+    // type == MaskType::Shape (sets Mask::shapeType on the new layer).
+    int addMask(MaskType type, ShapeType shapeType = ShapeType::Rectangle);
     int addImageLayer(const QString &path); // append an image layer; returns its index
     int duplicateActiveMask();              // copy + insert above; returns its index
     void selectMask(int index);             // -1 = none
@@ -150,6 +152,16 @@ public:
     void ungroupMasks(const QVector<int> &indices);   // clear the group tag of the given layers' groups
     const QVector<Mask> &masks() const { return m_adj.masks; }
     int activeMaskIndex() const { return m_activeMask; }
+
+    // True when there is a currently-selected layer and its mask type matches
+    // requiredType exactly. Used to gate the Brush/Paint, Radial, and Linear
+    // tool toggles: those tools operate on the existing selection rather than
+    // always creating a new layer, so they must only be enabled when the
+    // selection is of the matching type.
+    bool canActivateTool(MaskType requiredType) const {
+        return m_activeMask >= 0 && m_activeMask < m_adj.masks.size() &&
+               m_adj.masks[m_activeMask].type == requiredType;
+    }
 
     // Base (background) layer. `hasBackgroundLayer` is false once the base
     // has been permanently deleted (a document with only a blank/untitled
@@ -273,6 +285,14 @@ private:
     void updateHealSpots();   // push heal-op markers (display coords) to the canvas
     void updateTextMarkers(); // push text-op markers (display coords) to the canvas
     void updateShapeMarkers(); // push shape-op markers (display coords) to the canvas
+    // Marker index (position within the Shape-filtered view ImageCanvas sees)
+    // -> real index into m_adj.masks, rebuilt every updateShapeMarkers() call.
+    // Returns -1 for an out-of-range marker index.
+    int shapeMaskIndex(int markerIndex) const;
+    // Marker index (position within the TextBox-filtered view ImageCanvas
+    // sees) -> real index into m_adj.masks, rebuilt every updateTextMarkers()
+    // call. Returns -1 for an out-of-range marker index.
+    int textMaskIndex(int markerIndex) const;
     void updateRemovalMarkers(); // push removal-op markers (display coords) to the canvas
     // Oriented (rotate/flip), pre-crop image with heals AND already-committed
     // removals baked in — the "source" a new removal's inpaint reads from,
@@ -291,14 +311,20 @@ private:
     bool m_maskMode = false;
     int m_activeMask = -1; // index into m_adj.masks, or -1
     bool m_textMode = false;
-    int m_activeText = -1;   // index into m_adj.texts, or -1
-    int m_newTextIndex = -1; // index of a just-placed, not-yet-committed draft, or -1
-    int m_textEditIndex = -1; // index currently open in the inline editor, or -1
+    int m_activeText = -1;   // marker index (position within the TextBox-filtered
+                              // view of m_adj.masks, see m_textMaskIndices), or -1
+    int m_newTextIndex = -1; // marker index of a just-placed, not-yet-committed draft, or -1
+    int m_textEditIndex = -1; // marker index currently open in the inline editor, or -1
+    // marker index -> m_adj.masks index, rebuilt each updateTextMarkers() call.
+    QVector<int> m_textMaskIndices;
     TextOp m_textDefaults;   // style applied to the next newly-placed text
     double m_textResizeStartPixelSize = 48.0; // captured at corner-drag start
 
     bool m_shapeMode = false;
-    int m_activeShape = -1;   // index into m_adj.shapes, or -1
+    int m_activeShape = -1;   // marker index (position within the Shape-filtered
+                               // view of m_adj.masks, see m_shapeMaskIndices), or -1
+    // marker index -> m_adj.masks index, rebuilt each updateShapeMarkers() call.
+    QVector<int> m_shapeMaskIndices;
     ShapeOp m_shapeDefaults;  // style/type applied to the next newly-created shape
     QRectF m_shapeMoveStartRect;   // active shape's rect at move-drag start
     QPointF m_shapeMoveStartP1, m_shapeMoveStartP2; // active Line's endpoints at move-drag start

@@ -1,13 +1,19 @@
 #include "edit/Adjustments.h"
 #include "edit/EditSidecar.h"
 
+#include <QGuiApplication>
 #include <QImage>
 #include <QTemporaryDir>
 #include <QFile>
 #include <cassert>
 #include <cstdio>
 
-int main() {
+int main(int argc, char **argv) {
+    // MaskType::TextBox rendering goes through TextTool.cpp's QPainter/QFont
+    // text-drawing path, which needs a QGuiApplication (font database) even
+    // off-screen; force the offscreen platform so this runs headless in CI.
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    QGuiApplication app(argc, argv);
     // A tiny black base image with one full-coverage red Paint layer should
     // come out red (opacity 1, Normal blend, hardness 1 covers the whole
     // frame from a single centered dab with a huge radius).
@@ -422,6 +428,162 @@ int main() {
         assert(EditSidecar::load(path, loaded));
         assert(loaded.lightAngle == 275);
         assert(loaded.lightIntensity == -42);
+    }
+
+    // MaskType::Shape renders via the new masks-based interactive-tier path:
+    // a full-frame red rectangle over a black base should turn the whole
+    // frame red once both the (empty) static pass and the interactive pass
+    // (applyPaintMasks) run — mirroring how RetouchTab::onRenderDone
+    // composites applyAdjustments' cached buffer + applyPaintMasks. Built
+    // directly via `masks` (not the old `shapes` array) so this doesn't
+    // double-render.
+    {
+        QImage base(8, 8, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask shape;
+        shape.type = MaskType::Shape;
+        shape.shapeType = ShapeType::Rectangle;
+        shape.shapeRect = QRectF(0, 0, 8, 8); // raw oriented-image pixel space, matches base size
+        shape.shapeFillEnabled = true;
+        shape.shapeFillColor = QColor(255, 0, 0);
+        shape.shapeStrokeEnabled = false;
+        shape.opacity = 1.0;
+        shape.visible = true;
+
+        Adjustments adj;
+        adj.masks.append(shape);
+
+        QImage out = applyAdjustments(base, adj);   // static tier: Shape excluded, stays black
+        assert(qRed(out.pixel(4, 4)) == 0);
+        applyPaintMasks(out, adj.masks);             // interactive tier: Shape composited here
+        QRgb center = out.pixel(4, 4);
+        assert(qRed(center) > 250 && qGreen(center) < 5 && qBlue(center) < 5);
+    }
+
+    // A hidden Shape mask contributes nothing, same as other mask types.
+    {
+        QImage base(8, 8, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask shape;
+        shape.type = MaskType::Shape;
+        shape.shapeType = ShapeType::Rectangle;
+        shape.shapeRect = QRectF(0, 0, 8, 8);
+        shape.shapeFillEnabled = true;
+        shape.shapeFillColor = QColor(255, 0, 0);
+        shape.visible = false;
+
+        Adjustments adj;
+        adj.masks.append(shape);
+
+        QImage out = applyAdjustments(base, adj);
+        applyPaintMasks(out, adj.masks);
+        assert(qRed(out.pixel(4, 4)) == 0);
+    }
+
+    // MaskType::TextBox renders via the same new masks-based interactive-tier
+    // path: solid background-box color should show through where the text
+    // box is placed.
+    {
+        QImage base(20, 20, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask tb;
+        tb.type = MaskType::TextBox;
+        tb.textBoxPos = QPointF(0, 0);
+        tb.textBoxText = QStringLiteral("Hi");
+        tb.textBoxPixelSize = 12.0;
+        tb.textBoxColor = QColor(255, 255, 255);
+        tb.textBoxBgEnabled = true;
+        tb.textBoxBgColor = QColor(0, 255, 0);
+        tb.textBoxBgOpacity = 1.0;
+        tb.textBoxBgPadding = 2.0;
+        tb.opacity = 1.0;
+        tb.visible = true;
+
+        Adjustments adj;
+        adj.masks.append(tb);
+
+        QImage out = applyAdjustments(base, adj);
+        assert(qGreen(out.pixel(1, 1)) == 0); // static tier: TextBox excluded, stays black
+        applyPaintMasks(out, adj.masks);
+        // Just below/right of the origin should be inside the padded
+        // background box (text box top-left is (0,0), padding extends it).
+        QRgb p = out.pixel(1, 1);
+        assert(qGreen(p) > 200 && qRed(p) < 60 && qBlue(p) < 60);
+    }
+
+    // Paint, Shape, and TextBox composite together (true stack order) in a
+    // single applyPaintMasks call, replacing the old separate
+    // applyTexts/applyShapes/applyPaintMasks three-call sequence for masks-
+    // based layers. Stack order (index 0 = top): TextBox on top of Shape on
+    // top of Paint; each covers a distinct region so all three must appear.
+    {
+        QImage base(30, 10, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask paint;
+        paint.type = MaskType::Paint;
+        paint.paintColor = QColor(0, 0, 255);
+        paint.brushRadius = 0.05; // small dab, width-normalized against 30px width
+        paint.hardness = 1.0;
+        paint.opacity = 1.0;
+        // BrushStrokePoint coords are normalized by image WIDTH for both x
+        // and y (see Mask::stroke doc comment), not by height, so y=5px on
+        // a 30-wide image is 5/30 here, not 5/10.
+        paint.stroke.append(BrushStrokePoint{QPointF(2.0 / 30.0, 5.0 / 30.0), false,
+                                             paint.brushRadius, paint.hardness,
+                                             paint.paintColor.rgb()});
+
+        Mask shape;
+        shape.type = MaskType::Shape;
+        shape.shapeType = ShapeType::Rectangle;
+        shape.shapeRect = QRectF(12, 2, 6, 6);
+        shape.shapeFillEnabled = true;
+        shape.shapeFillColor = QColor(255, 0, 0);
+        shape.shapeStrokeEnabled = false;
+        shape.opacity = 1.0;
+
+        Mask tb;
+        tb.type = MaskType::TextBox;
+        tb.textBoxPos = QPointF(22, 0);
+        tb.textBoxText = QStringLiteral("X");
+        tb.textBoxBgEnabled = true;
+        tb.textBoxBgColor = QColor(0, 255, 0);
+        tb.textBoxBgOpacity = 1.0;
+        tb.textBoxBgPadding = 3.0;
+        tb.opacity = 1.0;
+
+        Adjustments adj;
+        // masks are top-of-stack-first; order here doesn't matter for this
+        // test since the three regions don't overlap.
+        adj.masks.append(tb);
+        adj.masks.append(shape);
+        adj.masks.append(paint);
+
+        QImage out = applyAdjustments(base, adj);
+        applyPaintMasks(out, adj.masks);
+        assert(qBlue(out.pixel(2, 5)) > 200);  // Paint region
+        assert(qRed(out.pixel(15, 5)) > 200);  // Shape region
+        assert(qGreen(out.pixel(23, 1)) > 200); // TextBox background region
+    }
+
+    // hasMaskEdits/hasToneEdits recognize Shape/TextBox masks.
+    {
+        Adjustments a;
+        Mask shape;
+        shape.type = MaskType::Shape;
+        shape.shapeRect = QRectF(0, 0, 4, 4);
+        a.masks.append(shape);
+        assert(hasToneEdits(a));
+
+        Adjustments b;
+        Mask tbEmpty;
+        tbEmpty.type = MaskType::TextBox;
+        tbEmpty.textBoxText = QStringLiteral("   "); // whitespace-only -> no edit
+        b.masks.append(tbEmpty);
+        assert(!hasToneEdits(b));
     }
 
     std::printf("AdjustmentsPaintTest: all assertions passed\n");

@@ -40,11 +40,14 @@
 namespace {
 QString maskTypeLabel(MaskType t) {
     switch (t) {
-    case MaskType::Radial: return "Radial";
-    case MaskType::Linear: return "Graduated";
-    case MaskType::Brush:  return "Brush";
-    case MaskType::Paint:  return "Paint";
-    case MaskType::None:   return "Layer";
+    case MaskType::Radial:  return "Radial";
+    case MaskType::Linear:  return "Graduated";
+    case MaskType::Brush:   return "Brush";
+    case MaskType::Paint:   return "Paint";
+    case MaskType::None:    return "Layer";
+    case MaskType::Text:    return "Text Mask";
+    case MaskType::Shape:   return "Shape";
+    case MaskType::TextBox: return "Text";
     }
     return "Layer";
 }
@@ -182,13 +185,10 @@ protected:
 } // namespace
 
 namespace {
-constexpr char kCollapsedGroupsKey[] = "layersPanel/collapsedShapeGroups";
 constexpr char kCollapsedMaskGroupsKey[] = "layersPanel/collapsedMaskGroups";
 }
 
 LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
-    const QStringList collapsed = QSettings().value(kCollapsedGroupsKey).toStringList();
-    m_collapsedGroups = QSet<QString>(collapsed.begin(), collapsed.end());
     const QStringList collapsedMasks = QSettings().value(kCollapsedMaskGroupsKey).toStringList();
     m_collapsedMaskGroups = QSet<QString>(collapsedMasks.begin(), collapsedMasks.end());
     // Collapsed section rows have very little intrinsic width (just a
@@ -337,26 +337,6 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     m_maskPanel = new MaskPanel;
     m_masksSectionDock = addSection("layerSectionMasks", "Masks", m_maskPanel);
 
-    // Shapes section: a tree (not a list, unlike the mask stack above) since
-    // groups nest as collapsible parent rows with their members underneath.
-    auto *shapesContent = new QWidget;
-    auto *shapesLayout = new QVBoxLayout(shapesContent);
-    shapesLayout->setContentsMargins(4, 4, 4, 4);
-    m_shapeList = new QTreeWidget;
-    m_shapeList->setHeaderHidden(true);
-    m_shapeList->setColumnCount(1);
-    m_shapeList->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_shapeList->setMinimumHeight(120);
-    shapesLayout->addWidget(m_shapeList, 1);
-    auto *shapeButtons = new QHBoxLayout;
-    m_groupShapes = new QPushButton("Group");
-    m_ungroupShapes = new QPushButton("Ungroup");
-    shapeButtons->addWidget(m_groupShapes);
-    shapeButtons->addWidget(m_ungroupShapes);
-    shapeButtons->addStretch(1);
-    shapesLayout->addLayout(shapeButtons);
-    m_shapesSectionDock = addSection("layerSectionShapes", "Shapes", shapesContent);
-
     // Remove Object section: a flat checkable list (no grouping/reordering
     // needed), one row per cached content-aware fill, plus a Delete button —
     // mirrors the masks list's eye-toggle + Delete pattern above.
@@ -380,15 +360,41 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     m_inner->splitDockWidget(m_toneCurveSectionDock, m_levelsSectionDock, Qt::Vertical);
     m_inner->splitDockWidget(m_levelsSectionDock, m_detailEffectsSectionDock, Qt::Vertical);
     m_inner->splitDockWidget(m_detailEffectsSectionDock, m_masksSectionDock, Qt::Vertical);
-    m_inner->splitDockWidget(m_masksSectionDock, m_shapesSectionDock, Qt::Vertical);
-    m_inner->splitDockWidget(m_shapesSectionDock, m_removalsSectionDock, Qt::Vertical);
+    m_inner->splitDockWidget(m_masksSectionDock, m_removalsSectionDock, Qt::Vertical);
 
     root->addWidget(m_inner, 2);
 
     auto *addMenu = new QMenu(m_add);
-    QAction *addLayerAction = addMenu->addAction("Add Layer");
+    QAction *addPaintAction = addMenu->addAction("Paint");
+    connect(addPaintAction, &QAction::triggered, this,
+            [this] { emit addMaskRequested(MaskType::Paint); });
+    QAction *addRadialAction = addMenu->addAction("Radial");
+    connect(addRadialAction, &QAction::triggered, this,
+            [this] { emit addMaskRequested(MaskType::Radial); });
+    QAction *addLinearAction = addMenu->addAction("Linear");
+    connect(addLinearAction, &QAction::triggered, this,
+            [this] { emit addMaskRequested(MaskType::Linear); });
+    QAction *addLayerAction = addMenu->addAction("Adjustment Layer");
     connect(addLayerAction, &QAction::triggered, this,
-            [this] { emit addMaskRequested(); });
+            [this] { emit addMaskRequested(MaskType::None); });
+
+    QMenu *shapeMenu = addMenu->addMenu("Shape");
+    auto addShapeAction = [&](const QString &label, ShapeType type) {
+        QAction *act = shapeMenu->addAction(label);
+        connect(act, &QAction::triggered, this,
+                [this, type] { emit addLayerRequested(MaskType::Shape, type); });
+    };
+    addShapeAction("Rectangle", ShapeType::Rectangle);
+    addShapeAction("Ellipse", ShapeType::Ellipse);
+    addShapeAction("Line", ShapeType::Line);
+    addShapeAction("Polygon", ShapeType::Polygon);
+    addShapeAction("Star", ShapeType::Star);
+    addShapeAction("Heart", ShapeType::Heart);
+
+    QAction *addTextBoxAction = addMenu->addAction("Text Box");
+    connect(addTextBoxAction, &QAction::triggered, this,
+            [this] { emit addLayerRequested(MaskType::TextBox); });
+
     QAction *addImageAction = addMenu->addAction("Add Image Layer…");
     connect(addImageAction, &QAction::triggered, this, [this] {
         QString path = QFileDialog::getOpenFileName(
@@ -540,58 +546,6 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     connect(m_maskPanel, &MaskPanel::maskShapeChanged, this, &LayersPanel::maskShapeChanged);
     connect(m_maskPanel, &MaskPanel::maskTextChanged, this, &LayersPanel::maskTextChanged);
 
-    connect(m_shapeList, &QTreeWidget::currentItemChanged, this,
-            [this](QTreeWidgetItem *item, QTreeWidgetItem *) {
-                if (m_syncing || !item) return;
-                int idx = item->data(0, Qt::UserRole).toInt();
-                // A group's parent row has no shape of its own; select its
-                // first child instead — RetouchTab::selectShape already
-                // expands a grouped shape's selection to the whole group.
-                if (idx < 0 && item->childCount() > 0)
-                    idx = item->child(0)->data(0, Qt::UserRole).toInt();
-                if (idx >= 0) {
-                    QPointer<LayersPanel> self(this);
-                    QMetaObject::invokeMethod(
-                        this,
-                        [self, idx] {
-                            if (self) emit self->selectShapeRequested(idx);
-                        },
-                        Qt::QueuedConnection);
-                }
-            });
-    connect(m_shapeList, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem *item, int) {
-        if (m_syncing) return;
-        int idx = item->data(0, Qt::UserRole).toInt();
-        if (idx >= 0) {
-            bool visible = item->checkState(0) == Qt::Checked;
-            QPointer<LayersPanel> self(this);
-            QMetaObject::invokeMethod(
-                this,
-                [self, idx, visible] {
-                    if (self) emit self->shapeVisibleChanged(idx, visible);
-                },
-                Qt::QueuedConnection);
-        }
-    });
-    connect(m_shapeList, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem *item) {
-        if (m_syncing) return;
-        QString groupId = item->data(0, Qt::UserRole + 1).toString();
-        if (groupId.isEmpty()) return;
-        m_collapsedGroups.insert(groupId);
-        QSettings().setValue(kCollapsedGroupsKey, QStringList(m_collapsedGroups.begin(), m_collapsedGroups.end()));
-    });
-    connect(m_shapeList, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem *item) {
-        if (m_syncing) return;
-        QString groupId = item->data(0, Qt::UserRole + 1).toString();
-        if (groupId.isEmpty()) return;
-        m_collapsedGroups.remove(groupId);
-        QSettings().setValue(kCollapsedGroupsKey, QStringList(m_collapsedGroups.begin(), m_collapsedGroups.end()));
-    });
-    connect(m_groupShapes, &QPushButton::clicked, this,
-            [this] { emit groupShapesRequested(); });
-    connect(m_ungroupShapes, &QPushButton::clicked, this,
-            [this] { emit ungroupShapesRequested(); });
-
     connect(m_removalList, &QListWidget::currentRowChanged, this, [this](int uiRow) {
         if (m_syncing) return;
         int idx = (uiRow >= 0 && uiRow < m_removals.size()) ? m_removals.size() - 1 - uiRow : -1;
@@ -616,13 +570,10 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
 void LayersPanel::clear() {
     m_masks.clear();
     m_active = -1;
-    m_shapes.clear();
-    m_activeShape = -1;
     m_removals.clear();
     m_activeRemoval = -1;
     m_syncing = true;
     m_maskList->clear();
-    m_shapeList->clear();
     m_removalList->clear();
     m_imagePosX->setValue(0);
     m_imagePosY->setValue(0);
@@ -648,13 +599,6 @@ void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex, bool has
     loadActive();
 }
 
-void LayersPanel::setShapes(const QVector<ShapeOp> &shapes, int activeIndex) {
-    m_shapes = shapes;
-    m_activeShape = activeIndex;
-    setEnabled(true);
-    rebuildShapeList();
-}
-
 void LayersPanel::setRemovals(const QVector<RemoveObjectOp> &removals, int activeIndex) {
     m_removals = removals;
     m_activeRemoval = activeIndex;
@@ -673,7 +617,7 @@ void LayersPanel::setMaskBrushRadius(double radiusNorm) {
 QVector<QDockWidget *> LayersPanel::sectionDocks() const {
     return {m_toneSectionDock, m_colorSectionDock, m_toneCurveSectionDock,
             m_levelsSectionDock, m_detailEffectsSectionDock, m_masksSectionDock,
-            m_shapesSectionDock, m_removalsSectionDock};
+            m_removalsSectionDock};
 }
 
 QByteArray LayersPanel::innerDockState() const {
@@ -692,7 +636,7 @@ void LayersPanel::resetSections() {
 // Builds the tree top-to-bottom to match the stack's top-to-bottom render
 // order: walks m_masks from the highest index down, creating a "Group"
 // parent row the first time each groupId is seen and nesting every
-// subsequent same-group layer under it, mirroring rebuildShapeList().
+// subsequent same-group layer under it.
 void LayersPanel::rebuildList() {
     m_syncing = true;
     m_maskList->clear();
@@ -712,9 +656,19 @@ void LayersPanel::rebuildList() {
                 parent = it.value();
             }
         }
-        QString label = m.name.isEmpty()
-                            ? QString("Layer %1 (%2)").arg(i + 1).arg(maskTypeLabel(m.type))
-                            : m.name;
+        QString label;
+        if (!m.name.isEmpty()) {
+            label = m.name;
+        } else if (m.type == MaskType::Shape) {
+            // Shape masks created via a later-session canvas tool get an
+            // auto-generated name; ones created via the Add Layer menu
+            // (this session) don't yet, so fall back to the shape kind.
+            label = shapeTypeLabel(m.shapeType);
+        } else if (m.type == MaskType::TextBox) {
+            label = QStringLiteral("Text");
+        } else {
+            label = QString("Layer %1 (%2)").arg(i + 1).arg(maskTypeLabel(m.type));
+        }
         if (m.isImageLayer()) {
             if (m.sourceMissing) label += " (missing)";
             else if (m.sourceImageCache.isNull()) label += " (loading…)";
@@ -741,44 +695,6 @@ void LayersPanel::rebuildList() {
         bg->setData(0, Qt::UserRole + 2, !m_backgroundHidden);
         if (m_active == -1) m_maskList->setCurrentItem(bg);
     }
-    m_syncing = false;
-}
-
-// Builds the tree top-to-bottom to match the stack's top-to-bottom render
-// order (last-drawn/topmost shape first): walks Adjustments::shapes from the
-// highest index down, creating a "Group" parent row the first time each
-// groupId is seen and nesting every subsequent same-group shape under it
-// (safe because RetouchTab::groupSelectedShapes keeps a group's members
-// contiguous, so a group's block is never interrupted by another shape).
-void LayersPanel::rebuildShapeList() {
-    m_syncing = true;
-    m_shapeList->clear();
-    QHash<QString, QTreeWidgetItem *> groupItems;
-    for (int i = m_shapes.size() - 1; i >= 0; --i) {
-        const ShapeOp &s = m_shapes[i];
-        QTreeWidgetItem *parent = nullptr;
-        if (!s.groupId.isEmpty()) {
-            auto it = groupItems.constFind(s.groupId);
-            if (it == groupItems.constEnd()) {
-                auto *g = new QTreeWidgetItem(m_shapeList, {QStringLiteral("Group")});
-                g->setData(0, Qt::UserRole, -1);
-                g->setData(0, Qt::UserRole + 1, s.groupId);
-                groupItems.insert(s.groupId, g);
-                parent = g;
-            } else {
-                parent = it.value();
-            }
-        }
-        QString label = shapeTypeLabel(s.type) + " " + QString::number(i + 1);
-        auto *item = parent ? new QTreeWidgetItem(parent, {label})
-                             : new QTreeWidgetItem(m_shapeList, {label});
-        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(0, s.visible ? Qt::Checked : Qt::Unchecked);
-        item->setData(0, Qt::UserRole, i);
-        if (i == m_activeShape) m_shapeList->setCurrentItem(item);
-    }
-    for (auto it = groupItems.constBegin(); it != groupItems.constEnd(); ++it)
-        it.value()->setExpanded(!m_collapsedGroups.contains(it.key()));
     m_syncing = false;
 }
 

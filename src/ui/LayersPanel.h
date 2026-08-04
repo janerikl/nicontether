@@ -42,11 +42,6 @@ public:
 
     void setMasks(const QVector<Mask> &masks, int activeIndex, bool hasBackground,
                   bool backgroundHidden = false);
-    // Shapes section: a nested view of Adjustments::shapes — grouped shapes
-    // (shared groupId, always kept contiguous) show as a collapsible "Group"
-    // parent row with the members nested underneath; ungrouped shapes are
-    // top-level rows. Top of the list = topmost/frontmost in the stack.
-    void setShapes(const QVector<ShapeOp> &shapes, int activeIndex);
     // Remove Object section: a flat list of Adjustments::removals, one row
     // per content-aware fill (visibility checkbox + Delete button), mirroring
     // the Shapes section's per-row eye toggle. Top of the list = most
@@ -78,7 +73,14 @@ public:
     void resetSections();
 
 signals:
-    void addMaskRequested();
+    // type defaults to MaskType::None (a plain adjustment layer, the
+    // previous behaviour of the panel's single "Add Layer" action) so
+    // existing single-arg emitters/connections keep working unchanged.
+    void addMaskRequested(MaskType type = MaskType::None);
+    // Shape/TextBox creation has no prior signal to reuse (the Add Layer
+    // menu is the first way to create one outside the canvas), so it gets
+    // its own signal. shapeType is only meaningful when type == Shape.
+    void addLayerRequested(MaskType type, ShapeType shapeType = ShapeType::Rectangle);
     void addImageLayerRequested(const QString &path); // "Add Image Layer…" chosen a file
     void selectMaskRequested(int index);
     void deleteMaskRequested();
@@ -102,11 +104,6 @@ signals:
     void maskTextChanged(const QString &text, const QString &family, double pixelSize,
                          bool bold, bool italic);
 
-    void selectShapeRequested(int index);
-    void shapeVisibleChanged(int index, bool visible);
-    void groupShapesRequested();
-    void ungroupShapesRequested();
-
     void selectRemovalRequested(int index);
     void removalVisibleChanged(int index, bool visible);
     void deleteRemovalRequested(int index);
@@ -116,15 +113,12 @@ private:
     void emitImageTransform();
     void loadActive();
     void rebuildList();
-    void rebuildShapeList();
     void rebuildRemovalList();
 
     QVector<Mask> m_masks;
     int m_active = -1;
     bool m_hasBackground = false;
     bool m_backgroundHidden = false;
-    QVector<ShapeOp> m_shapes;
-    int m_activeShape = -1;
     QVector<RemoveObjectOp> m_removals;
     int m_activeRemoval = -1;
     bool m_syncing = false;
@@ -137,8 +131,7 @@ private:
     QPushButton *m_groupMasks = nullptr;
     QPushButton *m_ungroupMasks = nullptr;
     // groupId -> user collapsed it, so rebuildList() can restore collapse
-    // state instead of always expanding every group (mirrors m_collapsedGroups
-    // for the Shapes section below).
+    // state instead of always expanding every group.
     QSet<QString> m_collapsedMaskGroups;
 
     QLineEdit *m_name = nullptr;
@@ -159,13 +152,6 @@ private:
     DetailEffectsPanel *m_detailEffectsPanel = nullptr;
     MaskPanel *m_maskPanel = nullptr;
 
-    QTreeWidget *m_shapeList = nullptr;
-    QPushButton *m_groupShapes = nullptr;
-    QPushButton *m_ungroupShapes = nullptr;
-    // groupId -> user collapsed it, so rebuildShapeList() can restore
-    // collapse state instead of always expanding every group.
-    QSet<QString> m_collapsedGroups;
-
     QListWidget *m_removalList = nullptr;
     QPushButton *m_deleteRemoval = nullptr;
 
@@ -175,6 +161,5 @@ private:
     QDockWidget *m_levelsSectionDock = nullptr;
     QDockWidget *m_detailEffectsSectionDock = nullptr;
     QDockWidget *m_masksSectionDock = nullptr;
-    QDockWidget *m_shapesSectionDock = nullptr;
     QDockWidget *m_removalsSectionDock = nullptr;
 };

@@ -63,6 +63,27 @@ QVector<QPointF> curveFromJson(const QJsonArray &a) {
     return curve;
 }
 
+const char *shapeTypeName(ShapeType t) {
+    switch (t) {
+    case ShapeType::Rectangle: return "rectangle";
+    case ShapeType::Ellipse:   return "ellipse";
+    case ShapeType::Line:      return "line";
+    case ShapeType::Polygon:   return "polygon";
+    case ShapeType::Star:      return "star";
+    case ShapeType::Heart:     return "heart";
+    }
+    return "rectangle";
+}
+
+ShapeType shapeTypeFromName(const QString &name) {
+    if (name == "ellipse") return ShapeType::Ellipse;
+    if (name == "line") return ShapeType::Line;
+    if (name == "polygon") return ShapeType::Polygon;
+    if (name == "star") return ShapeType::Star;
+    if (name == "heart") return ShapeType::Heart;
+    return ShapeType::Rectangle;
+}
+
 } // namespace
 
 namespace EditSidecar {
@@ -81,7 +102,7 @@ bool save(const QString &imagePath, const Adjustments &a) {
     int existingRating = loadRating(imagePath);
 
     QJsonObject o;
-    o["version"] = 6;
+    o["version"] = 7;
     if (existingRating > 0) o["rating"] = existingRating;
     o["brightness"] = a.brightness;
     o["contrast"] = a.contrast;
@@ -170,6 +191,49 @@ bool save(const QString &imagePath, const Adjustments &a) {
             j["textItalic"] = m.textItalic;
             j["textPosX"] = m.textPos.x();
             j["textPosY"] = m.textPos.y();
+            // Shape (MaskType::Shape) and TextBox (MaskType::TextBox) fields.
+            // Always written (not gated on type) to keep the writer simple;
+            // harmless for other mask types since these fields are unused there.
+            j["shapeType"] = shapeTypeName(m.shapeType);
+            j["shapeRectX"] = m.shapeRect.x();
+            j["shapeRectY"] = m.shapeRect.y();
+            j["shapeRectW"] = m.shapeRect.width();
+            j["shapeRectH"] = m.shapeRect.height();
+            j["shapeP1x"] = m.shapeP1.x();
+            j["shapeP1y"] = m.shapeP1.y();
+            j["shapeP2x"] = m.shapeP2.x();
+            j["shapeP2y"] = m.shapeP2.y();
+            j["shapeRotation"] = m.shapeRotation;
+            j["shapeSides"] = m.shapeSides;
+            j["shapeInnerRadiusRatio"] = m.shapeInnerRadiusRatio;
+            j["shapeFillEnabled"] = m.shapeFillEnabled;
+            j["shapeFillColor"] = m.shapeFillColor.name(QColor::HexArgb);
+            j["shapeStrokeEnabled"] = m.shapeStrokeEnabled;
+            j["shapeStrokeColor"] = m.shapeStrokeColor.name(QColor::HexArgb);
+            j["shapeStrokeWidth"] = m.shapeStrokeWidth;
+
+            j["textBoxPosX"] = m.textBoxPos.x();
+            j["textBoxPosY"] = m.textBoxPos.y();
+            j["textBoxRotation"] = m.textBoxRotation;
+            j["textBoxText"] = m.textBoxText;
+            j["textBoxFamily"] = m.textBoxFamily;
+            j["textBoxPixelSize"] = m.textBoxPixelSize;
+            j["textBoxBold"] = m.textBoxBold;
+            j["textBoxItalic"] = m.textBoxItalic;
+            j["textBoxColor"] = m.textBoxColor.name(QColor::HexArgb);
+            j["textBoxOutlineEnabled"] = m.textBoxOutlineEnabled;
+            j["textBoxOutlineColor"] = m.textBoxOutlineColor.name(QColor::HexArgb);
+            j["textBoxOutlineWidth"] = m.textBoxOutlineWidth;
+            j["textBoxShadowEnabled"] = m.textBoxShadowEnabled;
+            j["textBoxShadowOffsetX"] = m.textBoxShadowOffset.x();
+            j["textBoxShadowOffsetY"] = m.textBoxShadowOffset.y();
+            j["textBoxShadowBlur"] = m.textBoxShadowBlur;
+            j["textBoxShadowOpacity"] = m.textBoxShadowOpacity;
+            j["textBoxShadowColor"] = m.textBoxShadowColor.name(QColor::HexArgb);
+            j["textBoxBgEnabled"] = m.textBoxBgEnabled;
+            j["textBoxBgColor"] = m.textBoxBgColor.name(QColor::HexArgb);
+            j["textBoxBgOpacity"] = m.textBoxBgOpacity;
+            j["textBoxBgPadding"] = m.textBoxBgPadding;
             QJsonArray stroke;
             for (const BrushStrokePoint &sp : m.stroke)
                 stroke.append(QJsonArray{sp.pt.x(), sp.pt.y(), sp.erase, sp.radius, sp.hardness,
@@ -248,17 +312,6 @@ bool save(const QString &imagePath, const Adjustments &a) {
 
     if (!a.shapes.isEmpty()) {
         QJsonArray shapes;
-        auto shapeTypeName = [](ShapeType t) {
-            switch (t) {
-            case ShapeType::Rectangle: return "rectangle";
-            case ShapeType::Ellipse:   return "ellipse";
-            case ShapeType::Line:      return "line";
-            case ShapeType::Polygon:   return "polygon";
-            case ShapeType::Star:      return "star";
-            case ShapeType::Heart:     return "heart";
-            }
-            return "rectangle";
-        };
         for (const ShapeOp &s : a.shapes) {
             QJsonObject j;
             j["type"] = shapeTypeName(s.type);
@@ -331,6 +384,7 @@ bool load(const QString &imagePath, Adjustments &out) {
     QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &err);
     if (err.error != QJsonParseError::NoError || !doc.isObject()) return false;
     QJsonObject o = doc.object();
+    const int fileVersion = o["version"].toInt(6);
 
     Adjustments a;
     a.brightness = o["brightness"].toInt();
@@ -409,6 +463,43 @@ bool load(const QString &imagePath, Adjustments &out) {
         m.textBold = j["textBold"].toBool(false);
         m.textItalic = j["textItalic"].toBool(false);
         m.textPos = QPointF(j["textPosX"].toDouble(0.3), j["textPosY"].toDouble(0.45));
+
+        m.shapeType = shapeTypeFromName(j["shapeType"].toString());
+        m.shapeRect = QRectF(j["shapeRectX"].toDouble(0.0), j["shapeRectY"].toDouble(0.0),
+                             j["shapeRectW"].toDouble(200.0), j["shapeRectH"].toDouble(200.0));
+        m.shapeP1 = QPointF(j["shapeP1x"].toDouble(0.0), j["shapeP1y"].toDouble(0.0));
+        m.shapeP2 = QPointF(j["shapeP2x"].toDouble(200.0), j["shapeP2y"].toDouble(0.0));
+        m.shapeRotation = j["shapeRotation"].toDouble(0.0);
+        m.shapeSides = j["shapeSides"].toInt(5);
+        m.shapeInnerRadiusRatio = j["shapeInnerRadiusRatio"].toDouble(0.5);
+        m.shapeFillEnabled = j["shapeFillEnabled"].toBool(true);
+        m.shapeFillColor = QColor(j["shapeFillColor"].toString(QStringLiteral("#ffffffff")));
+        m.shapeStrokeEnabled = j["shapeStrokeEnabled"].toBool(true);
+        m.shapeStrokeColor = QColor(j["shapeStrokeColor"].toString(QStringLiteral("#ff000000")));
+        m.shapeStrokeWidth = j["shapeStrokeWidth"].toDouble(4.0);
+
+        m.textBoxPos = QPointF(j["textBoxPosX"].toDouble(0.0), j["textBoxPosY"].toDouble(0.0));
+        m.textBoxRotation = j["textBoxRotation"].toDouble(0.0);
+        m.textBoxText = j["textBoxText"].toString();
+        m.textBoxFamily = j["textBoxFamily"].toString(QStringLiteral("Sans Serif"));
+        m.textBoxPixelSize = j["textBoxPixelSize"].toDouble(48.0);
+        m.textBoxBold = j["textBoxBold"].toBool(false);
+        m.textBoxItalic = j["textBoxItalic"].toBool(false);
+        m.textBoxColor = QColor(j["textBoxColor"].toString(QStringLiteral("#ffffffff")));
+        m.textBoxOutlineEnabled = j["textBoxOutlineEnabled"].toBool(false);
+        m.textBoxOutlineColor = QColor(j["textBoxOutlineColor"].toString(QStringLiteral("#ff000000")));
+        m.textBoxOutlineWidth = j["textBoxOutlineWidth"].toDouble(3.0);
+        m.textBoxShadowEnabled = j["textBoxShadowEnabled"].toBool(false);
+        m.textBoxShadowOffset = QPointF(j["textBoxShadowOffsetX"].toDouble(8.0),
+                                        j["textBoxShadowOffsetY"].toDouble(8.0));
+        m.textBoxShadowBlur = j["textBoxShadowBlur"].toDouble(14.0);
+        m.textBoxShadowOpacity = j["textBoxShadowOpacity"].toDouble(0.75);
+        m.textBoxShadowColor = QColor(j["textBoxShadowColor"].toString(QStringLiteral("#ff000000")));
+        m.textBoxBgEnabled = j["textBoxBgEnabled"].toBool(false);
+        m.textBoxBgColor = QColor(j["textBoxBgColor"].toString(QStringLiteral("#ff000000")));
+        m.textBoxBgOpacity = j["textBoxBgOpacity"].toDouble(0.6);
+        m.textBoxBgPadding = j["textBoxBgPadding"].toDouble(10.0);
+
         for (const QJsonValue &sv : j["stroke"].toArray()) {
             QJsonArray p = sv.toArray();
             if (p.size() >= 2)
@@ -482,14 +573,6 @@ bool load(const QString &imagePath, Adjustments &out) {
         t.bgPadding = j["bgPadding"].toDouble(10.0);
         a.texts.append(t);
     }
-    auto shapeTypeFromName = [](const QString &name) {
-        if (name == "ellipse") return ShapeType::Ellipse;
-        if (name == "line") return ShapeType::Line;
-        if (name == "polygon") return ShapeType::Polygon;
-        if (name == "star") return ShapeType::Star;
-        if (name == "heart") return ShapeType::Heart;
-        return ShapeType::Rectangle;
-    };
     for (const QJsonValue &v : o["shapes"].toArray()) {
         QJsonObject j = v.toObject();
         ShapeOp s;
@@ -533,6 +616,74 @@ bool load(const QString &imagePath, Adjustments &out) {
         r.visible = j["visible"].toBool(true);
         if (!r.rect.isEmpty() && !r.fill.isNull()) a.removals.append(r);
     }
+
+    // Load-time migration (pre-version-7 sidecars): synthesize equivalent
+    // MaskType::Shape/TextBox entries in a.masks from the legacy a.texts/
+    // a.shapes arrays, so the new masks-based representation exists
+    // alongside the old one going forward. Best-effort z-order
+    // reconstruction only — old files never had a true interleaved
+    // masks/texts/shapes/paint concept, so this approximates the legacy
+    // composite order (non-Paint masks, then texts, then shapes, then Paint
+    // masks) by inserting migrated text-masks then migrated shape-masks
+    // immediately above all existing non-Paint masks and below any Paint
+    // masks. Purely inert plumbing: nothing in the render pipeline reads
+    // MaskType::Shape/TextBox yet, so this cannot cause double-rendering.
+    if (fileVersion < 7 && (!a.texts.isEmpty() || !a.shapes.isEmpty())) {
+        int insertAt = a.masks.size();
+        for (int i = 0; i < a.masks.size(); ++i) {
+            if (a.masks[i].type == MaskType::Paint) { insertAt = i; break; }
+        }
+        QVector<Mask> migrated;
+        for (const TextOp &t : a.texts) {
+            Mask m;
+            m.type = MaskType::TextBox;
+            m.visible = true;
+            m.textBoxPos = t.pos;
+            m.textBoxRotation = t.rotation;
+            m.textBoxText = t.text;
+            m.textBoxFamily = t.family;
+            m.textBoxPixelSize = t.pixelSize;
+            m.textBoxBold = t.bold;
+            m.textBoxItalic = t.italic;
+            m.textBoxColor = t.color;
+            m.textBoxOutlineEnabled = t.outlineEnabled;
+            m.textBoxOutlineColor = t.outlineColor;
+            m.textBoxOutlineWidth = t.outlineWidth;
+            m.textBoxShadowEnabled = t.shadowEnabled;
+            m.textBoxShadowOffset = t.shadowOffset;
+            m.textBoxShadowBlur = t.shadowBlur;
+            m.textBoxShadowOpacity = t.shadowOpacity;
+            m.textBoxShadowColor = t.shadowColor;
+            m.textBoxBgEnabled = t.bgEnabled;
+            m.textBoxBgColor = t.bgColor;
+            m.textBoxBgOpacity = t.bgOpacity;
+            m.textBoxBgPadding = t.bgPadding;
+            migrated.append(m);
+        }
+        for (const ShapeOp &s : a.shapes) {
+            Mask m;
+            m.type = MaskType::Shape;
+            m.visible = s.visible;
+            m.opacity = s.opacity;
+            m.groupId = s.groupId;
+            m.shapeType = s.type;
+            m.shapeRect = s.rect;
+            m.shapeP1 = s.p1;
+            m.shapeP2 = s.p2;
+            m.shapeRotation = s.rotation;
+            m.shapeSides = s.sides;
+            m.shapeInnerRadiusRatio = s.innerRadiusRatio;
+            m.shapeFillEnabled = s.fillEnabled;
+            m.shapeFillColor = s.fillColor;
+            m.shapeStrokeEnabled = s.strokeEnabled;
+            m.shapeStrokeColor = s.strokeColor;
+            m.shapeStrokeWidth = s.strokeWidth;
+            migrated.append(m);
+        }
+        for (int i = 0; i < migrated.size(); ++i)
+            a.masks.insert(insertAt + i, migrated[i]);
+    }
+
     out = a;
     return true;
 }
@@ -579,7 +730,7 @@ bool saveRating(const QString &imagePath, int rating) {
         o["rating"] = rating;
     else
         o.remove("rating");
-    if (!o.contains("version")) o["version"] = 6;
+    if (!o.contains("version")) o["version"] = 7;
 
     QFile out(pathFor(imagePath));
     if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
