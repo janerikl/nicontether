@@ -645,8 +645,13 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
         // resulting rebuild) is deferred below, so without this,
         // clicking a checkbox in the gap before that rebuild runs
         // would read a stale index and flip visibility on the wrong
-        // mask.
+        // mask. setData() fires itemChanged, and that handler can't tell a
+        // UserRole-only change from a text edit -- guard with m_syncing
+        // (which itemChanged already checks) so this doesn't get
+        // misread as a checkbox-unchanged rename and silently overwrite
+        // two masks' names via bogus maskRenamed emissions.
         {
+            m_syncing = true;
             int flat = 0;
             for (int i = 0; i < m_maskList->topLevelItemCount(); ++i) {
                 QTreeWidgetItem *item = m_maskList->topLevelItem(i);
@@ -657,6 +662,7 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 }
                 item->setData(0, Qt::UserRole, flat++);
             }
+            m_syncing = false;
         }
         // Deferred: this can fire synchronously from inside
         // QTreeWidget::dropEvent, while Qt's internal drag-drop
