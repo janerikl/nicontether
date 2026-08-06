@@ -2178,16 +2178,29 @@ void RetouchTab::moveMask(int from, int to) {
 // a whole contiguous group as one block.
 void RetouchTab::reorderMasks(const QVector<int> &newOrder, const QVector<int> &leftGroupIndices,
                                const QVector<QPair<int, QString>> &joinGroups) {
-    if (newOrder.size() != m_adj.masks.size()) return;
     // newOrder must be a permutation of 0..size-1: the UI derives it by
     // flattening the tree, and a stale/desynced tree (e.g. after a drag that
     // moved a row out of a group) can otherwise yield a non-bijective order
     // that silently drops or duplicates masks, potentially losing the active
     // mask's index and leaving m_activeMask pointing past the new array.
-    QVector<bool> seen(m_adj.masks.size(), false);
-    for (int idx : newOrder) {
-        if (idx < 0 || idx >= m_adj.masks.size() || seen[idx]) return;
-        seen[idx] = true;
+    // Rejecting it here must still emit masksChanged(): LayersPanel's tree
+    // widget has already moved its rows cosmetically (Qt's own drag-drop
+    // machinery does that before this call runs), so if we bail out without
+    // resyncing, the panel is left showing a reorder that was never applied
+    // to m_adj.masks -- silently desynced until some *other* edit forces a
+    // rebuild, at which point the tree snaps back to the true (pre-reorder)
+    // order and looks like an unrelated action broke the order.
+    bool valid = newOrder.size() == m_adj.masks.size();
+    if (valid) {
+        QVector<bool> seen(m_adj.masks.size(), false);
+        for (int idx : newOrder) {
+            if (idx < 0 || idx >= m_adj.masks.size() || seen[idx]) { valid = false; break; }
+            seen[idx] = true;
+        }
+    }
+    if (!valid) {
+        emit masksChanged();
+        return;
     }
     for (int idx : leftGroupIndices)
         if (idx >= 0 && idx < m_adj.masks.size()) m_adj.masks[idx].groupId.clear();

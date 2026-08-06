@@ -139,6 +139,16 @@ private:
     // True while a coalesced doRebuildList() call is pending on the event
     // loop (see rebuildList()).
     bool m_rebuildScheduled = false;
+    // True from the moment a drop's reorder is computed until the deferred
+    // maskReorderRequested emission it queued actually fires. Qt's own
+    // drag-drop machinery can invoke MaskTreeWidget::dropEvent more than
+    // once for what is, from the user's perspective, a single drag -- each
+    // invocation reads the same (unchanged) tree and computes the same
+    // permutation, so without this guard every extra invocation queues
+    // another application of that permutation. A transposition is its own
+    // inverse, so a second application on top of the first silently reverts
+    // it, which looks like the drag simply didn't stick.
+    bool m_reorderPending = false;
     MaskAdjust m_curAdjust; // last-loaded active layer's adjustment, patched per-section
 
     QTreeWidget *m_maskList = nullptr;

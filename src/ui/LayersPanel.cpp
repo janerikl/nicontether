@@ -251,6 +251,17 @@ class MaskTreeWidget : public QTreeWidget {
 public:
     using QTreeWidget::QTreeWidget;
 
+    // Plain callback rather than a Qt signal: this class is defined entirely
+    // in this .cpp file (no header, no moc), so it can't declare its own
+    // signals/slots. QTreeWidget's InternalMove drag-drop doesn't reliably
+    // emit the model's rowsMoved signal -- depending on Qt's internals it may
+    // implement a move as a remove+insert pair instead, which callers
+    // watching only for rowsMoved silently miss entirely (the row visibly
+    // moves in the tree, but nothing downstream ever finds out). Firing this
+    // directly from dropEvent, once the base class has finished applying the
+    // drop, sidesteps relying on any particular signal shape.
+    std::function<void()> onDropped;
+
 protected:
     // Layers/groups should be freely reorderable, including dragging a
     // layer into a group (dropped on the group's header or squeezed among
@@ -270,6 +281,7 @@ protected:
             }
         }
         QTreeWidget::dropEvent(event);
+        if (onDropped) onDropped();
     }
 
     // Shift-click range selection is purely visual/row-order, so a range
@@ -332,7 +344,8 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     // move as one block), double-click to rename, Duplicate/Delete/Group.
     // A tree (not a flat list) since groups nest as collapsible parent rows
     // with their members underneath, mirroring the Shapes section below.
-    m_maskList = new MaskTreeWidget;
+    auto *maskTree = new MaskTreeWidget;
+    m_maskList = maskTree;
     m_maskList->setHeaderHidden(true);
     m_maskList->setColumnCount(1);
     m_maskList->setDragDropMode(QAbstractItemView::InternalMove);
@@ -585,49 +598,84 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 }
                 if (idx >= 0) emit maskRenamed(idx, item->text(0));
             });
-    connect(m_maskList->model(), &QAbstractItemModel::rowsMoved, this,
-            [this](const QModelIndex &, int, int, const QModelIndex &, int) {
-                if (m_syncing) return;
-                // Flatten the tree back into a full masks() order: a group's
-                // parent row expands to its members' original indices, a
-                // plain row is its own index. Background is a normal row
-                // now, included in the flattened order like everything else.
-                QVector<int> order;
-                QVector<int> leftGroup; // original indices no longer nested under a group
-                QVector<QPair<int, QString>> joinGroup; // original indices that joined/switched group
-                for (int i = 0; i < m_maskList->topLevelItemCount(); ++i) {
-                    QTreeWidgetItem *item = m_maskList->topLevelItem(i);
-                    int idx = item->data(0, Qt::UserRole).toInt();
-                    if (idx == -1) { // group parent: append its members in order
-                        const QString groupId = item->data(0, Qt::UserRole + 1).toString();
-                        for (int c = 0; c < item->childCount(); ++c) {
-                            int childIdx = item->child(c)->data(0, Qt::UserRole).toInt();
-                            order.append(childIdx);
-                            if (childIdx >= 0 && childIdx < m_masks.size() &&
-                                m_masks[childIdx].groupId != groupId)
-                                joinGroup.append({childIdx, groupId}); // dropped into this group
-                        }
-                        continue;
-                    }
-                    order.append(idx);
-                    if (idx >= 0 && idx < m_masks.size() && !m_masks[idx].groupId.isEmpty())
-                        leftGroup.append(idx); // was grouped, now a top-level row
+    // Recomputes masks() order from the tree's current layout and pushes it
+    // to the model. Deliberately wired to fire once, directly from
+    // MaskTreeWidget::dropEvent (via onDropped), rather than from the
+    // model's rowsMoved signal: depending on Qt's internals, moving a row
+    // during InternalMove drag-drop is sometimes implemented as a
+    // remove+insert pair (no rowsMoved emitted at all -- the row visibly
+    // moves in the tree but the drag never reaches
+    // RetouchTab::reorderMasks(), leaving it purely cosmetic until some
+    // *other* edit forces a resync from the never-updated model, which then
+    // looks like that unrelated edit broke the layer order) and sometimes as
+    // a real moveRows (rowsMoved emitted). Listening to both would double-
+    // apply a single drag's reorder -- for an adjacent two-item swap that's
+    // exactly its own inverse, so the second application silently undoes the
+    // first and the row snaps back to where it started.
+    auto handleReorder = [this] {
+        if (m_syncing || m_reorderPending) return;
+        // Flatten the tree back into a full masks() order: a group's
+        // parent row expands to its members' original indices, a
+        // plain row is its own index. Background is a normal row
+        // now, included in the flattened order like everything else.
+        QVector<int> order;
+        QVector<int> leftGroup; // original indices no longer nested under a group
+        QVector<QPair<int, QString>> joinGroup; // original indices that joined/switched group
+        for (int i = 0; i < m_maskList->topLevelItemCount(); ++i) {
+            QTreeWidgetItem *item = m_maskList->topLevelItem(i);
+            int idx = item->data(0, Qt::UserRole).toInt();
+            if (idx == -1) { // group parent: append its members in order
+                const QString groupId = item->data(0, Qt::UserRole + 1).toString();
+                for (int c = 0; c < item->childCount(); ++c) {
+                    int childIdx = item->child(c)->data(0, Qt::UserRole).toInt();
+                    order.append(childIdx);
+                    if (childIdx >= 0 && childIdx < m_masks.size() &&
+                        m_masks[childIdx].groupId != groupId)
+                        joinGroup.append({childIdx, groupId}); // dropped into this group
                 }
-                if (order.size() != m_masks.size()) return;
-                // Deferred: rowsMoved fires synchronously from inside
-                // QTreeWidget::dropEvent, while Qt's internal drag-drop
-                // machinery is still unwinding on top of the tree's items.
-                // Emitting synchronously here cascades into setMasks() ->
-                // rebuildList() -> m_maskList->clear(), deleting those items
-                // out from under the in-progress dropEvent call and crashing.
-                QPointer<LayersPanel> self(this);
-                QMetaObject::invokeMethod(
-                    this,
-                    [self, order, leftGroup, joinGroup] {
-                        if (self) emit self->maskReorderRequested(order, leftGroup, joinGroup);
-                    },
-                    Qt::QueuedConnection);
-            });
+                continue;
+            }
+            order.append(idx);
+            if (idx >= 0 && idx < m_masks.size() && !m_masks[idx].groupId.isEmpty())
+                leftGroup.append(idx); // was grouped, now a top-level row
+        }
+        if (order.size() != m_masks.size()) return;
+        // Update each item's stored index to its new (post-reorder)
+        // position right away. maskReorderRequested (and the
+        // resulting rebuild) is deferred below, so without this,
+        // clicking a checkbox in the gap before that rebuild runs
+        // would read a stale index and flip visibility on the wrong
+        // mask.
+        {
+            int flat = 0;
+            for (int i = 0; i < m_maskList->topLevelItemCount(); ++i) {
+                QTreeWidgetItem *item = m_maskList->topLevelItem(i);
+                if (item->data(0, Qt::UserRole).toInt() == -1) {
+                    for (int c = 0; c < item->childCount(); ++c)
+                        item->child(c)->setData(0, Qt::UserRole, flat++);
+                    continue;
+                }
+                item->setData(0, Qt::UserRole, flat++);
+            }
+        }
+        // Deferred: this can fire synchronously from inside
+        // QTreeWidget::dropEvent, while Qt's internal drag-drop
+        // machinery is still unwinding on top of the tree's items.
+        // Emitting synchronously here cascades into setMasks() ->
+        // rebuildList() -> m_maskList->clear(), deleting those items
+        // out from under the in-progress dropEvent call and crashing.
+        m_reorderPending = true;
+        QPointer<LayersPanel> self(this);
+        QMetaObject::invokeMethod(
+            this,
+            [self, order, leftGroup, joinGroup] {
+                if (!self) return;
+                self->m_reorderPending = false;
+                emit self->maskReorderRequested(order, leftGroup, joinGroup);
+            },
+            Qt::QueuedConnection);
+    };
+    maskTree->onDropped = handleReorder;
     connect(m_maskList, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem *item) {
         if (m_syncing) return;
         QString groupId = item->data(0, Qt::UserRole + 1).toString();
