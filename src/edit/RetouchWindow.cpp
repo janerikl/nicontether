@@ -492,19 +492,19 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     // rebuildRecentSessionsMenu(); both separators hide when the list is empty.
     m_recentBeginSeparator = m_fileMenu->addSeparator();
     m_recentEndSeparator = m_fileMenu->addSeparator();
+    // Recently opened/saved Photonloom project (.ploom) files live directly
+    // below the recent-sessions section, using the same
+    // insert-before-end-separator pattern via rebuildRecentProjectsMenu().
+    m_recentProjectsBeginSeparator = m_fileMenu->addSeparator();
+    m_recentProjectsEndSeparator = m_fileMenu->addSeparator();
     // Recently opened individual photos live in their own section, below the
-    // recent-sessions section, using the same insert-before-end-separator
+    // recent-projects section, using the same insert-before-end-separator
     // pattern via rebuildRecentFilesMenu().
     m_recentFilesBeginSeparator = m_fileMenu->addSeparator();
     m_recentFilesEndSeparator = m_fileMenu->addSeparator();
     m_fileMenu->addAction(m_saveAction);
     m_fileMenu->addAction(m_saveAllAction);
     m_fileMenu->addAction(m_saveAsProjectAction);
-    // Recently opened/saved Photonloom project (.ploom) files live in their
-    // own section, below Save As Project, using the same
-    // insert-before-end-separator pattern via rebuildRecentProjectsMenu().
-    m_recentProjectsBeginSeparator = m_fileMenu->addSeparator();
-    m_recentProjectsEndSeparator = m_fileMenu->addSeparator();
     m_fileMenu->addSeparator();
     m_fileMenu->addAction(m_exportAction);
     rebuildRecentSessionsMenu();
