@@ -315,12 +315,13 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
 
     const double W = w;
     const bool autoMask = m.autoMask && ref && ref->width() == w && ref->height() == h;
-    for (int i = startIdx; i < m.stroke.size(); ++i) {
-        const BrushStrokePoint &sp = m.stroke[i];
-        const double rad = std::max(1.0, sp.radius * W);
-        const double inner = clampd(sp.hardness, 0.0, 1.0) * rad;
+
+    // Stamps one soft-edged circular dab, in pixel space, with its own
+    // radius/hardness/color/erase — used both for a stroke's recorded
+    // points and for the sub-dabs interpolated between them below.
+    auto stampDab = [&](double px, double py, double rad, double hardness, bool erase, QRgb color) {
+        const double inner = clampd(hardness, 0.0, 1.0) * rad;
         const double band = std::max(1e-6, rad - inner);
-        const double px = sp.pt.x() * W, py = sp.pt.y() * W;
         const int x0 = std::max(0, int(px - rad));
         const int x1 = std::min(w - 1, int(px + rad));
         const int y0 = std::max(0, int(py - rad));
@@ -345,14 +346,45 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                 uchar iv = uchar(std::lround(v * 255.0));
                 size_t idx = size_t(y) * w + x;
                 uchar &dst = (*covBuf)[idx];
-                if (sp.erase) {
+                if (erase) {
                     dst = uchar(std::max(0, int(dst) - int(iv)));
                 } else if (iv > dst) {
                     dst = iv;
-                    if (colOut) (*colBuf)[idx] = sp.color;
+                    if (colOut) (*colBuf)[idx] = color;
                 }
             }
         }
+    };
+
+    for (int i = startIdx; i < m.stroke.size(); ++i) {
+        const BrushStrokePoint &sp = m.stroke[i];
+        const double rad = std::max(1.0, sp.radius * W);
+        const double px = sp.pt.x() * W, py = sp.pt.y() * W;
+
+        // Dab spacing (mouse-move sampling) is independent of brush radius,
+        // so consecutive dabs of a soft brush can land far enough apart that
+        // maxing their soft edges leaves a scalloped envelope instead of a
+        // smooth stroke outline. Interpolate sub-dabs along the segment from
+        // the previous point, spaced relative to the (interpolated) radius,
+        // to fill in the gap densely enough to read as a continuous line.
+        if (i > 0 && !sp.newStroke) {
+            const BrushStrokePoint &pp = m.stroke[i - 1];
+            const double ppx = pp.pt.x() * W, ppy = pp.pt.y() * W;
+            const double pprad = std::max(1.0, pp.radius * W);
+            const double dx = px - ppx, dy = py - ppy;
+            const double dist = std::sqrt(dx * dx + dy * dy);
+            const double spacing = std::max(1.0, std::min(rad, pprad) * 0.2);
+            const int steps = int(dist / spacing);
+            for (int s = 1; s < steps; ++s) {
+                const double t = double(s) / steps;
+                stampDab(ppx + dx * t, ppy + dy * t,
+                         pprad + (rad - pprad) * t,
+                         pp.hardness + (sp.hardness - pp.hardness) * t,
+                         sp.erase, sp.color);
+            }
+        }
+
+        stampDab(px, py, rad, sp.hardness, sp.erase, sp.color);
     }
 
     if (cache) {
@@ -569,14 +601,32 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                int snapshotAfterIndex = -1, QImage *snapshotOut = nullptr,
                MaskPass pass = MaskPass::All,
                const QTransform &orientedToGeom = QTransform(),
-               double geomRotationDeg = 0.0, double scale = 1.0) {
+               double geomRotationDeg = 0.0, double scale = 1.0,
+               // `belowSnapshotIndex`/`belowSnapshotOut`: like snapshotAfterIndex/
+               // snapshotOut, but captured *before* masks[belowSnapshotIndex] is
+               // composited (i.e. excludes it) rather than after (includes it).
+               // Used to cache "everything below the layer currently being
+               // interactively edited" so a later call can resume compositing
+               // from there via resumeFromIndex/resumeImg instead of redoing
+               // the whole stack. Zero extra cost when < 0.
+               int belowSnapshotIndex = -1, QImage *belowSnapshotOut = nullptr,
+               // When resumeImg is given, compositing starts from *resumeImg
+               // (instead of the caller's `img`) at `resumeFromIndex` (instead
+               // of the top of the stack) — i.e. resumes a previous call that
+               // captured a belowSnapshot at the same index.
+               int resumeFromIndex = -1, const QImage *resumeImg = nullptr) {
+    if (resumeImg) img = *resumeImg;
     const int w = img.width(), h = img.height();
     if (w == 0 || h == 0) return;
     const double W = w;
     std::vector<uchar> cov;
     if (brushCache && brushCache->size() != masks.size())
         brushCache->resize(masks.size());
-    for (int mi = masks.size() - 1; mi >= 0; --mi) {
+    const int startMi = (resumeFromIndex >= 0)
+                            ? std::min(resumeFromIndex, int(masks.size()) - 1)
+                            : masks.size() - 1;
+    for (int mi = startMi; mi >= 0; --mi) {
+        if (mi == belowSnapshotIndex && belowSnapshotOut) *belowSnapshotOut = img;
         const Mask &m = masks[mi];
         const bool interactiveType = m.type == MaskType::Paint ||
                                      m.type == MaskType::Shape ||
@@ -1315,7 +1365,30 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
                         QVector<BrushRasterCache> *brushCache,
                         int maskSnapshotIndex, QImage *maskSnapshotOut,
                         const QTransform &orientedToGeom, double geomRotationDeg,
-                        double scale) {
+                        double scale,
+                        int belowSnapshotIndex, QImage *belowSnapshotOut,
+                        int resumeFromIndex, const QImage *resumeImg) {
+    if (resumeImg) {
+        // Fast per-move drag path: orientation, crop, global tone, and every
+        // mask below resumeFromIndex are already baked into *resumeImg (it
+        // was captured via belowSnapshotIndex/belowSnapshotOut on a prior
+        // full render at the same resumeFromIndex); only the active mask and
+        // whatever sits above it need recompositing.
+        // The caller is responsible for only requesting the fast path when no
+        // Background-type mask sits at or above resumeFromIndex — such a
+        // layer's content must be rebuilt from the pre-mask toned image,
+        // which isn't retained here.
+        QImage img;
+        if (!adj.masks.isEmpty()) {
+            applyMasks(img, adj.masks, brushCache, maskSnapshotIndex, maskSnapshotOut,
+                      MaskPass::All, orientedToGeom, geomRotationDeg, scale,
+                      -1, nullptr, resumeFromIndex, resumeImg);
+        } else {
+            img = *resumeImg;
+        }
+        return img;
+    }
+
     if (base.isNull()) return base;
 
     QImage img = orient(base, adj);
@@ -1341,14 +1414,26 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
     // normal Mask entry: it's baked into `img` here and handed to the
     // Background mask below as its content, exactly like any other layer's
     // content is computed before compositing.)
-    ToneParams tp = makeToneParams(adj.contrast, adj.brightness, adj.highlights,
-                                   adj.shadows, adj.saturation, adj.vibrance,
-                                   adj.temperature, adj.tint, adj.wbR, adj.wbG,
-                                   adj.wbB, adj.curve, adj.levels,
-                                   adj.colorRanges);
-    for (int y = 0; y < h; ++y) {
-        QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
-        for (int x = 0; x < w; ++x) line[x] = applyTone(line[x], tp);
+    // Skip the full-image per-pixel pass entirely when none of the global
+    // tone/colour sliders are touched (e.g. while only brushing/masking) —
+    // hasToneEdits() also considers mask edits, which don't need this pass.
+    const bool hasGlobalTone = adj.brightness || adj.contrast || adj.highlights ||
+                               adj.shadows || adj.saturation || adj.vibrance ||
+                               adj.temperature || adj.tint ||
+                               std::abs(adj.wbR - 1.0) > 1e-4 ||
+                               std::abs(adj.wbG - 1.0) > 1e-4 ||
+                               std::abs(adj.wbB - 1.0) > 1e-4 || adj.hasCurve() ||
+                               !adj.levels.isIdentity() || !adj.colorRanges.isEmpty();
+    if (hasGlobalTone) {
+        ToneParams tp = makeToneParams(adj.contrast, adj.brightness, adj.highlights,
+                                       adj.shadows, adj.saturation, adj.vibrance,
+                                       adj.temperature, adj.tint, adj.wbR, adj.wbG,
+                                       adj.wbB, adj.curve, adj.levels,
+                                       adj.colorRanges);
+        for (int y = 0; y < h; ++y) {
+            QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
+            for (int x = 0; x < w; ++x) line[x] = applyTone(line[x], tp);
+        }
     }
 
     // --- Additional layers (blend per-layer full content by weight) ---
@@ -1372,11 +1457,13 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
             QImage composite(w, h, QImage::Format_RGBA64);
             composite.fill(Qt::transparent);
             applyMasks(composite, stack, brushCache, maskSnapshotIndex, maskSnapshotOut,
-                      MaskPass::All, orientedToGeom, geomRotationDeg, scale);
+                      MaskPass::All, orientedToGeom, geomRotationDeg, scale,
+                      belowSnapshotIndex, belowSnapshotOut);
             img = composite;
         } else {
             applyMasks(img, adj.masks, brushCache, maskSnapshotIndex, maskSnapshotOut,
-                      MaskPass::All, orientedToGeom, geomRotationDeg, scale);
+                      MaskPass::All, orientedToGeom, geomRotationDeg, scale,
+                      belowSnapshotIndex, belowSnapshotOut);
         }
     }
 

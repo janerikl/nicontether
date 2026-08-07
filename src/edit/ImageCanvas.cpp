@@ -595,6 +595,10 @@ void ImageCanvas::setMaskMode(MaskType kind, bool on) {
     update();
 }
 
+void ImageCanvas::setMaskForceErase(bool on) {
+    m_maskForceErase = on;
+}
+
 void ImageCanvas::setActiveMask(bool has, const Mask &m) {
     m_hasActiveMask = has;
     m_activeMask = m;
@@ -1439,14 +1443,14 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         m_maskDragging = true;
         m_maskCenterNorm = n;
         m_mousePos = ev->pos();
-        m_maskErasing = ev->modifiers().testFlag(Qt::AltModifier);
+        m_maskErasing = m_maskForceErase || ev->modifiers().testFlag(Qt::AltModifier);
         if (m_maskKind == MaskType::Radial)
             emit maskRadialDragged(n, 0.0);
         else if (m_maskKind == MaskType::Linear)
             emit maskLinearDragged(n, n);
         else {
             m_lastBrushNorm = n;
-            emit maskBrushPoint(n, m_maskErasing);
+            emit maskBrushPoint(n, m_maskErasing, true);
         }
         update();
         return;
@@ -1576,12 +1580,12 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
                 double dy = n.y() - m_lastBrushNorm.y();
                 if (dx * dx + dy * dy > 0.004 * 0.004) { // throttle stroke samples
                     m_lastBrushNorm = n;
-                    m_maskErasing = ev->modifiers().testFlag(Qt::AltModifier);
-                    emit maskBrushPoint(n, m_maskErasing);
+                    m_maskErasing = m_maskForceErase || ev->modifiers().testFlag(Qt::AltModifier);
+                    emit maskBrushPoint(n, m_maskErasing, false);
                 }
             }
         } else if (m_maskKind == MaskType::Brush) {
-            m_maskErasing = ev->modifiers().testFlag(Qt::AltModifier);
+            m_maskErasing = m_maskForceErase || ev->modifiers().testFlag(Qt::AltModifier);
         }
         update();
         return;

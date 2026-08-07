@@ -109,6 +109,11 @@ public:
     // mask to draw as a gizmo (geometry is width-normalized, matching the
     // pipeline). Coordinates are emitted width-normalized.
     void setMaskMode(MaskType kind, bool on);
+    // Forces brush strokes to erase coverage (as if Alt were held) regardless
+    // of the actual Alt modifier state. Used to drive the E toolbar toggle on
+    // a Paint-type mask, reusing the same subtract-coverage stroke path as
+    // Alt+drag rather than a separate erase mechanism.
+    void setMaskForceErase(bool on);
     void setActiveMask(bool has, const Mask &m);
     // Live coverage preview shown while painting a brush mask, independent of
     // whether any local adjustment sliders have been touched yet.
@@ -203,7 +208,7 @@ signals:
     // Mask geometry edits (all points width-normalized).
     void maskRadialDragged(const QPointF &centerNorm, double radiusNorm);
     void maskLinearDragged(const QPointF &p0Norm, const QPointF &p1Norm);
-    void maskBrushPoint(const QPointF &ptNorm, bool erase); // one stroke sample
+    void maskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke); // one stroke sample
     void maskEditFinished();                    // drag released → commit history
     void imageLayerDropped(const QString &path); // a photo was dropped in as a layer
 
@@ -344,6 +349,7 @@ private:
     BrushRasterCache m_maskOverlayCache; // incremental rasterization cache for m_maskOverlay
     bool m_maskDragging = false;
     bool m_maskErasing = false; // Alt held while brush-masking: erase instead of paint
+    bool m_maskForceErase = false; // E toggle: force erase on a Paint-type mask
     QPointF m_maskCenterNorm; // radial centre / linear p0 captured at press
     QPointF m_lastBrushNorm{-1, -1};
     QPointF normPointAt(const QPoint &pos) const; // widget → width-normalized

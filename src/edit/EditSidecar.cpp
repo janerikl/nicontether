@@ -229,7 +229,7 @@ QJsonObject adjustmentsToJson(const Adjustments &a) {
             QJsonArray stroke;
             for (const BrushStrokePoint &sp : m.stroke)
                 stroke.append(QJsonArray{sp.pt.x(), sp.pt.y(), sp.erase, sp.radius, sp.hardness,
-                                          double(sp.color)});
+                                          double(sp.color), sp.newStroke});
             j["stroke"] = stroke;
             QJsonArray erases;
             for (const ErasePoint &ep : m.eraseStrokes)
@@ -439,7 +439,12 @@ Adjustments adjustmentsFromJson(const QJsonObject &o) {
                     p.size() >= 3 && p[2].toBool(),
                     p.size() >= 4 ? p[3].toDouble() : m.brushRadius,
                     p.size() >= 5 ? p[4].toDouble() : m.hardness,
-                    p.size() >= 6 ? QRgb(qint64(p[5].toDouble())) : m.paintColor.rgb()});
+                    p.size() >= 6 ? QRgb(qint64(p[5].toDouble())) : m.paintColor.rgb(),
+                    // Sidecars saved before stroke-boundary tracking have no
+                    // marker here; treat every loaded point as a fresh stroke
+                    // start so reopening a file never draws a phantom
+                    // connecting line between what were separate strokes.
+                    p.size() >= 7 ? p[6].toBool() : true});
         }
         for (const QJsonValue &ev : j["eraseStrokes"].toArray()) {
             QJsonArray p = ev.toArray();

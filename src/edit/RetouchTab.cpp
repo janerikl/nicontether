@@ -28,12 +28,24 @@
 
 void RenderWorker::render(const QImage &src, const Adjustments &adj, int maskSnapshotIndex,
                           const QTransform &orientedToGeom, double geomRotationDeg,
-                          double scale) {
+                          double scale, int belowSnapshotIndex) {
     QImage maskSnapshot;
+    QImage belowSnapshot;
     QImage result = applyAdjustments(src, adj, &m_brushCache, maskSnapshotIndex,
                                      maskSnapshotIndex >= 0 ? &maskSnapshot : nullptr,
-                                     orientedToGeom, geomRotationDeg, scale);
-    emit done(result, maskSnapshot);
+                                     orientedToGeom, geomRotationDeg, scale,
+                                     belowSnapshotIndex,
+                                     belowSnapshotIndex >= 0 ? &belowSnapshot : nullptr);
+    emit done(result, maskSnapshot, belowSnapshot, belowSnapshotIndex);
+}
+
+void RenderWorker::renderDragFrame(const QImage &belowSnapshot, int dragMaskIndex,
+                                   const Adjustments &adj, const QTransform &orientedToGeom,
+                                   double geomRotationDeg, double scale) {
+    QImage result = applyAdjustments(QImage(), adj, &m_brushCache, -1, nullptr,
+                                     orientedToGeom, geomRotationDeg, scale,
+                                     -1, nullptr, dragMaskIndex, &belowSnapshot);
+    emit done(result, QImage(), QImage(), -1);
 }
 
 namespace {
@@ -576,28 +588,62 @@ void RetouchTab::updateRemovalMarkers() {
 
 void RetouchTab::retone() {
     if (m_scaled.isNull()) return;
+    // Any edit that isn't a brush/erase-stroke continuation invalidates the
+    // retoneDrag() below-active-mask cache — the layers it was captured from
+    // may have just changed.
+    m_dragSnapshotValid = false;
     // Fast interactive path: skip the clarity/sharpen blur convolutions (the
     // expensive part) while the user is dragging, then schedule a full render.
     Adjustments t = toneOnly(m_adj);
     bool heavy = (t.denoise != 0 || t.clarity != 0 || t.sharpen != 0);
     if (heavy) { t.denoise = 0; t.clarity = 0; t.sharpen = 0; }
-    requestRender(m_scaled, t, maskPreviewIndex());
+    // Opportunistically capture the below-active-mask snapshot so a
+    // following retoneDrag() (brush/erase dab) can use the fast path.
+    int belowIdx = -1;
+    if (m_activeMask >= 0 && m_activeMask < m_adj.masks.size()) {
+        belowIdx = m_activeMask;
+        for (int i = 0; i <= m_activeMask; ++i)
+            if (m_adj.masks[i].type == MaskType::Background) { belowIdx = -1; break; }
+    }
+    requestRender(m_scaled, t, maskPreviewIndex(), belowIdx);
     if (heavy) m_fullRenderTimer->start();
     else m_fullRenderTimer->stop();
 }
 
+// Fast per-mouse-move brush/erase-stroke preview; see declaration comment.
+void RetouchTab::retoneDrag(bool newStroke) {
+    if (m_scaled.isNull()) return;
+    const int activeIdx = m_activeMask;
+    bool eligible = !newStroke && activeIdx >= 0 && activeIdx < m_adj.masks.size() &&
+                    m_dragSnapshotValid && m_dragSnapshotIndex == activeIdx;
+    if (!eligible) {
+        retone();
+        return;
+    }
+    Adjustments t = toneOnly(m_adj);
+    // clarity/sharpen/denoise are always stripped during drag (see retone());
+    // the deferred full render triggered there covers them once idle.
+    t.denoise = 0; t.clarity = 0; t.sharpen = 0;
+    requestDragRender(m_dragBelowSnapshot, activeIdx, t);
+    m_fullRenderTimer->start();
+}
+
 void RetouchTab::retoneFull() {
     if (m_scaled.isNull()) return;
+    m_dragSnapshotValid = false;
     requestRender(m_scaled, toneOnly(m_adj), maskPreviewIndex());
 }
 
 // Coalesced async render: at most one job in flight; newer requests overwrite
 // the pending one so intermediate drag frames are dropped, not queued.
-void RetouchTab::requestRender(const QImage &src, const Adjustments &adj, int maskSnapshotIndex) {
+void RetouchTab::requestRender(const QImage &src, const Adjustments &adj, int maskSnapshotIndex,
+                               int belowSnapshotIndex) {
     if (m_rendering) {
         m_pendingSrc = src;
         m_pendingAdj = adj;
         m_pendingMaskIdx = maskSnapshotIndex;
+        m_pendingBelowIdx = belowSnapshotIndex;
+        m_pendingIsDrag = false;
         m_hasPending = true;
         return;
     }
@@ -607,19 +653,50 @@ void RetouchTab::requestRender(const QImage &src, const Adjustments &adj, int ma
                               Q_ARG(int, maskSnapshotIndex),
                               Q_ARG(QTransform, m_orientedToGeom),
                               Q_ARG(double, m_geomRotationDeg),
+                              Q_ARG(double, m_scaleFromGeom),
+                              Q_ARG(int, belowSnapshotIndex));
+}
+
+void RetouchTab::requestDragRender(const QImage &belowSnapshot, int dragMaskIndex,
+                                   const Adjustments &adj) {
+    if (m_rendering) {
+        m_pendingDragBelow = belowSnapshot;
+        m_pendingDragIndex = dragMaskIndex;
+        m_pendingAdj = adj;
+        m_pendingIsDrag = true;
+        m_hasPending = true;
+        return;
+    }
+    m_rendering = true;
+    QMetaObject::invokeMethod(m_renderWorker, "renderDragFrame", Qt::QueuedConnection,
+                              Q_ARG(QImage, belowSnapshot), Q_ARG(int, dragMaskIndex),
+                              Q_ARG(Adjustments, adj),
+                              Q_ARG(QTransform, m_orientedToGeom),
+                              Q_ARG(double, m_geomRotationDeg),
                               Q_ARG(double, m_scaleFromGeom));
 }
 
-void RetouchTab::onRenderDone(const QImage &result, const QImage &maskSnapshot) {
+void RetouchTab::onRenderDone(const QImage &result, const QImage &maskSnapshot,
+                              const QImage &belowSnapshot, int belowSnapshotIndex) {
     m_lastEdited = result;
     if (!maskSnapshot.isNull()) m_maskPreviewImage = maskSnapshot;
+    // Only trust the below-snapshot if it's still for the currently active
+    // mask — the selection may have changed while this render was in flight.
+    if (belowSnapshotIndex >= 0 && belowSnapshotIndex == m_activeMask && !belowSnapshot.isNull()) {
+        m_dragBelowSnapshot = belowSnapshot;
+        m_dragSnapshotIndex = belowSnapshotIndex;
+        m_dragSnapshotValid = true;
+    }
     if (!m_showingOriginal) m_canvas->setImage(m_lastEdited);
     emit previewUpdated();
     if (m_maskPreviewEnabled) emit maskPreviewUpdated();
     m_rendering = false;
     if (m_hasPending) {
         m_hasPending = false;
-        requestRender(m_pendingSrc, m_pendingAdj, m_pendingMaskIdx);
+        if (m_pendingIsDrag)
+            requestDragRender(m_pendingDragBelow, m_pendingDragIndex, m_pendingAdj);
+        else
+            requestRender(m_pendingSrc, m_pendingAdj, m_pendingMaskIdx, m_pendingBelowIdx);
     }
 }
 
@@ -752,6 +829,10 @@ void RetouchTab::setHealBrush(int radiusDisplayPx) {
 void RetouchTab::setEraseMode(bool on) {
     m_canvas->setEraseMode(on);
     if (on) m_canvas->setFocus();
+}
+
+void RetouchTab::setMaskForceErase(bool on) {
+    m_canvas->setMaskForceErase(on);
 }
 
 void RetouchTab::setEraseBrush(int radiusDisplayPx) {
@@ -2386,15 +2467,15 @@ void RetouchTab::onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm) {
     retone();
 }
 
-void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm, bool erase) {
+void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
     Mask &m = m_adj.masks[m_activeMask];
     // Bake in the brush size/hardness/(paint) color at paint time so later
     // changes only affect new dabs, not ones already committed to the stroke.
     m.stroke.append(BrushStrokePoint{ptNorm, erase, m.brushRadius, m.hardness,
-                                     m.paintColor.rgb()});
+                                     m.paintColor.rgb(), newStroke});
     pushMaskGizmo(); // show the painted coverage right away
-    retone();
+    retoneDrag(newStroke);
 }
 
 void RetouchTab::fillActiveMask(const QColor &color) {

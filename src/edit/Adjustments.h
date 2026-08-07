@@ -158,9 +158,14 @@ struct BrushStrokePoint {
     double radius = 0.06;
     double hardness = 0.5;
     QRgb color = 0xFF000000;
+    // True for the first sample of a mouse-down drag. Rasterization only
+    // interpolates sub-dabs between this point and its predecessor when this
+    // is false, so separate strokes never get an unwanted connecting line.
+    bool newStroke = false;
 
     bool operator==(const BrushStrokePoint &o) const {
         return pt == o.pt && erase == o.erase && color == o.color &&
+               newStroke == o.newStroke &&
                std::abs(radius - o.radius) < 1e-9 &&
                std::abs(hardness - o.hardness) < 1e-9;
     }
@@ -655,12 +660,25 @@ bool hasToneEdits(const Adjustments &adj);
 // rasterizer (see applyPaintMasks below) so those layers composite at the
 // correct position/size no matter where they fall in the stack relative to
 // other layers.
+// `belowSnapshotIndex`/`belowSnapshotOut`: if `belowSnapshotIndex >= 0`,
+// writes the composite through everything *below* (i.e. excluding)
+// `adj.masks[belowSnapshotIndex]` into `*belowSnapshotOut`. Pass that image
+// back in as `resumeImg` (with the same index as `resumeFromIndex`) on a
+// later call to skip orientation/crop/tone and every mask below it, and only
+// recomposite `resumeFromIndex` and the masks above it — used by RetouchTab
+// to keep per-mouse-move brush/erase renders cheap during a drag. Not valid
+// when a Background-type mask sits at or above resumeFromIndex (see
+// RetouchTab::retone).
 QImage applyAdjustments(const QImage &base, const Adjustments &adj,
                         QVector<BrushRasterCache> *brushCache = nullptr,
                         int maskSnapshotIndex = -1,
                         QImage *maskSnapshotOut = nullptr,
                         const QTransform &orientedToGeom = QTransform(),
-                        double geomRotationDeg = 0.0, double scale = 1.0);
+                        double geomRotationDeg = 0.0, double scale = 1.0,
+                        int belowSnapshotIndex = -1,
+                        QImage *belowSnapshotOut = nullptr,
+                        int resumeFromIndex = -1,
+                        const QImage *resumeImg = nullptr);
 
 // Composites just the "interactive tier" of masks — MaskType::Paint (the
 // free-draw brush/paint tool), MaskType::Shape, and MaskType::TextBox — on

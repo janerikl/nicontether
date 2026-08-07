@@ -29,9 +29,17 @@ public slots:
     // Shape/TextBox layers, snapshotted at request time (see
     // RetouchTab::m_orientedToGeom).
     void render(const QImage &src, const Adjustments &adj, int maskSnapshotIndex,
-               const QTransform &orientedToGeom, double geomRotationDeg, double scale);
+               const QTransform &orientedToGeom, double geomRotationDeg, double scale,
+               int belowSnapshotIndex = -1);
+    // Fast drag-frame render: resumes compositing from `belowSnapshot` (the
+    // composite through everything below `dragMaskIndex`, previously
+    // captured by render()'s belowSnapshotIndex) instead of redoing the
+    // whole stack. See RetouchTab::retoneDrag.
+    void renderDragFrame(const QImage &belowSnapshot, int dragMaskIndex, const Adjustments &adj,
+                         const QTransform &orientedToGeom, double geomRotationDeg, double scale);
 signals:
-    void done(const QImage &result, const QImage &maskSnapshot);
+    void done(const QImage &result, const QImage &maskSnapshot,
+             const QImage &belowSnapshot, int belowSnapshotIndex);
 
 private:
     // Persists across calls (this worker's queued slot invocations run
@@ -70,6 +78,7 @@ public:
     void setHealBrush(int radiusDisplayPx);
     void clearHeals();
     void setEraseMode(bool on);
+    void setMaskForceErase(bool on); // E toggle while a Paint mask is active
     void setEraseBrush(int radiusDisplayPx);
 
     // Remove Object tool: paint a stroke over an unwanted object; on stroke
@@ -276,10 +285,11 @@ private slots:
     void onEraseFinished();
     void onRemoveObjectAt(const QPointF &ptNorm);
     void onRemoveObjectFinished();
-    void onRenderDone(const QImage &result, const QImage &maskSnapshot);
+    void onRenderDone(const QImage &result, const QImage &maskSnapshot,
+                      const QImage &belowSnapshot, int belowSnapshotIndex);
     void onMaskRadial(const QPointF &centerNorm, double radiusNorm);
     void onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm);
-    void onMaskBrushPoint(const QPointF &ptNorm, bool erase);
+    void onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke);
     void onMaskEditFinished();
 
 private:
@@ -290,7 +300,17 @@ private:
     QPointF orientedDelta(const QPointF &geomDelta) const;
     void retone();       // fast preview (defers clarity/sharpen while dragging)
     void retoneFull();   // full preview incl. clarity/sharpen (after idle)
-    void requestRender(const QImage &src, const Adjustments &adj, int maskSnapshotIndex = -1); // coalesced, async, uses current geometry members
+    // Fast per-move brush/erase-stroke preview: reuses a cached composite of
+    // everything below the active mask (captured by a prior retone()/
+    // requestRender belowSnapshotIndex capture) and only recomposites the
+    // active mask and the layers above it, instead of the full stack. Falls
+    // back to a normal retone() (which also (re-)captures that cache) when
+    // there's no valid cache yet for the current active mask, `newStroke` is
+    // true, or a Background-type mask sits at or above the active mask.
+    void retoneDrag(bool newStroke);
+    void requestRender(const QImage &src, const Adjustments &adj, int maskSnapshotIndex = -1,
+                       int belowSnapshotIndex = -1); // coalesced, async, uses current geometry members
+    void requestDragRender(const QImage &belowSnapshot, int dragMaskIndex, const Adjustments &adj);
     int maskPreviewIndex() const { return m_maskPreviewEnabled ? m_activeMask : -1; }
     void markEdited(); // set dirty + emit editStateChanged
     void commitHistory();     // snapshot current adjustments (coalesced)
@@ -401,6 +421,18 @@ private:
     QImage m_pendingSrc;
     Adjustments m_pendingAdj;
     int m_pendingMaskIdx = -1;
+    int m_pendingBelowIdx = -1;
+    bool m_pendingIsDrag = false; // pending request is a requestDragRender, not requestRender
+    QImage m_pendingDragBelow;
+    int m_pendingDragIndex = -1;
+
+    // Cache for retoneDrag(): the composite through everything below
+    // m_dragSnapshotIndex, captured the last time a full render requested it.
+    // Valid only while m_dragSnapshotIndex still matches the active mask;
+    // see retoneDrag()/onRenderDone().
+    QImage m_dragBelowSnapshot;
+    int m_dragSnapshotIndex = -1;
+    bool m_dragSnapshotValid = false;
 
     QImage m_lastEdited;          // most recent edited render (for before/after)
     bool m_showingOriginal = false;

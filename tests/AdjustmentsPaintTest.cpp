@@ -771,6 +771,56 @@ int main(int argc, char **argv) {
         assert(qBlue(center) > 200 && qRed(center) < 20 && qGreen(center) < 20);
     }
 
+    // The retoneDrag() fast path (RetouchTab.cpp) captures a "below the
+    // active mask" snapshot via belowSnapshotIndex/belowSnapshotOut, then
+    // resumes compositing from it via resumeFromIndex/resumeImg on
+    // subsequent brush dabs instead of redoing the whole stack. That must
+    // produce pixel-identical output to a normal full render.
+    {
+        QImage base(6, 6, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask shape;
+        shape.type = MaskType::Shape;
+        shape.shapeType = ShapeType::Rectangle;
+        shape.shapeRect = QRectF(0, 0, 6, 6);
+        shape.shapeFillEnabled = true;
+        shape.shapeFillColor = QColor(0, 0, 255);
+        shape.shapeStrokeEnabled = false;
+        shape.opacity = 1.0;
+
+        Mask paint;
+        paint.type = MaskType::Paint;
+        paint.paintColor = QColor(255, 0, 0);
+        paint.brushRadius = 2.0;
+        paint.hardness = 1.0;
+        paint.opacity = 1.0;
+        paint.blend = BlendMode::Normal;
+        paint.stroke.append(BrushStrokePoint{QPointF(0.3, 0.5), false, paint.brushRadius,
+                                             paint.hardness, paint.paintColor.rgb(), true});
+        paint.stroke.append(BrushStrokePoint{QPointF(0.7, 0.5), false, paint.brushRadius,
+                                             paint.hardness, paint.paintColor.rgb(), false});
+
+        Adjustments adj;
+        adj.masks.append(paint); // index 0: topmost (active mask being dragged)
+        adj.masks.append(shape); // index 1: bottommost
+
+        QImage fullRender = applyAdjustments(base, adj);
+
+        QImage belowSnapshot;
+        applyAdjustments(base, adj, nullptr, -1, nullptr, QTransform(), 0.0, 1.0,
+                         /*belowSnapshotIndex=*/0, &belowSnapshot);
+        assert(!belowSnapshot.isNull());
+
+        QImage resumed = applyAdjustments(QImage(), adj, nullptr, -1, nullptr,
+                                          QTransform(), 0.0, 1.0, -1, nullptr,
+                                          /*resumeFromIndex=*/0, &belowSnapshot);
+        assert(resumed.size() == fullRender.size());
+        for (int y = 0; y < fullRender.height(); ++y)
+            for (int x = 0; x < fullRender.width(); ++x)
+                assert(resumed.pixel(x, y) == fullRender.pixel(x, y));
+    }
+
     std::printf("AdjustmentsPaintTest: all assertions passed\n");
     return 0;
 }
