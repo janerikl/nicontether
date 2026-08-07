@@ -218,6 +218,49 @@ int main(int argc, char **argv) {
             assert(tab4.masks()[i].shapeRect == afterManualReorder[i].shapeRect);
     }
 
+    // Regression test: deleting one member of a two-member group leaves the
+    // survivor tagged with a groupId it now shares with nobody else --
+    // RetouchTab::deleteActiveMask only removes the mask entry and clamps
+    // m_activeMask, it does not clear/rewrite surviving siblings' groupId.
+    // This documents current behavior (a lingering single-member group tag)
+    // rather than asserting it's desired; a caller relying on "groupId
+    // implies >=2 members" would be surprised by this.
+    {
+        RetouchTab tab5(QSize(8, 8));
+        tab5.addMask(MaskType::Radial);
+        tab5.addMask(MaskType::Radial);
+        tab5.groupMasks({0, 1});
+        QString groupId = tab5.masks()[0].groupId;
+        assert(!groupId.isEmpty());
+        assert(tab5.masks()[1].groupId == groupId);
+
+        tab5.selectMask(0);
+        tab5.deleteActiveMask();
+        assert(tab5.masks().size() == 2); // remaining Radial + Background
+        assert(tab5.masks()[0].groupId == groupId); // stale: still tagged, now alone
+    }
+
+    // Known gap, documented rather than silently relied upon: neither
+    // reorderMasks nor groupMasks special-cases MaskType::Background (see
+    // RetouchTab::backgroundMaskIndex/ensureBackgroundMask -- the latter
+    // only guarantees a Background entry exists, it's called from load/init
+    // paths only, and is never re-invoked to re-pin position after a
+    // reorder or group call). The Layers panel's drag-drop UI happens to
+    // avoid ever constructing such a permutation, but RetouchTab's own API
+    // does not defend against it. If Background pinning is ever enforced at
+    // the RetouchTab level, this assertion should flip to the opposite and
+    // the comment updated accordingly.
+    {
+        RetouchTab tab6(QSize(8, 8));
+        tab6.addMask(MaskType::Radial);
+        assert(tab6.masks()[1].type == MaskType::Background); // starts pinned last
+        int bgIndex = tab6.backgroundMaskIndex();
+        assert(bgIndex == 1);
+
+        tab6.reorderMasks({1, 0}); // moves Background to index 0 (top)
+        assert(tab6.masks()[0].type == MaskType::Background); // unpinned by this call
+    }
+
     printf("LayerReorderTest passed\n");
     return 0;
 }
