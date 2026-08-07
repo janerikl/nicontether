@@ -263,6 +263,17 @@ public:
     std::function<void()> onDropped;
 
 protected:
+    // Photoshop lets you click a layer's visibility checkbox and drag up/down
+    // to paint that same on/off state across every row the cursor passes
+    // over, instead of clicking each checkbox individually. m_checkDragActive
+    // tracks whether the click that started the current drag landed on a
+    // checkbox (detected in mousePressEvent by comparing before/after
+    // checkState), and mouseMoveEvent applies that same state to whatever
+    // row the cursor is over as long as the button stays down.
+    bool m_checkDragActive = false;
+    Qt::CheckState m_checkDragState = Qt::Unchecked;
+    QTreeWidgetItem *m_checkDragLastItem = nullptr;
+
     // Layers/groups should be freely reorderable, including dragging a
     // layer into a group (dropped on the group's header or squeezed among
     // its members) or out to the top level. The one thing still disallowed
@@ -291,6 +302,35 @@ protected:
     // itself one of the range's endpoints, strip it (and its children) back
     // out of the resulting selection.
     void mousePressEvent(QMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton && !(event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier))) {
+            QModelIndex idx = indexAt(event->pos());
+            QTreeWidgetItem *item = idx.isValid() ? itemFromIndex(idx) : nullptr;
+            // Qt's own checkbox toggle happens on mouse *release* (via the
+            // delegate's editorEvent), which is too late to distinguish "the
+            // user clicked the checkbox" from "the user clicked/dragged the
+            // row to select it" -- by release time a drag-select may already
+            // be under way. Hit-test the checkbox indicator's rect directly
+            // instead, so a press there can be claimed for paint-dragging
+            // immediately and never falls through to the base class's
+            // selection/drag handling at all.
+            if (item && (item->flags() & Qt::ItemIsUserCheckable)) {
+                QStyleOptionViewItem opt;
+                initViewItemOption(&opt);
+                opt.rect = visualRect(idx);
+                opt.features |= QStyleOptionViewItem::HasCheckIndicator;
+                opt.checkState = item->checkState(0);
+                QRect checkRect = style()->subElementRect(QStyle::SE_ItemViewItemCheckIndicator, &opt, this);
+                if (checkRect.contains(event->pos())) {
+                    const Qt::CheckState newState =
+                        item->checkState(0) == Qt::Checked ? Qt::Unchecked : Qt::Checked;
+                    item->setCheckState(0, newState);
+                    m_checkDragActive = true;
+                    m_checkDragState = newState;
+                    m_checkDragLastItem = item;
+                    return;
+                }
+            }
+        }
         if ((event->modifiers() & Qt::ShiftModifier) && !(event->modifiers() & Qt::ControlModifier)) {
             // Read everything we need from the anchor/target items and
             // resolve it to plain data *before* invoking the base handler:
@@ -318,6 +358,56 @@ protected:
             return;
         }
         QTreeWidget::mousePressEvent(event);
+    }
+
+    // Double-clicking a group header's folder icon toggles its collapsed
+    // state instead of opening the rename editor -- the icon is the natural
+    // "fold this" target, while double-clicking the label text elsewhere on
+    // the row still renames it (the default QAbstractItemView::DoubleClicked
+    // edit trigger).
+    void mouseDoubleClickEvent(QMouseEvent *event) override {
+        if (event->button() == Qt::LeftButton) {
+            QModelIndex idx = indexAt(event->pos());
+            QTreeWidgetItem *item = idx.isValid() ? itemFromIndex(idx) : nullptr;
+            const bool isGroupHeader = item && item->data(0, Qt::UserRole).toInt() == -1;
+            if (isGroupHeader) {
+                QStyleOptionViewItem opt;
+                initViewItemOption(&opt);
+                opt.rect = visualRect(idx);
+                opt.features |= QStyleOptionViewItem::HasDecoration;
+                QRect iconRect = style()->subElementRect(QStyle::SE_ItemViewItemDecoration, &opt, this);
+                if (iconRect.contains(event->pos())) {
+                    item->setExpanded(!item->isExpanded());
+                    return;
+                }
+            }
+        }
+        QTreeWidget::mouseDoubleClickEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override {
+        if (m_checkDragActive && (event->buttons() & Qt::LeftButton)) {
+            QTreeWidgetItem *item = itemAt(event->pos());
+            // Group header rows (index -1) have no visibility checkbox of
+            // their own to paint over.
+            if (item && item != m_checkDragLastItem &&
+                item->data(0, Qt::UserRole).toInt() != -1 &&
+                item->checkState(0) != m_checkDragState) {
+                item->setCheckState(0, m_checkDragState);
+                m_checkDragLastItem = item;
+            }
+            return;
+        }
+        QTreeWidget::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        if (m_checkDragActive) {
+            m_checkDragActive = false;
+            m_checkDragLastItem = nullptr;
+            return;
+        }
+        QTreeWidget::mouseReleaseEvent(event);
     }
 };
 } // namespace
@@ -355,12 +445,9 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     // MaskTreeWidget::dropEvent's Above/On/Below classification (computed
     // proportionally to row height) much bigger, easier-to-hit drop zones.
     m_maskList->setIconSize(QSize(40, 40));
-    // No per-depth indent: a group's members would otherwise render their
-    // checkbox/thumbnail shifted right of top-level rows and the group
-    // header itself, which is what made the checkbox column look
-    // inconsistent. Nesting is still legible from the "Group" header row
-    // and its collapse chevron alone.
-    m_maskList->setIndentation(0);
+    // A modest per-depth indent so a group's members read as nested under
+    // their header row (checkbox/thumbnail shifted right of top-level rows).
+    m_maskList->setIndentation(16);
     m_maskList->setMinimumHeight(140);
     root->addWidget(m_maskList, 1);
 
@@ -582,7 +669,11 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
             [this](QTreeWidgetItem *item, int) {
                 if (m_syncing) return;
                 int idx = item->data(0, Qt::UserRole).toInt();
-                if (idx == -1) return; // group parent row: no checkbox/name of its own
+                if (idx == -1) { // group parent row: renaming is its only editable field
+                    const QString groupId = item->data(0, Qt::UserRole + 1).toString();
+                    if (!groupId.isEmpty()) emit groupRenamed(groupId, item->text(0));
+                    return;
+                }
                 const bool checked = item->checkState(0) == Qt::Checked;
                 const bool wasChecked = item->data(0, Qt::UserRole + 2).toBool();
                 if (checked != wasChecked) {
@@ -699,11 +790,7 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                              QStringList(m_collapsedMaskGroups.begin(), m_collapsedMaskGroups.end()));
     });
     connect(m_groupMasks, &QPushButton::clicked, this, [this] {
-        QVector<int> indices;
-        for (QTreeWidgetItem *item : m_maskList->selectedItems()) {
-            int idx = item->data(0, Qt::UserRole).toInt();
-            if (idx >= 0) indices.append(idx);
-        }
+        QVector<int> indices = selectedMaskIndices();
         if (indices.size() >= 2) emit groupMasksRequested(indices);
     });
     connect(m_ungroupMasks, &QPushButton::clicked, this, [this] {
@@ -784,6 +871,15 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     });
 
     clear();
+}
+
+QVector<int> LayersPanel::selectedMaskIndices() const {
+    QVector<int> indices;
+    for (QTreeWidgetItem *item : m_maskList->selectedItems()) {
+        int idx = item->data(0, Qt::UserRole).toInt();
+        if (idx >= 0) indices.append(idx);
+    }
+    return indices;
 }
 
 void LayersPanel::clear() {
@@ -1084,8 +1180,10 @@ void LayersPanel::doRebuildList() {
         if (!m.groupId.isEmpty()) {
             auto it = groupItems.constFind(m.groupId);
             if (it == groupItems.constEnd()) {
-                auto *g = new QTreeWidgetItem(m_maskList, {QStringLiteral("Group")});
+                auto *g = new QTreeWidgetItem(
+                    m_maskList, {m.groupName.isEmpty() ? QStringLiteral("Group") : m.groupName});
                 g->setIcon(0, groupThumbnail());
+                g->setFlags(g->flags() | Qt::ItemIsEditable);
                 g->setData(0, Qt::UserRole, -1);
                 g->setData(0, Qt::UserRole + 1, m.groupId);
                 groupItems.insert(m.groupId, g);

@@ -2276,12 +2276,38 @@ void RetouchTab::groupMasks(const QVector<int> &indices) {
     }
     const int insertAt = originalTop - (sorted.size() - 1);
 
+    // "Group", then "Group 1", "Group 2", ... — skip any name already in use
+    // by an existing group so re-grouping after ungrouping/deleting doesn't
+    // collide with a still-live group's name.
+    QSet<QString> usedNames;
+    for (const Mask &m : m_adj.masks)
+        if (!m.groupId.isEmpty()) usedNames.insert(m.groupName);
+    QString groupName = QStringLiteral("Group");
+    int n = 1;
+    while (usedNames.contains(groupName)) groupName = QStringLiteral("Group %1").arg(n++);
+
     const QString groupId = QUuid::createUuid().toString();
-    for (Mask &m : members) m.groupId = groupId;
+    for (Mask &m : members) { m.groupId = groupId; m.groupName = groupName; }
     for (int i = 0; i < members.size(); ++i) m_adj.masks.insert(insertAt + i, members[i]);
 
     m_activeMask = insertAt + members.size() - 1;
     retone();
+    markEdited();
+    emit masksChanged();
+}
+
+// Renames every layer sharing this groupId (the group name is mirrored
+// across all of a group's members since there's no separate group entity).
+void RetouchTab::renameGroup(const QString &groupId, const QString &name) {
+    if (groupId.isEmpty()) return;
+    bool changed = false;
+    for (Mask &m : m_adj.masks) {
+        if (m.groupId == groupId && m.groupName != name) {
+            m.groupName = name;
+            changed = true;
+        }
+    }
+    if (!changed) return;
     markEdited();
     emit masksChanged();
 }
@@ -2296,7 +2322,7 @@ void RetouchTab::ungroupMasks(const QVector<int> &indices) {
             groupIds.insert(m_adj.masks[idx].groupId);
     if (groupIds.isEmpty()) return;
     for (Mask &m : m_adj.masks)
-        if (groupIds.contains(m.groupId)) m.groupId.clear();
+        if (groupIds.contains(m.groupId)) { m.groupId.clear(); m.groupName.clear(); }
     markEdited();
     emit masksChanged();
 }

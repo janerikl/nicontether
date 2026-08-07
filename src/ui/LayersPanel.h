@@ -79,6 +79,12 @@ public:
     // Show all six sections (used by View > Reset Panels).
     void resetSections();
 
+    // Original masks() indices of every currently-selected row in the layer
+    // list (group parent rows contribute nothing of their own). Used by
+    // RetouchWindow's Ctrl+G shortcut to tell a multi-layer-selection group
+    // apart from a canvas shape-selection group.
+    QVector<int> selectedMaskIndices() const;
+
 signals:
     // type defaults to MaskType::None (a plain adjustment layer, the
     // previous behaviour of the panel's single "Add Layer" action) so
@@ -106,6 +112,7 @@ signals:
                                const QVector<QPair<int, QString>> &joinGroups);
     void groupMasksRequested(const QVector<int> &indices);
     void ungroupMasksRequested(const QVector<int> &indices);
+    void groupRenamed(const QString &groupId, const QString &name); // inline rename of a group header row
     void maskTypeChanged(MaskType type);
     void maskShapeChanged(bool inverted, double feather, double hardness,
                           double brushRadius, bool autoMask);

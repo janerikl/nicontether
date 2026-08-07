@@ -541,7 +541,14 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     m_ungroupShapesAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G));
     connect(m_groupShapesAction, &QAction::triggered, this, [this] {
         RetouchTab *tab = currentTab();
-        if (tab) { tab->groupSelectedShapes(); refreshMaskPanel(); }
+        if (!tab) return;
+        // Ctrl+G is overloaded: with 2+ layers selected in the Layers panel,
+        // it groups those layers (mirroring the panel's own Group button);
+        // otherwise it falls back to grouping the canvas's selected shapes.
+        QVector<int> selected = m_layersPanel->selectedMaskIndices();
+        if (selected.size() >= 2) tab->groupMasks(selected);
+        else tab->groupSelectedShapes();
+        refreshMaskPanel();
     });
     connect(m_ungroupShapesAction, &QAction::triggered, this, [this] {
         RetouchTab *tab = currentTab();
@@ -1984,6 +1991,11 @@ void RetouchWindow::buildLayersDock() {
             [this](const QVector<int> &indices) {
                 RetouchTab *tab = currentTab();
                 if (tab) { tab->ungroupMasks(indices); refreshMaskPanel(); }
+            });
+    connect(m_layersPanel, &LayersPanel::groupRenamed, this,
+            [this](const QString &groupId, const QString &name) {
+                RetouchTab *tab = currentTab();
+                if (tab) tab->renameGroup(groupId, name);
             });
     connect(m_layersPanel, &LayersPanel::selectRemovalRequested, this, [this](int index) {
         RetouchTab *tab = currentTab();

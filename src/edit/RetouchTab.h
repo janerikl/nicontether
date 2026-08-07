@@ -156,6 +156,7 @@ public:
                        const QVector<QPair<int, QString>> &joinGroups = {});
     void groupMasks(const QVector<int> &indices);     // tag layers as one group; kept contiguous
     void ungroupMasks(const QVector<int> &indices);   // clear the group tag of the given layers' groups
+    void renameGroup(const QString &groupId, const QString &name); // rename every layer's group
     const QVector<Mask> &masks() const { return m_adj.masks; }
     int activeMaskIndex() const { return m_activeMask; }
 

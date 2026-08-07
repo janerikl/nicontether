@@ -151,6 +151,7 @@ QJsonObject adjustmentsToJson(const Adjustments &a) {
             j["name"] = m.name;
             j["visible"] = m.visible;
             j["groupId"] = m.groupId;
+            j["groupName"] = m.groupName;
             j["opacity"] = m.opacity;
             j["blend"] = int(m.blend);
             j["sourceImagePath"] = m.sourceImagePath;
@@ -363,6 +364,7 @@ Adjustments adjustmentsFromJson(const QJsonObject &o) {
         m.name = j["name"].toString();
         m.visible = j["visible"].toBool(true);
         m.groupId = j["groupId"].toString();
+        m.groupName = j["groupName"].toString();
         m.opacity = j["opacity"].toDouble(1.0);
         m.blend = static_cast<BlendMode>(j["blend"].toInt(0));
         m.sourceImagePath = j["sourceImagePath"].toString();
