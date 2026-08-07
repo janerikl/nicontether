@@ -6,6 +6,7 @@
 #include "edit/EditSidecar.h"
 #include "edit/RecentSessions.h"
 #include "edit/RecentFiles.h"
+#include "edit/RecentProjects.h"
 #include "ui/FilmstripWidget.h"
 #include "ui/LevelsPanel.h"
 #include "ui/LayersPanel.h"
@@ -468,11 +469,13 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     // to make room for the contextual tool-options row below.
     auto *openSessionAction = new QAction("Open Session…", this);
     auto *openPhotosAction = new QAction("Open Photos…", this);
+    auto *openProjectAction = new QAction("Open Project…", this);
     auto *newDocAction = new QAction("New…", this);
     newDocAction->setShortcut(QKeySequence::New); // Ctrl+N
     connect(newDocAction, &QAction::triggered, this, &RetouchWindow::onNewDocument);
     connect(openSessionAction, &QAction::triggered, this, &RetouchWindow::onOpenSession);
     connect(openPhotosAction, &QAction::triggered, this, &RetouchWindow::onOpenPhotos);
+    connect(openProjectAction, &QAction::triggered, this, &RetouchWindow::onOpenProject);
     connect(m_saveAction, &QAction::triggered, this, &RetouchWindow::onSave);
     connect(m_saveAllAction, &QAction::triggered, this, &RetouchWindow::onSaveAll);
     connect(m_saveAsProjectAction, &QAction::triggered, this, &RetouchWindow::onSaveAsProject);
@@ -483,6 +486,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     m_fileMenu->addSeparator();
     m_fileMenu->addAction(openSessionAction);
     m_fileMenu->addAction(openPhotosAction);
+    m_fileMenu->addAction(openProjectAction);
     // Recent sessions live inline here, between these two separators. Recent
     // item actions are inserted before m_recentEndSeparator by
     // rebuildRecentSessionsMenu(); both separators hide when the list is empty.
@@ -496,10 +500,16 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     m_fileMenu->addAction(m_saveAction);
     m_fileMenu->addAction(m_saveAllAction);
     m_fileMenu->addAction(m_saveAsProjectAction);
+    // Recently opened/saved Photonloom project (.ploom) files live in their
+    // own section, below Save As Project, using the same
+    // insert-before-end-separator pattern via rebuildRecentProjectsMenu().
+    m_recentProjectsBeginSeparator = m_fileMenu->addSeparator();
+    m_recentProjectsEndSeparator = m_fileMenu->addSeparator();
     m_fileMenu->addSeparator();
     m_fileMenu->addAction(m_exportAction);
     rebuildRecentSessionsMenu();
     rebuildRecentFilesMenu();
+    rebuildRecentProjectsMenu();
 
     auto *editMenu = menuBar()->addMenu("Edit");
     m_undoAction = editMenu->addAction("Undo");
@@ -2336,8 +2346,14 @@ void RetouchWindow::createUntitledTab(const QSize &size) {
 void RetouchWindow::openPhoto(const QString &path) {
     addToFilmstrip(path);
 
-    RecentFiles::add(QFileInfo(path).absoluteFilePath());
-    rebuildRecentFilesMenu();
+    const QString absPath = QFileInfo(path).absoluteFilePath();
+    if (path.endsWith(".ploom", Qt::CaseInsensitive)) {
+        RecentProjects::add(absPath);
+        rebuildRecentProjectsMenu();
+    } else {
+        RecentFiles::add(absPath);
+        rebuildRecentFilesMenu();
+    }
 
     if (m_openTabs.contains(path)) {
         m_tabs->setCurrentWidget(m_openTabs.value(path));
@@ -2929,11 +2945,57 @@ void RetouchWindow::rebuildRecentFilesMenu() {
     if (m_recentFilesEndSeparator) m_recentFilesEndSeparator->setVisible(hasRecent);
 }
 
+// Repopulate the recent-project entries between m_recentProjectsBeginSeparator
+// and m_recentProjectsEndSeparator, reflecting the current
+// RecentProjects::load(). Both separators are hidden when the list is empty.
+void RetouchWindow::rebuildRecentProjectsMenu() {
+    if (!m_fileMenu) return;
+    for (QAction *a : m_recentProjectActions) {
+        m_fileMenu->removeAction(a);
+        a->deleteLater();
+    }
+    m_recentProjectActions.clear();
+
+    const QStringList recent = RecentProjects::load();
+    for (const QString &path : recent) {
+        auto *act = new QAction(QFileInfo(path).fileName(), this);
+        act->setToolTip(path);
+        connect(act, &QAction::triggered, this, [this, path] {
+            if (!QFileInfo::exists(path)) {
+                QMessageBox::warning(
+                    this, "Open Project",
+                    "This project file no longer exists:\n" + path);
+                RecentProjects::remove(path);
+                rebuildRecentProjectsMenu();
+                return;
+            }
+            openPhoto(path);
+        });
+        // Insert before the closing separator so entries sit in the section.
+        m_fileMenu->insertAction(m_recentProjectsEndSeparator, act);
+        m_recentProjectActions.append(act);
+    }
+    m_fileMenu->setToolTipsVisible(true);
+
+    const bool hasRecent = !m_recentProjectActions.isEmpty();
+    if (m_recentProjectsBeginSeparator) m_recentProjectsBeginSeparator->setVisible(hasRecent);
+    if (m_recentProjectsEndSeparator) m_recentProjectsEndSeparator->setVisible(hasRecent);
+}
+
 void RetouchWindow::onOpenPhotos() {
     const QStringList files = QFileDialog::getOpenFileNames(
         this, "Open photos for editing",
         QDir(QDir::homePath()).filePath("Pictures/Tether"),
         "RAW images (*.nef *.NEF *.cr2 *.cr3 *.arw *.dng *.raf *.rw2 *.orf);;"
+        "Photonloom Project (*.ploom);;All files (*)");
+    for (const QString &f : files)
+        openPhoto(f);
+}
+
+void RetouchWindow::onOpenProject() {
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this, "Open Photonloom Project",
+        QDir(QDir::homePath()).filePath("Pictures/Tether"),
         "Photonloom Project (*.ploom);;All files (*)");
     for (const QString &f : files)
         openPhoto(f);
@@ -2963,6 +3025,8 @@ void RetouchWindow::onSave() {
             return;
         }
         reKeyTab(tab, path);
+        RecentProjects::add(QFileInfo(path).absoluteFilePath());
+        rebuildRecentProjectsMenu();
         refreshMaskPanel(); // the tab's path (and Background layer's name) changed
         m_statusLabel->setText("Saved project: " + QFileInfo(path).fileName());
         return;
@@ -3004,6 +3068,8 @@ void RetouchWindow::onSaveAsProject() {
         return;
     }
     reKeyTab(tab, path);
+    RecentProjects::add(QFileInfo(path).absoluteFilePath());
+    rebuildRecentProjectsMenu();
     refreshMaskPanel();
     m_statusLabel->setText("Saved project: " + QFileInfo(path).fileName());
 }

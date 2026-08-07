@@ -54,6 +54,7 @@ protected:
 private slots:
     void onOpenSession();
     void onOpenPhotos();
+    void onOpenProject();
     void onNewDocument();
     void onSave();
     void onSaveAll();
@@ -73,6 +74,7 @@ private:
     void loadSession(const QString &dir);      // scan a folder for NEFs into the filmstrip
     void rebuildRecentSessionsMenu();          // repopulate the recent-session items in the File menu
     void rebuildRecentFilesMenu();             // repopulate the recent-file items in the File menu
+    void rebuildRecentProjectsMenu();          // repopulate the recent-project items in the File menu
     void buildToolPanel(); // narrow left icon toolbar: Zoom / Crop / Spot Heal tools
     void deselectAllTools(); // uncheck all left-bar tools and exit their modes
     void buildToolOptionsBar(); // contextual per-tool options row under the main toolbar
@@ -115,6 +117,12 @@ private:
     class QAction *m_recentFilesBeginSeparator = nullptr;
     class QAction *m_recentFilesEndSeparator = nullptr;
     QList<class QAction *> m_recentFileActions;
+
+    // Anchors for the rebuildable recent-projects section (Photonloom .ploom
+    // project files, opened or saved).
+    class QAction *m_recentProjectsBeginSeparator = nullptr;
+    class QAction *m_recentProjectsEndSeparator = nullptr;
+    QList<class QAction *> m_recentProjectActions;
 
     // View menu togglable panels.
     QToolBar *m_toolsBar = nullptr; // left icon bar: Zoom / Crop / Spot Heal

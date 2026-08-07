@@ -49,6 +49,7 @@ add_executable(photonloom
     src/edit/AdjustmentPreset.cpp
     src/edit/RecentSessions.cpp
     src/edit/RecentFiles.cpp
+    src/edit/RecentProjects.cpp
     src/edit/ExportDialog.cpp
     src/edit/CurveEditor.cpp
     src/edit/EditSidecar.cpp
