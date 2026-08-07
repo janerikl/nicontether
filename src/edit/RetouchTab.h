@@ -25,7 +25,11 @@ public slots:
     // `maskSnapshotIndex >= 0` additionally requests the cumulative composite
     // through that mask index, returned as `maskSnapshot` in `done` (used to
     // feed the per-layer Levels histogram; see RetouchTab::maskPreviewImage).
-    void render(const QImage &src, const Adjustments &adj, int maskSnapshotIndex);
+    // `orientedToGeom`/`geomRotationDeg`/`scale`: geometry mapping for
+    // Shape/TextBox layers, snapshotted at request time (see
+    // RetouchTab::m_orientedToGeom).
+    void render(const QImage &src, const Adjustments &adj, int maskSnapshotIndex,
+               const QTransform &orientedToGeom, double geomRotationDeg, double scale);
 signals:
     void done(const QImage &result, const QImage &maskSnapshot);
 
@@ -286,7 +290,7 @@ private:
     QPointF orientedDelta(const QPointF &geomDelta) const;
     void retone();       // fast preview (defers clarity/sharpen while dragging)
     void retoneFull();   // full preview incl. clarity/sharpen (after idle)
-    void requestRender(const QImage &src, const Adjustments &adj, int maskSnapshotIndex = -1); // coalesced, async
+    void requestRender(const QImage &src, const Adjustments &adj, int maskSnapshotIndex = -1); // coalesced, async, uses current geometry members
     int maskPreviewIndex() const { return m_maskPreviewEnabled ? m_activeMask : -1; }
     void markEdited(); // set dirty + emit editStateChanged
     void commitHistory();     // snapshot current adjustments (coalesced)
@@ -400,12 +404,6 @@ private:
 
     QImage m_lastEdited;          // most recent edited render (for before/after)
     bool m_showingOriginal = false;
-
-    // Paint-layer strokes are composited on the GUI thread after text/shapes
-    // (see onRenderDone) so the paint tool draws on top of other elements;
-    // this caches their incremental rasterization the same way RenderWorker's
-    // m_brushCache does for the other mask types.
-    QVector<BrushRasterCache> m_paintCache;
 
     bool m_maskPreviewEnabled = false; // Layers dock visible -> compute per-layer histogram source
     QImage m_maskPreviewImage;

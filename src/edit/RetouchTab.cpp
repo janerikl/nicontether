@@ -26,10 +26,13 @@
 #include <algorithm>
 #include <cmath>
 
-void RenderWorker::render(const QImage &src, const Adjustments &adj, int maskSnapshotIndex) {
+void RenderWorker::render(const QImage &src, const Adjustments &adj, int maskSnapshotIndex,
+                          const QTransform &orientedToGeom, double geomRotationDeg,
+                          double scale) {
     QImage maskSnapshot;
     QImage result = applyAdjustments(src, adj, &m_brushCache, maskSnapshotIndex,
-                                     maskSnapshotIndex >= 0 ? &maskSnapshot : nullptr);
+                                     maskSnapshotIndex >= 0 ? &maskSnapshot : nullptr,
+                                     orientedToGeom, geomRotationDeg, scale);
     emit done(result, maskSnapshot);
 }
 
@@ -601,14 +604,14 @@ void RetouchTab::requestRender(const QImage &src, const Adjustments &adj, int ma
     m_rendering = true;
     QMetaObject::invokeMethod(m_renderWorker, "render", Qt::QueuedConnection,
                               Q_ARG(QImage, src), Q_ARG(Adjustments, adj),
-                              Q_ARG(int, maskSnapshotIndex));
+                              Q_ARG(int, maskSnapshotIndex),
+                              Q_ARG(QTransform, m_orientedToGeom),
+                              Q_ARG(double, m_geomRotationDeg),
+                              Q_ARG(double, m_scaleFromGeom));
 }
 
 void RetouchTab::onRenderDone(const QImage &result, const QImage &maskSnapshot) {
     m_lastEdited = result;
-    if (!m_adj.masks.isEmpty())
-        applyPaintMasks(m_lastEdited, m_adj.masks, &m_paintCache, m_orientedToGeom,
-                        m_geomRotationDeg, m_scaleFromGeom);
     if (!maskSnapshot.isNull()) m_maskPreviewImage = maskSnapshot;
     if (!m_showingOriginal) m_canvas->setImage(m_lastEdited);
     emit previewUpdated();
@@ -2490,10 +2493,8 @@ void RetouchTab::resetCrop() {
 
 QImage RetouchTab::renderFullRes() const {
     if (m_geomImg.isNull()) return QImage();
-    // m_geomImg is the full-res oriented + healed + cropped base; apply tone,
-    // then composite text last so it stays unaffected by tone/colour.
-    QImage out = applyAdjustments(m_geomImg, toneOnly(m_adj));
-    if (!m_adj.masks.isEmpty())
-        applyPaintMasks(out, m_adj.masks, nullptr, m_orientedToGeom, m_geomRotationDeg);
-    return out;
+    // m_geomImg is the full-res oriented + healed + cropped base; apply tone
+    // and every mask layer (including Shape/TextBox) in true stack order.
+    return applyAdjustments(m_geomImg, toneOnly(m_adj), nullptr, -1, nullptr,
+                            m_orientedToGeom, m_geomRotationDeg);
 }

@@ -35,7 +35,6 @@ int main(int argc, char **argv) {
         adj.masks.append(paint);
 
         QImage out = applyAdjustments(base, adj);
-        applyPaintMasks(out, adj.masks);
         QRgb center = out.pixel(2, 2);
         assert(qRed(center) > 250 && qGreen(center) < 5 && qBlue(center) < 5);
     }
@@ -55,7 +54,6 @@ int main(int argc, char **argv) {
         adj.masks.append(paint);
 
         QImage out = applyAdjustments(base, adj);
-        applyPaintMasks(out, adj.masks);
         QRgb center = out.pixel(2, 2);
         assert(qRed(center) == 0 && qGreen(center) == 0 && qBlue(center) == 0);
     }
@@ -78,7 +76,6 @@ int main(int argc, char **argv) {
         adj.masks.append(paint);
 
         QImage out = applyAdjustments(base, adj);
-        applyPaintMasks(out, adj.masks);
         int r = qRed(out.pixel(2, 2));
         assert(r > 90 && r < 110); // ~100, halfway between 0 and 200
     }
@@ -478,13 +475,9 @@ int main(int argc, char **argv) {
         assert(loaded.lightIntensity == -42);
     }
 
-    // MaskType::Shape renders via the new masks-based interactive-tier path:
-    // a full-frame red rectangle over a black base should turn the whole
-    // frame red once both the (empty) static pass and the interactive pass
-    // (applyPaintMasks) run — mirroring how RetouchTab::onRenderDone
-    // composites applyAdjustments' cached buffer + applyPaintMasks. Built
-    // directly via `masks` (not the old `shapes` array) so this doesn't
-    // double-render.
+    // MaskType::Shape renders via applyAdjustments' unified pass (every tier
+    // composited together in true stack order): a full-frame red rectangle
+    // over a black base should turn the whole frame red.
     {
         QImage base(8, 8, QImage::Format_ARGB32);
         base.fill(Qt::black);
@@ -502,9 +495,7 @@ int main(int argc, char **argv) {
         Adjustments adj;
         adj.masks.append(shape);
 
-        QImage out = applyAdjustments(base, adj);   // static tier: Shape excluded, stays black
-        assert(qRed(out.pixel(4, 4)) == 0);
-        applyPaintMasks(out, adj.masks);             // interactive tier: Shape composited here
+        QImage out = applyAdjustments(base, adj);
         QRgb center = out.pixel(4, 4);
         assert(qRed(center) > 250 && qGreen(center) < 5 && qBlue(center) < 5);
     }
@@ -526,7 +517,6 @@ int main(int argc, char **argv) {
         adj.masks.append(shape);
 
         QImage out = applyAdjustments(base, adj);
-        applyPaintMasks(out, adj.masks);
         assert(qRed(out.pixel(4, 4)) == 0);
     }
 
@@ -554,8 +544,6 @@ int main(int argc, char **argv) {
         adj.masks.append(tb);
 
         QImage out = applyAdjustments(base, adj);
-        assert(qGreen(out.pixel(1, 1)) == 0); // static tier: TextBox excluded, stays black
-        applyPaintMasks(out, adj.masks);
         // Just below/right of the origin should be inside the padded
         // background box (text box top-left is (0,0), padding extends it).
         QRgb p = out.pixel(1, 1);
@@ -563,10 +551,9 @@ int main(int argc, char **argv) {
     }
 
     // Paint, Shape, and TextBox composite together (true stack order) in a
-    // single applyPaintMasks call, replacing the old separate
-    // applyTexts/applyShapes/applyPaintMasks three-call sequence for masks-
-    // based layers. Stack order (index 0 = top): TextBox on top of Shape on
-    // top of Paint; each covers a distinct region so all three must appear.
+    // single applyAdjustments call. Stack order (index 0 = top): TextBox on
+    // top of Shape on top of Paint; each covers a distinct region so all
+    // three must appear.
     {
         QImage base(30, 10, QImage::Format_ARGB32);
         base.fill(Qt::black);
@@ -611,7 +598,6 @@ int main(int argc, char **argv) {
         adj.masks.append(paint);
 
         QImage out = applyAdjustments(base, adj);
-        applyPaintMasks(out, adj.masks);
         assert(qBlue(out.pixel(2, 5)) > 200);  // Paint region
         assert(qRed(out.pixel(15, 5)) > 200);  // Shape region
         assert(qGreen(out.pixel(23, 1)) > 200); // TextBox background region
@@ -664,7 +650,6 @@ int main(int argc, char **argv) {
             adj.masks.append(paint);
             adj.masks.append(bg);
             QImage out = applyAdjustments(base, adj);
-            applyPaintMasks(out, adj.masks);
             QRgb center = out.pixel(2, 2);
             assert(qRed(center) > 250 && qGreen(center) < 5 && qBlue(center) < 5);
         }
@@ -672,12 +657,7 @@ int main(int argc, char **argv) {
         // Reordered: Background dragged above another full-frame (static-
         // tier) layer -> Background is fully opaque and composites last, so
         // it now hides that layer entirely. Proves Background is genuinely
-        // reorderable, not pinned to the bottom of the stack. (Uses an image
-        // layer rather than Paint here: Paint/Shape/TextBox are the
-        // "interactive tier", always composited as a block on top of the
-        // static tier regardless of stack order — a pre-existing, documented
-        // rendering-pipeline trade-off unrelated to Background specifically,
-        // see the MaskPass comment in Adjustments.cpp.)
+        // reorderable, not pinned to the bottom of the stack.
         {
             QImage red(4, 4, QImage::Format_ARGB32);
             red.fill(QColor(255, 0, 0));
@@ -689,6 +669,21 @@ int main(int argc, char **argv) {
             Adjustments adj;
             adj.masks.append(bg);
             adj.masks.append(imageLayer);
+            QImage out = applyAdjustments(base, adj);
+            QRgb center = out.pixel(2, 2);
+            assert(qBlue(center) > 250 && qRed(center) < 5);
+        }
+
+        // Regression test: Background dragged above a Paint layer (the
+        // "interactive tier") must hide it too, exactly like it hides a
+        // static-tier layer above. Previously Paint/Shape/TextBox always
+        // composited as a block on top of every other layer regardless of
+        // stack position, so this reorder had no visible effect — the bug
+        // this test guards against.
+        {
+            Adjustments adj;
+            adj.masks.append(bg);
+            adj.masks.append(paint);
             QImage out = applyAdjustments(base, adj);
             QRgb center = out.pixel(2, 2);
             assert(qBlue(center) > 250 && qRed(center) < 5);
@@ -772,7 +767,6 @@ int main(int argc, char **argv) {
         adj.masks.append(red);   // index 2: bottommost
 
         QImage out = applyAdjustments(base, adj);
-        applyPaintMasks(out, adj.masks);
         QRgb center = out.pixel(5, 5);
         assert(qBlue(center) > 200 && qRed(center) < 20 && qGreen(center) < 20);
     }

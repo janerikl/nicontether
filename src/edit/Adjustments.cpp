@@ -555,22 +555,13 @@ TextOp maskToTextOp(const Mask &m) {
 // LayersPanel list shows index 0 at the top row), but compositing must apply
 // the bottom-most layer first so a higher layer paints over a lower one —
 // hence the reverse loop.
-// Two-tier performance/correctness trade-off (see design doc section B):
-// Paint/Shape/TextBox are the "interactive" tier — cheap enough to
-// re-composite on every drag/paint/edit frame on the GUI thread (see
-// applyPaintMasks) — while Radial/Linear/Brush/Image/Text-clip-mask are the
-// "static" tier, composited once per full render on the worker thread
-// (see applyAdjustments). StaticOnly/InteractiveOnly let each tier run as
-// its own pass; a fresh full render (StaticOnly + InteractiveOnly back to
-// back) always produces the fully-correct true-stack-order composite, but a
-// GUI-thread top-up (InteractiveOnly alone, over a cached StaticOnly buffer)
-// always draws the interactive tier as a block on top of the static tier's
-// snapshot — so a Paint/Shape/TextBox layer positioned *below* a static-tier
-// layer in the stack will render correctly in an isolated snapshot but not
-// necessarily mid-drag against the cached buffer, until the next full
-// render. Any non-drag edit (selection change, property panel edit, etc.)
-// triggers a fresh full render, so this only matters transiently mid-drag —
-// an accepted trade-off.
+// StaticOnly/InteractiveOnly let a caller run just one tier as its own pass
+// (see applyPaintMasks below, kept as a standalone utility/for tests); the
+// main render path (applyAdjustments) always uses MaskPass::All so every
+// layer — Paint/Shape/TextBox included — composites in true stack order
+// against every other layer, regardless of tier. Reordering a Background (or
+// any static-tier layer) above or below a Paint/Shape/TextBox layer changes
+// the render exactly as it would in any other layer-based editor.
 enum class MaskPass { All, StaticOnly, InteractiveOnly };
 
 void applyMasks(QImage &img, const QVector<Mask> &masks,
@@ -1322,7 +1313,9 @@ bool hasToneEdits(const Adjustments &adj) {
 
 QImage applyAdjustments(const QImage &base, const Adjustments &adj,
                         QVector<BrushRasterCache> *brushCache,
-                        int maskSnapshotIndex, QImage *maskSnapshotOut) {
+                        int maskSnapshotIndex, QImage *maskSnapshotOut,
+                        const QTransform &orientedToGeom, double geomRotationDeg,
+                        double scale) {
     if (base.isNull()) return base;
 
     QImage img = orient(base, adj);
@@ -1359,11 +1352,10 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
     }
 
     // --- Additional layers (blend per-layer full content by weight) ---
-    // Paint/Shape/TextBox (the "interactive" tier) are excluded here and
-    // composited later, by the GUI thread on top of this worker-computed
-    // buffer (see applyPaintMasks and the MaskPass comment above it), so
-    // dragging/painting one of them doesn't re-run this full tone/static-
-    // mask pass on every frame.
+    // All tiers (static and interactive/Paint-Shape-TextBox) are composited
+    // together here in true stack order — a layer's position relative to
+    // *every* other layer (not just its own tier) determines what it paints
+    // over and what paints over it.
     if (!adj.masks.isEmpty()) {
         // The Background mask (if present) has no content of its own beyond
         // "this tab's base photo" — feed it the globally-toned base computed
@@ -1380,11 +1372,11 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
             QImage composite(w, h, QImage::Format_RGBA64);
             composite.fill(Qt::transparent);
             applyMasks(composite, stack, brushCache, maskSnapshotIndex, maskSnapshotOut,
-                      MaskPass::StaticOnly);
+                      MaskPass::All, orientedToGeom, geomRotationDeg, scale);
             img = composite;
         } else {
             applyMasks(img, adj.masks, brushCache, maskSnapshotIndex, maskSnapshotOut,
-                      MaskPass::StaticOnly);
+                      MaskPass::All, orientedToGeom, geomRotationDeg, scale);
         }
     }
 

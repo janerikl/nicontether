@@ -651,17 +651,23 @@ bool hasToneEdits(const Adjustments &adj);
 // the cumulative composite through and including `adj.masks[maskSnapshotIndex]`
 // into `*maskSnapshotOut` (used to feed the per-layer Levels histogram — see
 // LayersPanel/RetouchTab). Zero extra cost when `maskSnapshotIndex < 0`.
+// `orientedToGeom`/`geomRotationDeg`/`scale`: forwarded to the Shape/TextBox
+// rasterizer (see applyPaintMasks below) so those layers composite at the
+// correct position/size no matter where they fall in the stack relative to
+// other layers.
 QImage applyAdjustments(const QImage &base, const Adjustments &adj,
                         QVector<BrushRasterCache> *brushCache = nullptr,
                         int maskSnapshotIndex = -1,
-                        QImage *maskSnapshotOut = nullptr);
+                        QImage *maskSnapshotOut = nullptr,
+                        const QTransform &orientedToGeom = QTransform(),
+                        double geomRotationDeg = 0.0, double scale = 1.0);
 
-// Composites the "interactive tier" of masks — MaskType::Paint (the free-draw
-// brush/paint tool), MaskType::Shape, and MaskType::TextBox — on top of `img`,
-// in their own relative stack order. applyAdjustments excludes these types
-// from its own (worker-thread) masks pass so this cheaper top-up can be
-// re-run on every interactive drag/paint/edit without re-running the full
-// tone/static-mask pipeline (see MaskPass in Adjustments.cpp). `brushCache`,
+// Composites just the "interactive tier" of masks — MaskType::Paint (the
+// free-draw brush/paint tool), MaskType::Shape, and MaskType::TextBox — on
+// top of `img`, in their own relative stack order. Standalone utility (not
+// used by applyAdjustments's main render path, which composites every tier
+// together via MaskPass::All so stack order is respected across tiers);
+// useful for isolating just the interactive tier, e.g. in tests. `brushCache`,
 // if given, is used/updated for incremental Paint stroke rasterization, same
 // as applyAdjustments. Shape/TextBox masks are still stored in raw
 // oriented-image pixel space (see Mask::shapeRect etc.), so `orientedToGeom`/
