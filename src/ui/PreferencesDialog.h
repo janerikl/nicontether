@@ -5,10 +5,14 @@
 class QComboBox;
 class QSpinBox;
 class QPushButton;
+class QWidget;
 
-// File → Preferences… dialog. Holds the camera-model dropdown and the AF
-// coordinate frame size used by click-to-focus. AF frame is remembered per
-// model in QSettings; this dialog is the single writer.
+// File → Preferences… dialog. Two-column layout: a category list on the
+// left, a QStackedWidget of pages on the right. Currently two pages:
+// "General" (camera-model dropdown and the AF coordinate frame size used by
+// click-to-focus — AF frame is remembered per model in QSettings, this
+// dialog is the single writer) and "Keyboard Shortcuts" (a read-only
+// reference list; no rebinding yet).
 class PreferencesDialog : public QDialog {
     Q_OBJECT
 public:
@@ -30,6 +34,8 @@ private:
     void onFrameEdited();
     void loadFrameForCurrentModel();
     QString currentModelId() const;
+    QWidget *buildGeneralPage();
+    QWidget *buildShortcutsPage();
 
     QComboBox *m_model = nullptr;
     QSpinBox *m_frameW = nullptr;

@@ -6,11 +6,17 @@
 #include <QSpinBox>
 #include <QFormLayout>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QDialogButtonBox>
 #include <QLabel>
 #include <QPushButton>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QListWidget>
+#include <QStackedWidget>
+#include <QTreeWidget>
+#include <QHeaderView>
+#include <QFont>
 
 void afFrameForModel(const QString &id, int &w, int &h) {
     QSettings s;
@@ -23,10 +29,57 @@ void afFrameForModel(const QString &id, int &w, int &h) {
 
 PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
     setWindowTitle("Preferences");
+    resize(560, 420);
 
     auto *outer = new QVBoxLayout(this);
+
+    auto *row = new QHBoxLayout;
+    outer->addLayout(row, /*stretch=*/1);
+
+    auto *nav = new QListWidget;
+    nav->setFixedWidth(150);
+    nav->addItem("General");
+    nav->addItem("Keyboard Shortcuts");
+    row->addWidget(nav);
+
+    auto *pages = new QStackedWidget;
+    pages->addWidget(buildGeneralPage());
+    pages->addWidget(buildShortcutsPage());
+    row->addWidget(pages, /*stretch=*/1);
+
+    connect(nav, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
+    nav->setCurrentRow(0);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    outer->addWidget(buttons);
+
+    // Restore the last-used model.
+    QSettings s;
+    QString cur = s.value("af/currentModel", "custom").toString();
+    int idx = m_model->findData(cur);
+    if (idx < 0) idx = m_model->findData("custom");
+    {
+        QSignalBlocker b(m_model);
+        m_model->setCurrentIndex(idx);
+    }
+    loadFrameForCurrentModel();
+
+    connect(m_model, &QComboBox::currentIndexChanged, this,
+            [this](int) { onModelChanged(); });
+    connect(m_frameW, qOverload<int>(&QSpinBox::valueChanged), this,
+            [this](int) { onFrameEdited(); });
+    connect(m_frameH, qOverload<int>(&QSpinBox::valueChanged), this,
+            [this](int) { onFrameEdited(); });
+}
+
+QWidget *PreferencesDialog::buildGeneralPage() {
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+
     auto *form = new QFormLayout;
-    outer->addLayout(form);
+    layout->addLayout(form);
 
     m_model = new QComboBox;
     for (const cammodel::Model &m : cammodel::models())
@@ -51,30 +104,86 @@ PreferencesDialog::PreferencesDialog(QWidget *parent) : QDialog(parent) {
         "the AF frame size is solved automatically from those two clicks. "
         "Values are remembered per model.");
     hint->setWordWrap(true);
-    outer->addWidget(hint);
+    layout->addWidget(hint);
+    layout->addStretch(1);
+    return page;
+}
 
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
-    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::accept);
-    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
-    outer->addWidget(buttons);
+namespace {
+// One keyboard shortcut reference entry: display name + key text. Grouped
+// under a category heading in the Keyboard Shortcuts page. Reference-only —
+// this mirrors the shortcuts wired via setShortcut()/QShortcut in
+// RetouchWindow.cpp and TetherView.cpp; it doesn't rebind anything.
+struct ShortcutEntry {
+    const char *action;
+    const char *keys;
+};
+struct ShortcutGroup {
+    const char *heading;
+    std::initializer_list<ShortcutEntry> entries;
+};
+constexpr ShortcutGroup kShortcutGroups[] = {
+    {"Menu", {
+        {"New…", "Ctrl+N"},
+        {"Save", "Ctrl+S"},
+        {"Undo", "Ctrl+Z"},
+        {"Redo", "Ctrl+Y"},
+        {"Copy Edits", "Ctrl+Shift+C"},
+        {"Paste Edits", "Ctrl+Shift+V"},
+        {"Sync Edits to Selected", "Ctrl+Shift+S"},
+        {"Group Shapes", "Ctrl+G"},
+        {"Ungroup Shapes", "Ctrl+Shift+G"},
+        {"Preferences…", "Ctrl+,"},
+    }},
+    {"Tools", {
+        {"Zoom", "Z"},
+        {"Crop", "C"},
+        {"Spot Heal", "H"},
+        {"Brush", "B"},
+        {"Erase", "E"},
+        {"Remove Object", "J"},
+        {"Text", "T"},
+        {"Shape", "U"},
+        {"Local Masks", "K"},
+        {"Erase instead of paint (while Brush is active)", "Alt + drag"},
+        {"Resize brush (while Brush/Erase is active)", "Ctrl + scroll wheel"},
+    }},
+    {"Canvas", {
+        {"Deselect all tools", "Esc"},
+        {"Fit to window", "Ctrl+0"},
+        {"Swap foreground/background color", "X"},
+        {"Reset colors", "D"},
+        {"Fill with background color", "Ctrl+Backspace"},
+        {"Fill with foreground color", "Alt+Backspace"},
+        {"Capture (tethering)", "Space"},
+    }},
+};
+} // namespace
 
-    // Restore the last-used model.
-    QSettings s;
-    QString cur = s.value("af/currentModel", "custom").toString();
-    int idx = m_model->findData(cur);
-    if (idx < 0) idx = m_model->findData("custom");
-    {
-        QSignalBlocker b(m_model);
-        m_model->setCurrentIndex(idx);
+QWidget *PreferencesDialog::buildShortcutsPage() {
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+
+    auto *tree = new QTreeWidget;
+    tree->setColumnCount(2);
+    tree->setHeaderLabels({"Action", "Shortcut"});
+    tree->setRootIsDecorated(true);
+    tree->setAlternatingRowColors(true);
+    tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+
+    for (const ShortcutGroup &group : kShortcutGroups) {
+        auto *heading = new QTreeWidgetItem(tree, {group.heading});
+        QFont f = heading->font(0);
+        f.setBold(true);
+        heading->setFont(0, f);
+        heading->setFlags(heading->flags() & ~Qt::ItemIsSelectable);
+        for (const ShortcutEntry &e : group.entries)
+            new QTreeWidgetItem(heading, {e.action, e.keys});
+        heading->setExpanded(true);
     }
-    loadFrameForCurrentModel();
-
-    connect(m_model, &QComboBox::currentIndexChanged, this,
-            [this](int) { onModelChanged(); });
-    connect(m_frameW, qOverload<int>(&QSpinBox::valueChanged), this,
-            [this](int) { onFrameEdited(); });
-    connect(m_frameH, qOverload<int>(&QSpinBox::valueChanged), this,
-            [this](int) { onFrameEdited(); });
+    layout->addWidget(tree);
+    return page;
 }
 
 QString PreferencesDialog::currentModelId() const {
