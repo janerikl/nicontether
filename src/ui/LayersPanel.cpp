@@ -476,7 +476,7 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     // Name / opacity / blend mode.
     auto *props = new QFormLayout;
     m_name = new QLineEdit;
-    props->addRow("Name:", m_name);
+    m_name->hide();
     m_opacity = new QSlider(Qt::Horizontal);
     m_opacity->setRange(0, 100);
     m_opacity->setValue(100);
