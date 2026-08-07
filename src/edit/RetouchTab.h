@@ -60,6 +60,7 @@ public:
     ~RetouchTab() override;
 
     QString path() const { return m_path; }
+    ImageCanvas *canvas() const { return m_canvas; }
     void assignPath(const QString &path); // File > New's first save: adopt a real backing path
     Adjustments adjustments() const { return m_adj; }
     bool isReady() const { return !m_base.isNull(); }
@@ -80,6 +81,7 @@ public:
     void setEraseMode(bool on);
     void setMaskForceErase(bool on); // E toggle while a Paint mask is active
     void setEraseBrush(int radiusDisplayPx);
+    void setBucketMode(bool on); // paint bucket: single click flood-fills the active Paint layer
 
     // Remove Object tool: paint a stroke over an unwanted object; on stroke
     // release, a content-aware fill (InpaintTool) is computed once and
@@ -244,6 +246,11 @@ signals:
     void shapesChanged();  // shape list, active shape, or its style changed
     void removeObjectBrushChanged(int radiusDisplayPx); // ctrl+wheel resized the brush
     void removalsChanged(); // removal list or active removal changed
+    // A canvas click-to-select fallback (ImageCanvas::objectClicked) picked
+    // a layer and this tab already selected it (selectMask) — RetouchWindow
+    // listens to flip the matching toolbar tool button on (mirroring a
+    // manual click on that button), so the toolbar stays in sync.
+    void objectToolRequested(MaskType type);
 
 private slots:
     void onDecodeFinished();
@@ -267,6 +274,7 @@ private slots:
     void onTextResized(int index, double ratio);
     void onShapeCreateRequested(ShapeType type, const QRectF &imageRect);
     void onShapeSelected(int index);
+    void onObjectClicked(MaskType type, int markerIndex);
     void onShapeDeselected();
     void onShapeMoved(int index, const QPointF &deltaImage);
     void onShapeResized(int index, const QRectF &newImageRect);
@@ -290,6 +298,7 @@ private slots:
     void onMaskRadial(const QPointF &centerNorm, double radiusNorm);
     void onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm);
     void onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke);
+    void onBucketFillRequested(const QPointF &ptNorm);
     void onMaskEditFinished();
 
 private:
@@ -327,6 +336,10 @@ private:
     // call. Returns -1 for an out-of-range marker index.
     int textMaskIndex(int markerIndex) const;
     void updateRemovalMarkers(); // push removal-op markers (display coords) to the canvas
+    // Push Paint-layer/image-layer bounding-box markers (display coords) to
+    // the canvas for the click-to-select fallback; rebuilds
+    // m_paintMaskIndices/m_imageLayerMaskIndices. See ImageCanvas::objectClicked.
+    void updateObjectMarkers();
     // Oriented (rotate/flip), pre-crop image with heals AND already-committed
     // removals baked in — the "source" a new removal's inpaint reads from,
     // and the same image rebuildGeom() paints new removals onto.
@@ -365,6 +378,10 @@ private:
                                // view of m_adj.masks, see m_shapeMaskIndices), or -1
     // marker index -> m_adj.masks index, rebuilt each updateShapeMarkers() call.
     QVector<int> m_shapeMaskIndices;
+    // marker index -> m_adj.masks index for the click-to-select fallback,
+    // rebuilt each updateObjectMarkers() call.
+    QVector<int> m_paintMaskIndices;
+    QVector<int> m_imageLayerMaskIndices;
     ShapeOp m_shapeDefaults;  // style/type applied to the next newly-created shape
     QRectF m_shapeMoveStartRect;   // active shape's rect at move-drag start
     QPointF m_shapeMoveStartP1, m_shapeMoveStartP2; // active Line's endpoints at move-drag start

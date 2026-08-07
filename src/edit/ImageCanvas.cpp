@@ -129,6 +129,7 @@ ImageCanvas::ImageCanvas(QWidget *parent) : QWidget(parent) {
                                        QColor(30, 30, 30)).value<QColor>();
     pal.setColor(QPalette::Window, m_backgroundColor);
     setPalette(pal);
+    m_showRulers = settings.value("canvas/showRulers", false).toBool();
 }
 
 void ImageCanvas::setImage(const QImage &img) {
@@ -161,6 +162,12 @@ void ImageCanvas::setCropMode(bool on) {
 void ImageCanvas::setPickMode(bool on) {
     m_pickMode = on;
     if (on) setCursor(pipetteCursor());
+    else setCursor(m_cropMode ? Qt::CrossCursor : Qt::ArrowCursor);
+}
+
+void ImageCanvas::setBucketMode(bool on) {
+    m_bucketMode = on;
+    if (on) setCursor(Qt::PointingHandCursor);
     else setCursor(m_cropMode ? Qt::CrossCursor : Qt::ArrowCursor);
 }
 
@@ -228,6 +235,14 @@ void ImageCanvas::setTextMarkers(const QVector<TextMarker> &markers) {
     m_textMarkers = markers;
     if (m_activeTextIndex >= m_textMarkers.size()) m_activeTextIndex = -1;
     if (m_textMode) update();
+}
+
+void ImageCanvas::setPaintMarkers(const QVector<QRectF> &markers) {
+    m_paintMarkers = markers;
+}
+
+void ImageCanvas::setImageLayerMarkers(const QVector<QRectF> &markers) {
+    m_imageLayerMarkers = markers;
 }
 
 void ImageCanvas::setActiveTextIndex(int index) {
@@ -393,6 +408,20 @@ int ImageCanvas::shapeMarkerAt(const QPoint &pos) const {
         QPointF local = t.map(imgPos);
         if (m.rect.contains(local)) return i;
     }
+    return -1;
+}
+
+int ImageCanvas::paintMarkerAt(const QPoint &pos) const {
+    QPointF imgPos = (QPointF(pos) - m_topLeft) / m_scale;
+    for (int i = m_paintMarkers.size() - 1; i >= 0; --i)
+        if (m_paintMarkers[i].contains(imgPos)) return i;
+    return -1;
+}
+
+int ImageCanvas::imageLayerMarkerAt(const QPoint &pos) const {
+    QPointF imgPos = (QPointF(pos) - m_topLeft) / m_scale;
+    for (int i = m_imageLayerMarkers.size() - 1; i >= 0; --i)
+        if (m_imageLayerMarkers[i].contains(imgPos)) return i;
     return -1;
 }
 
@@ -1244,6 +1273,88 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         p.setPen(QPen(QColor(120, 200, 255), 3, Qt::DashLine));
         p.drawRect(rect().adjusted(2, 2, -2, -2));
     }
+
+    if (m_showRulers && !m_img.isNull()) drawRulers(p);
+}
+
+// Photoshop-style rulers along the top and left edges, drawn as an overlay
+// (the canvas has no QScrollArea inset to push content into). Ticks are
+// spaced at a "nice" image-pixel interval (1/2/5 * 10^n) chosen so labelled
+// major ticks stay at least ~50 widget px apart at the current zoom.
+void ImageCanvas::drawRulers(QPainter &p) {
+    const int kThickness = 20;
+    const QColor bg(50, 50, 50);
+    const QColor tick(160, 160, 160);
+    const QColor text(210, 210, 210);
+
+    // Choose a "nice" step (in image px) for major ticks.
+    double rawStep = 50.0 / m_scale; // image px per ~50 widget px
+    static const double bases[] = {1, 2, 5};
+    double step = 1.0;
+    double mag = 1.0;
+    while (mag * bases[2] < rawStep) mag *= 10.0;
+    for (double b : bases) {
+        if (mag * b >= rawStep) { step = mag * b; break; }
+    }
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, false);
+
+    // Top ruler.
+    p.fillRect(QRect(0, 0, width(), kThickness), bg);
+    double firstX = std::floor((-m_topLeft.x() / m_scale) / step) * step;
+    for (double v = firstX; ; v += step) {
+        double wx = m_topLeft.x() + v * m_scale;
+        if (wx > width()) break;
+        if (wx >= 0) {
+            p.setPen(tick);
+            p.drawLine(QPointF(wx, kThickness - 8), QPointF(wx, kThickness));
+            p.setPen(text);
+            p.drawText(QRectF(wx + 2, 0, 60, kThickness - 8), Qt::AlignLeft | Qt::AlignVCenter,
+                       QString::number(qRound(v)));
+        }
+        // Minor tick at the midpoint.
+        double wxMid = m_topLeft.x() + (v + step / 2.0) * m_scale;
+        if (wxMid >= 0 && wxMid <= width()) {
+            p.setPen(tick);
+            p.drawLine(QPointF(wxMid, kThickness - 4), QPointF(wxMid, kThickness));
+        }
+    }
+
+    // Left ruler.
+    p.fillRect(QRect(0, 0, kThickness, height()), bg);
+    double firstY = std::floor((-m_topLeft.y() / m_scale) / step) * step;
+    for (double v = firstY; ; v += step) {
+        double wy = m_topLeft.y() + v * m_scale;
+        if (wy > height()) break;
+        if (wy >= 0) {
+            p.setPen(tick);
+            p.drawLine(QPointF(kThickness - 8, wy), QPointF(kThickness, wy));
+            p.setPen(text);
+            p.save();
+            p.translate(kThickness - 10, wy - 2);
+            p.rotate(-90);
+            p.drawText(QRectF(0, -kThickness, 60, kThickness), Qt::AlignLeft | Qt::AlignVCenter,
+                       QString::number(qRound(v)));
+            p.restore();
+        }
+        double wyMid = m_topLeft.y() + (v + step / 2.0) * m_scale;
+        if (wyMid >= 0 && wyMid <= height()) {
+            p.setPen(tick);
+            p.drawLine(QPointF(kThickness - 4, wyMid), QPointF(kThickness, wyMid));
+        }
+    }
+
+    // Current mouse position indicator (small triangles) and corner square.
+    if (rect().contains(m_mousePos)) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(255, 180, 0));
+        p.drawEllipse(QPointF(m_mousePos.x(), kThickness / 2.0), 2, 2);
+        p.drawEllipse(QPointF(kThickness / 2.0, m_mousePos.y()), 2, 2);
+    }
+    p.fillRect(QRect(0, 0, kThickness, kThickness), bg);
+
+    p.restore();
 }
 
 // ---- Mouse -----------------------------------------------------------------
@@ -1265,6 +1376,13 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
     if (m_pickMode && ev->button() == Qt::LeftButton) {
         QPoint ip = imagePointAt(ev->pos());
         if (ip.x() >= 0) emit colorPicked(m_img.pixelColor(ip.x(), ip.y()));
+        return;
+    }
+
+    // Paint bucket: single click, no drag.
+    if (m_bucketMode && ev->button() == Qt::LeftButton) {
+        QPoint ip = imagePointAt(ev->pos());
+        if (ip.x() >= 0) emit bucketFillRequested(normPointAt(ev->pos()));
         return;
     }
 
@@ -1538,6 +1656,21 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
             update();
             return;
         }
+    }
+
+    // Click-to-select fallback: nothing above (crop/heal/mask/erase/
+    // shape/text/etc.) claimed this click, so hit-test every other
+    // selectable object — topmost type first — and let RetouchTab select
+    // its layer and switch to its tool. Shapes/text already have precise
+    // rotated hit-testing via shapeMarkerAt/textMarkerAt; Paint layers and
+    // image layers use simple bounding-box markers (see setPaintMarkers/
+    // setImageLayerMarkers).
+    if (ev->button() == Qt::LeftButton && !m_spaceDown) {
+        int hit;
+        if ((hit = shapeMarkerAt(ev->pos())) >= 0) { emit objectClicked(MaskType::Shape, hit); return; }
+        if ((hit = textMarkerAt(ev->pos())) >= 0) { emit objectClicked(MaskType::TextBox, hit); return; }
+        if ((hit = paintMarkerAt(ev->pos())) >= 0) { emit objectClicked(MaskType::Paint, hit); return; }
+        if ((hit = imageLayerMarkerAt(ev->pos())) >= 0) { emit objectClicked(MaskType::Background, hit); return; }
     }
 
     // Normal mode: Space+drag always pans; plain drag draws a zoom marquee
@@ -2329,6 +2462,12 @@ void ImageCanvas::setBackgroundColor(const QColor &color) {
 void ImageCanvas::setShowCheckerboard(bool on) {
     if (m_showCheckerboard == on) return;
     m_showCheckerboard = on;
+    update();
+}
+
+void ImageCanvas::setShowRulers(bool on) {
+    if (m_showRulers == on) return;
+    m_showRulers = on;
     update();
 }
 

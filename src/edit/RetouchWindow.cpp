@@ -1,6 +1,7 @@
 #include "edit/RetouchWindow.h"
 #include "edit/NewDocumentDialog.h"
 #include "edit/RetouchTab.h"
+#include "edit/ImageCanvas.h"
 #include "edit/ExportDialog.h"
 #include "edit/CurveEditor.h"
 #include "edit/EditSidecar.h"
@@ -16,6 +17,7 @@
 #include "camera/CameraModels.h"
 #include "ui/ControlsPanel.h"
 #include "ui/ScrubSpinBox.h"
+#include "ui/BrushPresetMenuButton.h"
 #include <QFrame>
 #include "capture/NefPreview.h"
 
@@ -253,6 +255,46 @@ QPixmap drawBrushTool(const QColor &c) {
     return pm;
 }
 
+// Tilted paint bucket with a drip, plus a small paint-pour blob: the classic
+// flood-fill glyph, distinct from the brush's bristle-tip shape.
+QPixmap drawPaintBucket(const QColor &c) {
+    QPixmap pm(kIconPx, kIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    p.translate(kIconPx / 2.0, kIconPx / 2.0);
+    p.rotate(-25);
+    p.translate(-kIconPx / 2.0, -kIconPx / 2.0);
+
+    // Bucket body: an open-top trapezoid.
+    QPainterPath body;
+    body.moveTo(7, 12);
+    body.lineTo(21, 12);
+    body.lineTo(19, 23);
+    body.lineTo(9, 23);
+    body.closeSubpath();
+    p.setPen(QPen(c, 2));
+    QColor fill = c;
+    fill.setAlpha(90);
+    p.setBrush(fill);
+    p.drawPath(body);
+    // Rim ellipse.
+    p.drawEllipse(QRectF(7, 9, 14, 5));
+
+    p.resetTransform();
+    // Drip pouring from the spout, plus a small puddle: reads as "fill".
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+    QPainterPath drip;
+    drip.moveTo(20, 18);
+    drip.cubicTo(24, 21, 25, 24, 22, 25);
+    drip.cubicTo(19, 24, 20, 21, 20, 18);
+    p.drawPath(drip);
+    p.drawEllipse(QRectF(21, 25, 4, 3));
+    return pm;
+}
+
 // Simple "T" glyph for the text tool.
 QPixmap drawTextTool(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
@@ -309,6 +351,7 @@ QIcon makeHealIcon() { return makeToolIcon(drawHeal); }
 QIcon makeMaskIcon() { return makeToolIcon(drawMask); }
 QIcon makeEraseIcon() { return makeToolIcon(drawErase); }
 QIcon makeBrushToolIcon() { return makeToolIcon(drawBrushTool); }
+QIcon makePaintBucketIcon() { return makeToolIcon(drawPaintBucket); }
 QIcon makeTextIcon() { return makeToolIcon(drawTextTool); }
 QIcon makeShapeIcon() { return makeToolIcon(drawShapeTool); }
 QIcon makeRemoveObjectIcon() { return makeToolIcon(drawRemoveObject); }
@@ -690,7 +733,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     // File → Preferences…
     m_fileMenu->addSeparator();
     QAction *prefsAction = new QAction("Preferences…", this);
-    prefsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma));
+    prefsAction->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Comma), QKeySequence(Qt::Key_F12)});
     connect(prefsAction, &QAction::triggered, this, [this] {
         m_prefsDialog->show();
         m_prefsDialog->raise();
@@ -774,6 +817,16 @@ void RetouchWindow::buildViewMenu() {
         if (m_beforeAfter) m_beforeAfter->setVisible(on);
     });
     viewMenu->addAction(filmstripAction);
+
+    auto *rulersAction = new QAction("Rulers", this);
+    rulersAction->setCheckable(true);
+    rulersAction->setChecked(QSettings().value("canvas/showRulers", false).toBool());
+    connect(rulersAction, &QAction::toggled, this, [this](bool on) {
+        QSettings().setValue("canvas/showRulers", on);
+        for (RetouchTab *tab : m_openTabs)
+            if (tab->canvas()) tab->canvas()->setShowRulers(on);
+    });
+    viewMenu->addAction(rulersAction);
 
     viewMenu->addSeparator();
     auto *resetPanelsAction = new QAction("Reset Panels", this);
@@ -866,6 +919,12 @@ void RetouchWindow::buildToolPanel() {
     m_brushToggle->setToolTip("Brush (B) — paint with the foreground color; Ctrl+wheel resizes brush");
     m_toolsBar->addWidget(m_brushToggle);
 
+    m_bucketToggle = new QToolButton;
+    m_bucketToggle->setIcon(makePaintBucketIcon());
+    m_bucketToggle->setCheckable(true);
+    m_bucketToggle->setToolTip("Paint Bucket — click to flood-fill an enclosed area on a Paint layer with the foreground color");
+    m_toolsBar->addWidget(m_bucketToggle);
+
     m_eraseToggle = new QToolButton;
     m_eraseToggle->setIcon(makeEraseIcon());
     m_eraseToggle->setCheckable(true);
@@ -940,6 +999,7 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+            { QSignalBlocker b(m_bucketToggle); m_bucketToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
@@ -961,11 +1021,12 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+            { QSignalBlocker b(m_bucketToggle); m_bucketToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
             { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
+            if (tab) { tab->setZoomMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); tab->setBucketMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(1);
             m_toolOptionsBar->setVisible(true);
@@ -985,11 +1046,12 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+            { QSignalBlocker b(m_bucketToggle); m_bucketToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
             { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); tab->setBucketMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(2);
             m_toolOptionsBar->setVisible(true);
@@ -1024,11 +1086,12 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+            { QSignalBlocker b(m_bucketToggle); m_bucketToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
             { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); tab->setBucketMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsBar->setVisible(false); // layers/masks use their own docks
             if (m_layersDock) { m_layersDock->show(); m_layersDock->raise(); }
@@ -1059,11 +1122,12 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+            { QSignalBlocker b(m_bucketToggle); m_bucketToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
             { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
-            tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false);
+            tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); tab->setBucketMode(false);
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(3);
             m_toolOptionsBar->setVisible(true);
@@ -1087,6 +1151,35 @@ void RetouchWindow::buildToolPanel() {
             if (tab && tab->isReady()) tab->setMaskMode(false);
         }
     });
+    connect(m_bucketToggle, &QToolButton::toggled, this, [this](bool on) {
+        RetouchTab *tab = currentTab();
+        if (on) {
+            // Only makes sense against an existing Paint layer's own painted
+            // content (e.g. a brush outline to fill the inside of) — same
+            // gating as the Brush tool, see canActivateTool docs.
+            if (!tab || !tab->isReady() || !tab->canActivateTool(MaskType::Paint)) {
+                QSignalBlocker b(m_bucketToggle);
+                m_bucketToggle->setChecked(false);
+                return;
+            }
+            { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
+            { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
+            { QSignalBlocker b(m_healToggle); m_healToggle->setChecked(false); }
+            { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
+            { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
+            { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+            { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
+            { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
+            { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
+            { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
+            tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); tab->setMaskMode(false);
+            if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
+            m_toolOptionsBar->setVisible(false); // no per-tool options; fills with the current foreground color
+            tab->setBucketMode(true);
+        } else {
+            if (tab && tab->isReady()) tab->setBucketMode(false);
+        }
+    });
     connect(m_eraseToggle, &QToolButton::toggled, this, [this](bool on) {
         RetouchTab *tab = currentTab();
         // On a Paint-type mask, "Erase" reuses the brush stroke path with
@@ -1101,12 +1194,13 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+            { QSignalBlocker b(m_bucketToggle); m_bucketToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
             { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             if (paintTarget) {
-                tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false);
+                tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); tab->setBucketMode(false);
                 tab->setPaintColor(m_colorSwatch->foregroundColor());
                 updatePaintSizePxLabel();
                 tab->setActiveMaskShape(false, 0.0, m_paintHardness->value() / 100.0,
@@ -1116,7 +1210,7 @@ void RetouchWindow::buildToolPanel() {
                 tab->setMaskMode(true);
                 m_toolOptionsStack->setCurrentIndex(3); // reuse brush size/hardness controls
             } else {
-                if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
+                if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); tab->setBucketMode(false); }
                 m_toolOptionsStack->setCurrentIndex(4);
             }
             m_toolOptionsBar->setVisible(true);
@@ -1143,10 +1237,11 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+            { QSignalBlocker b(m_bucketToggle); m_bucketToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setBucketMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(7);
             m_toolOptionsBar->setVisible(true);
@@ -1167,10 +1262,11 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+            { QSignalBlocker b(m_bucketToggle); m_bucketToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
             { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); tab->setBucketMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(5);
             m_toolOptionsBar->setVisible(true);
@@ -1189,10 +1285,11 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
             { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
             { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+            { QSignalBlocker b(m_bucketToggle); m_bucketToggle->setChecked(false); }
             { QSignalBlocker b(m_eraseToggle); m_eraseToggle->setChecked(false); }
             { QSignalBlocker b(m_textToggle); m_textToggle->setChecked(false); }
             { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
-            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setRemoveObjectMode(false); }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setRemoveObjectMode(false); tab->setBucketMode(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
             m_toolOptionsStack->setCurrentIndex(6);
             m_toolOptionsBar->setVisible(true);
@@ -1331,6 +1428,8 @@ void RetouchWindow::buildToolOptionsBar() {
     brushRow->addWidget(m_paintHardness);
     brushRow->addWidget(new QLabel("Opacity:"));
     brushRow->addWidget(m_paintOpacity);
+    m_brushToolPresets = new BrushPresetMenuButton;
+    brushRow->addWidget(m_brushToolPresets);
     brushRow->addStretch(1);
     m_toolOptionsStack->addWidget(brushPage);
 
@@ -1349,6 +1448,15 @@ void RetouchWindow::buildToolOptionsBar() {
     connect(m_paintOpacity, &QSlider::valueChanged, this, [this](int v) {
         RetouchTab *tab = currentTab();
         if (tab) tab->setActiveMaskOpacity(v / 100.0);
+    });
+    connect(m_brushToolPresets, &BrushPresetMenuButton::presetApplied, this,
+            [this](double brushRadius, double hardness) {
+                m_paintSize->setValue(int(std::lround(brushRadius * 100)));
+                m_paintHardness->setValue(int(std::lround(hardness * 100)));
+            });
+    connect(m_brushToolPresets, &QToolButton::pressed, this, [this] {
+        m_brushToolPresets->setCurrentValues(m_paintSize->value() / 100.0,
+                                             m_paintHardness->value() / 100.0);
     });
 
     // --- Erase page (index 4) ---
@@ -1874,6 +1982,7 @@ void RetouchWindow::buildLevelsDock() {
                     if (m_wbPick) { QSignalBlocker b(m_wbPick); m_wbPick->setChecked(false); }
                     if (m_maskToggle) { QSignalBlocker b(m_maskToggle); m_maskToggle->setChecked(false); }
                     if (m_brushToggle) { QSignalBlocker b(m_brushToggle); m_brushToggle->setChecked(false); }
+                    if (m_bucketToggle) { QSignalBlocker b(m_bucketToggle); m_bucketToggle->setChecked(false); }
                     if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); }
                     if (m_toolOptionsBar) m_toolOptionsBar->setVisible(false);
                 }
@@ -2100,6 +2209,12 @@ void RetouchWindow::refreshMaskPanel() {
         m_brushToggle->setEnabled(canPaint);
         if (!canPaint && m_brushToggle->isChecked())
             m_brushToggle->setChecked(false);
+    }
+    if (m_bucketToggle) {
+        const bool canPaint = ready && tab->canActivateTool(MaskType::Paint);
+        m_bucketToggle->setEnabled(canPaint);
+        if (!canPaint && m_bucketToggle->isChecked())
+            m_bucketToggle->setChecked(false);
     }
     if (m_maskToggle) {
         // The K tool's "Layer"/"Brush" (mask-brush) subtools aren't gated —
@@ -2422,6 +2537,30 @@ void RetouchWindow::wireTabSignals(RetouchTab *tab) {
             QSignalBlocker b(m_cropToggle);
             m_cropToggle->setChecked(false);
             m_toolOptionsBar->setVisible(false);
+        }
+    });
+    connect(tab, &RetouchTab::objectToolRequested, this, [this, tab](MaskType type) {
+        if (tab != currentTab()) return;
+        // The tab already selected the clicked layer (selectMask, ahead of
+        // this signal) — just flip the matching toolbar button on, exactly
+        // as a manual click would; its own toggled() handler resets every
+        // other tool and re-syncs m_toolOptionsBar/m_toolOptionsStack.
+        switch (type) {
+        case MaskType::Shape:   m_shapeToggle->setChecked(true); break;
+        case MaskType::TextBox: m_textToggle->setChecked(true); break;
+        case MaskType::Paint:   m_brushToggle->setChecked(true); break;
+        default:
+            // Image layer: no dedicated toolbar tool — just uncheck whatever
+            // tool is currently active so plain click/drag on the canvas
+            // moves the now-selected layer instead of doing that tool's thing.
+            for (QAbstractButton *b : std::initializer_list<QAbstractButton *>{
+                     m_toolZoom, m_cropToggle, m_healToggle, m_wbPick,
+                     m_maskToggle, m_brushToggle, m_bucketToggle,
+                     m_eraseToggle, m_textToggle, m_shapeToggle,
+                     m_removeObjectToggle}) {
+                if (b->isChecked()) b->setChecked(false);
+            }
+            break;
         }
     });
     connect(tab, &RetouchTab::wbPicked, this, [this, tab] {

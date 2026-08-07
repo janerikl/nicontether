@@ -18,6 +18,7 @@ class QDragLeaveEvent;
 class QDropEvent;
 class QContextMenuEvent;
 class QPlainTextEdit;
+class QPainter;
 
 // Displays an image with zoom + pan, and supports crop rubber-band selection and
 // a white-balance eyedropper. Zoom: Ctrl+wheel (anchored to the cursor),
@@ -47,6 +48,7 @@ public:
     void setColorRangeAmount(int amount); // -100..100, shown in the drag swatch
     void setHealMode(bool on); // spot-heal brush
     void setTextMode(bool on); // text tool: click to place, drag to move/rotate
+    void setBucketMode(bool on); // paint bucket: single click flood-fills the active Paint layer
 
     // An existing text op's on-canvas footprint, in the same pixel space as
     // the QImage passed to setImage() (display-scaled, already
@@ -103,6 +105,14 @@ public:
     void setZoomMode(bool on); // zoom tool: enables marquee-drag zoom + Ctrl+wheel
     void setBrushRadius(int displayPx);
 
+    // Click-to-select fallback: bounding rects (same display-image pixel
+    // space as ShapeMarker/TextMarker) for Paint layers and image layers,
+    // used only when no tool-specific handler above claims a click (see
+    // mousePressEvent). Index-aligned with RetouchTab's own
+    // m_paintMaskIndices/m_imageLayerMaskIndices.
+    void setPaintMarkers(const QVector<QRectF> &markers);
+    void setImageLayerMarkers(const QVector<QRectF> &markers);
+
     // Local-mask editing. When a mask kind is set, dragging on the canvas
     // defines/updates the active mask's geometry (radial: centre→radius,
     // linear: p0→p1, brush: appends stroke points). setActiveMask supplies the
@@ -139,6 +149,10 @@ public:
     // pixels left by a hidden/deleted base layer.
     void setShowCheckerboard(bool on);
 
+    // Photoshop-style rulers along the top and left edges of the canvas,
+    // showing image-pixel coordinates at the current zoom/pan.
+    void setShowRulers(bool on);
+
 signals:
     void backgroundColorChanged(const QColor &color);
     void cropSelected(const QRect &imageRect, double angleDegrees);
@@ -151,6 +165,7 @@ signals:
     void colorRangeDragged(int dxPixels);
     void colorRangeReleased();
     void healAt(const QPoint &imagePoint);
+    void bucketFillRequested(const QPointF &ptNorm); // width-normalized, same convention as maskBrushPoint
     void textPlaceRequested(const QPoint &imagePoint);
     void textSelected(int index);
     void textDeselected();
@@ -212,6 +227,15 @@ signals:
     void maskEditFinished();                    // drag released → commit history
     void imageLayerDropped(const QString &path); // a photo was dropped in as a layer
 
+    // Click-to-select fallback fired from mousePressEvent when no
+    // tool-specific handler above claimed the click (see the generic
+    // hit-test just before the pan/zoom-marquee block). `markerIndex` is a
+    // position within the type-filtered marker list (m_shapeMarkers,
+    // m_textMarkers, m_paintMarkers, or m_imageLayerMarkers depending on
+    // `type`) — RetouchTab::onObjectClicked maps it back to a real
+    // Adjustments::masks index the same way onShapeSelected/onTextSelected do.
+    void objectClicked(MaskType type, int markerIndex);
+
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
     void paintEvent(QPaintEvent *) override;
@@ -267,14 +291,19 @@ private:
     QRectF shapeGroupBounds() const; // union of every selected shape's (rotated) bounding box, marker space
     Handle shapeGroupCornerHandleAt(const QPoint &pos) const; // corner of shapeGroupBounds() under pos
 
+    int paintMarkerAt(const QPoint &pos) const; // which Paint-layer bounding box is under pos, or -1
+    int imageLayerMarkerAt(const QPoint &pos) const; // which image-layer bounding box is under pos, or -1
+
     void relayoutFit();  // recompute scale/offset to fit + centre
     void zoomTo(double newScale, const QPointF &anchorWidgetPos);
     void clampPan();
+    void drawRulers(QPainter &p); // top/left ruler overlay, painted last
 
     QImage m_img;
     QString m_placeholder = "Decoding…";
     bool m_cropMode = false;
     bool m_pickMode = false;
+    bool m_bucketMode = false;
 
     // Targeted color-range tool state.
     bool m_colorRangeMode = false;
@@ -304,6 +333,10 @@ private:
     bool m_shapeMode = false;
     ShapeType m_activeShapeType = ShapeType::Rectangle;
     QVector<ShapeMarker> m_shapeMarkers; // display-image-space, index-aligned with Adjustments::shapes
+    // Click-to-select fallback bounding rects (display-image-space), see
+    // setPaintMarkers()/setImageLayerMarkers().
+    QVector<QRectF> m_paintMarkers;
+    QVector<QRectF> m_imageLayerMarkers;
     int m_activeShapeIndex = -1;
     QSet<int> m_selectedShapeIndices; // multi-selection outline set; superset of m_activeShapeIndex
     enum class ShapeDrag { None, Creating, Moving, MovingGroup, Rotating, Resizing, ResizingGroup, EndpointDrag };
@@ -393,4 +426,5 @@ private:
     bool m_dragHighlight = false; // a valid image drag is hovering the canvas
     QColor m_backgroundColor = QColor(30, 30, 30);
     bool m_showCheckerboard = false;
+    bool m_showRulers = false;
 };

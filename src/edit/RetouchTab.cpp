@@ -160,6 +160,7 @@ void RetouchTab::setupCanvasAndWiring() {
     connect(m_canvas, &ImageCanvas::textDeleteRequested, this, &RetouchTab::onTextDeleteRequested);
     connect(m_canvas, &ImageCanvas::textResizeStarted, this, &RetouchTab::onTextResizeStarted);
     connect(m_canvas, &ImageCanvas::textResized, this, &RetouchTab::onTextResized);
+    connect(m_canvas, &ImageCanvas::objectClicked, this, &RetouchTab::onObjectClicked);
     connect(m_canvas, &ImageCanvas::shapeCreateRequested, this, &RetouchTab::onShapeCreateRequested);
     connect(m_canvas, &ImageCanvas::shapeSelected, this, &RetouchTab::onShapeSelected);
     connect(m_canvas, &ImageCanvas::shapeDeselected, this, &RetouchTab::onShapeDeselected);
@@ -205,6 +206,7 @@ void RetouchTab::setupCanvasAndWiring() {
     connect(m_canvas, &ImageCanvas::maskRadialDragged, this, &RetouchTab::onMaskRadial);
     connect(m_canvas, &ImageCanvas::maskLinearDragged, this, &RetouchTab::onMaskLinear);
     connect(m_canvas, &ImageCanvas::maskBrushPoint, this, &RetouchTab::onMaskBrushPoint);
+    connect(m_canvas, &ImageCanvas::bucketFillRequested, this, &RetouchTab::onBucketFillRequested);
     connect(m_canvas, &ImageCanvas::maskEditFinished, this, &RetouchTab::onMaskEditFinished);
     connect(m_canvas, &ImageCanvas::imageLayerDropped, this, &RetouchTab::addImageLayer);
     connect(m_canvas, &ImageCanvas::maskBrushRadiusChanged, this, [this](double r) {
@@ -486,6 +488,7 @@ void RetouchTab::rebuildGeom() {
     updateTextMarkers();
     updateShapeMarkers();
     updateRemovalMarkers();
+    updateObjectMarkers();
     retone();
 }
 
@@ -552,6 +555,74 @@ void RetouchTab::updateShapeMarkers() {
 int RetouchTab::shapeMaskIndex(int markerIndex) const {
     if (markerIndex < 0 || markerIndex >= m_shapeMaskIndices.size()) return -1;
     return m_shapeMaskIndices[markerIndex];
+}
+
+// Bounding-box markers for the click-to-select fallback (see
+// ImageCanvas::objectClicked). Unlike shape/text ops, Paint stroke points
+// and image-layer offset/scale are stored directly in the current display
+// (m_scaled) normalized space (no oriented/pre-crop transform — they're
+// painted/positioned live against whatever's currently on screen), so no
+// m_orientedToGeom mapping is needed here.
+void RetouchTab::updateObjectMarkers() {
+    QVector<QRectF> paintRects, imageRects;
+    m_paintMaskIndices.clear();
+    m_imageLayerMaskIndices.clear();
+    const double W = m_scaled.width();
+    const double H = m_scaled.height();
+    for (int i = 0; i < m_adj.masks.size(); ++i) {
+        const Mask &mk = m_adj.masks[i];
+        if (mk.type == MaskType::Paint) {
+            QRectF bounds;
+            for (const BrushStrokePoint &p : mk.stroke) {
+                double r = p.radius * W;
+                QRectF dabRect(p.pt.x() * W - r, p.pt.y() * W - r, 2 * r, 2 * r);
+                bounds = bounds.isNull() ? dabRect : bounds.united(dabRect);
+            }
+            // Bucket-filled coverage can extend anywhere; approximating its
+            // hit area with the full frame is simpler than scanning
+            // fillMask's alpha at its own (possibly different) resolution.
+            if (!mk.fillMask.isNull()) bounds = bounds.united(QRectF(0, 0, W, H));
+            if (!bounds.isNull()) {
+                paintRects.append(bounds);
+                m_paintMaskIndices.append(i);
+            }
+        } else if (mk.isImageLayer()) {
+            const double w = W * std::max(0.01, mk.sourceImageScale.x());
+            const double h = H * std::max(0.01, mk.sourceImageScale.y());
+            const double cx = W * (0.5 + 0.5 * std::clamp(mk.sourceImageOffset.x(), -1.0, 1.0));
+            const double cy = H * (0.5 + 0.5 * std::clamp(mk.sourceImageOffset.y(), -1.0, 1.0));
+            imageRects.append(QRectF(cx - w / 2.0, cy - h / 2.0, w, h));
+            m_imageLayerMaskIndices.append(i);
+        }
+    }
+    m_canvas->setPaintMarkers(paintRects);
+    m_canvas->setImageLayerMarkers(imageRects);
+}
+
+// Canvas click-to-select fallback (ImageCanvas::objectClicked): select the
+// clicked layer and switch to its editing tool, same as clicking its row in
+// the Layers panel would for selection, plus a tool switch. RetouchWindow
+// listens for objectToolRequested to flip the matching toolbar button on,
+// which resets every other tool the same way a manual click on that button
+// would (see the toggled() lambdas in RetouchWindow's tool setup).
+void RetouchTab::onObjectClicked(MaskType type, int markerIndex) {
+    int maskIndex = -1;
+    switch (type) {
+    case MaskType::Shape:    maskIndex = shapeMaskIndex(markerIndex); break;
+    case MaskType::TextBox:  maskIndex = textMaskIndex(markerIndex); break;
+    case MaskType::Paint:
+        maskIndex = (markerIndex >= 0 && markerIndex < m_paintMaskIndices.size())
+                        ? m_paintMaskIndices[markerIndex] : -1;
+        break;
+    case MaskType::Background:
+        maskIndex = (markerIndex >= 0 && markerIndex < m_imageLayerMaskIndices.size())
+                        ? m_imageLayerMaskIndices[markerIndex] : -1;
+        break;
+    default: break;
+    }
+    if (maskIndex < 0) return;
+    selectMask(maskIndex);
+    emit objectToolRequested(type);
 }
 
 // Convert stored heal ops (oriented-image, pre-crop coords) into the display
@@ -833,6 +904,11 @@ void RetouchTab::setEraseMode(bool on) {
 
 void RetouchTab::setMaskForceErase(bool on) {
     m_canvas->setMaskForceErase(on);
+}
+
+void RetouchTab::setBucketMode(bool on) {
+    m_canvas->setBucketMode(on);
+    if (on) m_canvas->setFocus();
 }
 
 void RetouchTab::setEraseBrush(int radiusDisplayPx) {
@@ -2095,6 +2171,7 @@ void RetouchTab::selectMask(int index) {
     // empty) table left over from whatever last called those.
     updateShapeMarkers();
     updateTextMarkers();
+    updateObjectMarkers();
     if (t == MaskType::Shape) {
         int markerIdx = m_shapeMaskIndices.indexOf(index);
         m_activeShape = markerIdx;
@@ -2318,6 +2395,7 @@ void RetouchTab::reorderMasks(const QVector<int> &newOrder, const QVector<int> &
     // occupies the old marker index.
     updateShapeMarkers();
     updateTextMarkers();
+    updateObjectMarkers();
     const MaskType activeType = (m_activeMask >= 0 && m_activeMask < m_adj.masks.size())
                                      ? m_adj.masks[m_activeMask].type
                                      : MaskType::None;
@@ -2476,6 +2554,26 @@ void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStr
                                      m.paintColor.rgb(), newStroke});
     pushMaskGizmo(); // show the painted coverage right away
     retoneDrag(newStroke);
+}
+
+void RetouchTab::onBucketFillRequested(const QPointF &ptNorm) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    if (m.type != MaskType::Paint || m_geomImg.isNull()) return;
+    // Flood-fill at a capped working resolution (full geom resolution can be
+    // tens of megapixels; the result is stored in `fillMask` and resampled to
+    // whatever the render buffer needs, so this only trades off fill edge
+    // precision, not final render quality — see bucketFillPaintMask).
+    const int fullW = m_geomImg.width(), fullH = m_geomImg.height();
+    if (fullW <= 0 || fullH <= 0) return;
+    const double s = fullW > 1600 ? 1600.0 / fullW : 1.0;
+    const int w = std::max(1, int(std::lround(fullW * s)));
+    const int h = std::max(1, int(std::lround(fullH * s)));
+    m.fillMask = bucketFillPaintMask(m, ptNorm, m.paintColor, w, h);
+    pushMaskGizmo();
+    retone();
+    markEdited();
+    emit masksChanged();
 }
 
 void RetouchTab::fillActiveMask(const QColor &color) {
