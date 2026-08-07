@@ -1274,7 +1274,67 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         p.drawRect(rect().adjusted(2, 2, -2, -2));
     }
 
-    if (m_showRulers && !m_img.isNull()) drawRulers(p);
+    if (m_showRulers && !m_img.isNull()) {
+        drawGuides(p);
+        if (m_guideDrag == GuideDrag::NewH) {
+            p.save();
+            p.setPen(QPen(QColor(0, 200, 255), 1, Qt::DashLine));
+            p.drawLine(QPointF(0, m_guideDragPos.y()), QPointF(width(), m_guideDragPos.y()));
+            p.restore();
+        } else if (m_guideDrag == GuideDrag::NewV) {
+            p.save();
+            p.setPen(QPen(QColor(0, 200, 255), 1, Qt::DashLine));
+            p.drawLine(QPointF(m_guideDragPos.x(), 0), QPointF(m_guideDragPos.x(), height()));
+            p.restore();
+        }
+        drawRulers(p);
+    }
+}
+
+void ImageCanvas::setGuides(const QVector<double> &horizontal, const QVector<double> &vertical) {
+    m_guidesH = horizontal;
+    m_guidesV = vertical;
+    update();
+}
+
+// Which horizontal guide (m_guidesH index) is under pos, or -1. Hit-tested
+// against the whole viewport, not just the image, so a guide dragged past
+// the image edge can still be grabbed.
+int ImageCanvas::guideHAt(const QPoint &pos) const {
+    const int kTol = 4;
+    for (int i = 0; i < m_guidesH.size(); ++i) {
+        double wy = m_topLeft.y() + m_guidesH[i] * m_img.height() * m_scale;
+        if (std::abs(pos.y() - wy) <= kTol) return i;
+    }
+    return -1;
+}
+
+int ImageCanvas::guideVAt(const QPoint &pos) const {
+    const int kTol = 4;
+    for (int i = 0; i < m_guidesV.size(); ++i) {
+        double wx = m_topLeft.x() + m_guidesV[i] * m_img.width() * m_scale;
+        if (std::abs(pos.x() - wx) <= kTol) return i;
+    }
+    return -1;
+}
+
+// Dragged-out guide lines: full-viewport lines in Photoshop's cyan, drawn
+// over the image but under the ruler bands (drawRulers paints last).
+void ImageCanvas::drawGuides(QPainter &p) {
+    if (m_guidesH.isEmpty() && m_guidesV.isEmpty()) return;
+    p.save();
+    QPen pen(QColor(0, 200, 255));
+    pen.setStyle(Qt::DashLine);
+    p.setPen(pen);
+    for (double h : m_guidesH) {
+        double wy = m_topLeft.y() + h * m_img.height() * m_scale;
+        p.drawLine(QPointF(0, wy), QPointF(width(), wy));
+    }
+    for (double v : m_guidesV) {
+        double wx = m_topLeft.x() + v * m_img.width() * m_scale;
+        p.drawLine(QPointF(wx, 0), QPointF(wx, height()));
+    }
+    p.restore();
 }
 
 // Photoshop-style rulers along the top and left edges, drawn as an overlay
@@ -1369,6 +1429,44 @@ void ImageCanvas::drawRulers(QPainter &p) {
 
 void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
     if (m_img.isNull()) return;
+
+    // Ruler guides: take priority over every tool while rulers are shown, so
+    // guides stay reachable regardless of the active tool (Photoshop-style).
+    if (m_showRulers && ev->button() == Qt::LeftButton) {
+        const int kThickness = 20;
+        int hv = guideVAt(ev->pos());
+        int hh = guideHAt(ev->pos());
+        if (hv >= 0 && ev->pos().y() >= kThickness) {
+            m_guideDrag = GuideDrag::MoveV;
+            m_guideDragIndex = hv;
+            setCursor(Qt::SizeHorCursor);
+            update();
+            return;
+        }
+        if (hh >= 0 && ev->pos().x() >= kThickness) {
+            m_guideDrag = GuideDrag::MoveH;
+            m_guideDragIndex = hh;
+            setCursor(Qt::SizeVerCursor);
+            update();
+            return;
+        }
+        if (ev->pos().y() < kThickness && ev->pos().x() >= kThickness) {
+            // Pressed on the top ruler: start dragging out a new horizontal guide.
+            m_guideDrag = GuideDrag::NewH;
+            m_guideDragPos = ev->pos();
+            setCursor(Qt::SizeVerCursor);
+            update();
+            return;
+        }
+        if (ev->pos().x() < kThickness && ev->pos().y() >= kThickness) {
+            // Pressed on the left ruler: start dragging out a new vertical guide.
+            m_guideDrag = GuideDrag::NewV;
+            m_guideDragPos = ev->pos();
+            setCursor(Qt::SizeHorCursor);
+            update();
+            return;
+        }
+    }
 
     // Map a widget point to image-pixel coords (or QPoint(-1,-1) if outside).
     auto imagePointAt = [this](const QPoint &pos) -> QPoint {
@@ -1701,6 +1799,18 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
 }
 
 void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
+    if (m_guideDrag != GuideDrag::None) {
+        m_mousePos = ev->pos();
+        if (m_guideDrag == GuideDrag::MoveH && m_img.height() > 0) {
+            m_guidesH[m_guideDragIndex] = (ev->pos().y() - m_topLeft.y()) / m_scale / m_img.height();
+        } else if (m_guideDrag == GuideDrag::MoveV && m_img.width() > 0) {
+            m_guidesV[m_guideDragIndex] = (ev->pos().x() - m_topLeft.x()) / m_scale / m_img.width();
+        } else {
+            m_guideDragPos = ev->pos();
+        }
+        update();
+        return;
+    }
     if (m_colorRangeDragging) {
         emit colorRangeDragged(ev->pos().x() - m_colorRangeStart.x());
         update();
@@ -2168,6 +2278,37 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
 }
 
 void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
+    if (m_guideDrag != GuideDrag::None && ev->button() == Qt::LeftButton) {
+        const int kThickness = 20;
+        switch (m_guideDrag) {
+        case GuideDrag::NewH:
+            if (ev->pos().y() >= kThickness) { // dropped on canvas: keep it
+                m_guidesH.append((ev->pos().y() - m_topLeft.y()) / m_scale / std::max(1, m_img.height()));
+                emitGuidesChanged();
+            }
+            break;
+        case GuideDrag::NewV:
+            if (ev->pos().x() >= kThickness) {
+                m_guidesV.append((ev->pos().x() - m_topLeft.x()) / m_scale / std::max(1, m_img.width()));
+                emitGuidesChanged();
+            }
+            break;
+        case GuideDrag::MoveH:
+            if (ev->pos().y() < kThickness) m_guidesH.remove(m_guideDragIndex); // dropped back on ruler: delete
+            emitGuidesChanged();
+            break;
+        case GuideDrag::MoveV:
+            if (ev->pos().x() < kThickness) m_guidesV.remove(m_guideDragIndex);
+            emitGuidesChanged();
+            break;
+        default: break;
+        }
+        m_guideDrag = GuideDrag::None;
+        m_guideDragIndex = -1;
+        unsetCursor();
+        update();
+        return;
+    }
     if (m_shapeCtrlPending && ev->button() == Qt::LeftButton) {
         // Released without moving past the duplicate-drag threshold: a plain
         // Ctrl+click, toggling multi-selection membership.
@@ -2480,6 +2621,29 @@ void ImageCanvas::setShowRulers(bool on) {
 }
 
 void ImageCanvas::contextMenuEvent(QContextMenuEvent *ev) {
+    if (m_showRulers && !m_img.isNull()) {
+        int hh = guideHAt(ev->pos());
+        int hv = hh < 0 ? guideVAt(ev->pos()) : -1;
+        if (hh >= 0 || hv >= 0 || !m_guidesH.isEmpty() || !m_guidesV.isEmpty()) {
+            QMenu menu(this);
+            QAction *del = (hh >= 0 || hv >= 0) ? menu.addAction(tr("Delete Guide")) : nullptr;
+            QAction *clearAll = (!m_guidesH.isEmpty() || !m_guidesV.isEmpty())
+                                     ? menu.addAction(tr("Clear All Guides")) : nullptr;
+            QAction *chosen = menu.exec(ev->globalPos());
+            if (chosen && chosen == del) {
+                if (hh >= 0) m_guidesH.remove(hh); else m_guidesV.remove(hv);
+                emitGuidesChanged();
+                update();
+            } else if (chosen && chosen == clearAll) {
+                m_guidesH.clear();
+                m_guidesV.clear();
+                emitGuidesChanged();
+                update();
+            }
+            return;
+        }
+    }
+
     QRect target = targetRect();
     if (target.contains(ev->pos())) {
         ev->ignore();

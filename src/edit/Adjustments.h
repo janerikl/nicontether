@@ -234,6 +234,15 @@ struct Mask {
     // Adjustments.cpp). Unused by all other mask types.
     QColor paintColor = Qt::black;
 
+    // Paint bucket: cumulative flood-filled regions, composited alongside
+    // `stroke` coverage for MaskType::Paint (see applyMasks in
+    // Adjustments.cpp). ARGB32, resolution-independent the same way
+    // `sourceImageCache` scaling is — stored at whatever resolution the fill
+    // was computed at and resampled to the current render buffer's size at
+    // composite time, since it always covers the same normalized unit square
+    // as `stroke`. Empty/null when nothing has been bucket-filled yet.
+    QImage fillMask;
+
     // Text: knockout/clipping-text coverage — the layer's content (whatever
     // is below it, tone-adjusted by `adj` like a plain layer) only shows
     // through where these glyphs are. Plain shape only, no fill/outline/
@@ -338,7 +347,7 @@ struct Mask {
                stroke == o.stroke && eraseStrokes == o.eraseStrokes &&
                std::abs(brushRadius - o.brushRadius) < 1e-9 &&
                std::abs(hardness - o.hardness) < 1e-9 && autoMask == o.autoMask &&
-               adj == o.adj && paintColor == o.paintColor &&
+               adj == o.adj && paintColor == o.paintColor && fillMask == o.fillMask &&
                text == o.text && textFamily == o.textFamily &&
                std::abs(textPixelSize - o.textPixelSize) < 1e-9 &&
                textBold == o.textBold && textItalic == o.textItalic &&
@@ -616,6 +625,13 @@ struct Adjustments {
     // in the sidecar like everything else here, so it's just carried along.
     QColor backgroundColor = QColor(30, 30, 30);
 
+    // Photoshop-style ruler guides (view-only, canvas overlay; never affects
+    // the rendered/exported image). Horizontal guides are a fraction of the
+    // displayed image's height (0=top); vertical guides a fraction of its
+    // width (0=left). Persisted per-image in the sidecar like backgroundColor.
+    QVector<double> guidesH;
+    QVector<double> guidesV;
+
     bool hasCurve() const;     // true if curve is set and not the identity
 
     bool operator==(const Adjustments &o) const {
@@ -635,7 +651,8 @@ struct Adjustments {
                rotationQuadrants == o.rotationQuadrants && flipH == o.flipH &&
                flipV == o.flipV && cropRect == o.cropRect &&
                std::abs(cropAngle - o.cropAngle) < 1e-9 &&
-               backgroundColor == o.backgroundColor;
+               backgroundColor == o.backgroundColor &&
+               guidesH == o.guidesH && guidesV == o.guidesV;
     }
     bool operator!=(const Adjustments &o) const { return !(*this == o); }
 };
@@ -695,6 +712,19 @@ void applyPaintMasks(QImage &img, const QVector<Mask> &masks,
                      QVector<BrushRasterCache> *brushCache = nullptr,
                      const QTransform &orientedToGeom = QTransform(),
                      double geomRotationDeg = 0.0, double scale = 1.0);
+
+// Paint bucket: flood-fills the contiguous region of *unpainted* pixels
+// (no existing stroke coverage, no prior fill) reachable from `clickNorm`
+// (width-normalized, same convention as BrushStrokePoint::pt) with `color`,
+// rasterized at `w`x`h`, and returns the result merged on top of `m`'s
+// existing `fillMask` (resampled to `w`x`h` first if it was captured at a
+// different resolution). Returns `m.fillMask` unchanged if the click point
+// itself is already painted/filled (no-op, matches clicking on existing
+// content in Photoshop's bucket). No leak protection: an unclosed brush
+// outline lets the fill spread to the whole unpainted region, same as
+// Photoshop's default bucket behaviour.
+QImage bucketFillPaintMask(const Mask &m, const QPointF &clickNorm,
+                          const QColor &color, int w, int h);
 
 // Build a tinted, semi-transparent overlay (ARGB, alpha = mask weight × maxAlpha)
 // visualizing a single mask's coverage, for live "see the mask" feedback while

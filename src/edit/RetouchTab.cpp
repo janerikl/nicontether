@@ -234,8 +234,15 @@ void RetouchTab::setupCanvasAndWiring() {
                 m_adj.backgroundColor = color;
                 markEdited();
             });
+    connect(m_canvas, &ImageCanvas::guidesChanged, this,
+            [this](const QVector<double> &h, const QVector<double> &v) {
+                m_adj.guidesH = h;
+                m_adj.guidesV = v;
+                markEdited();
+            });
 
     m_canvas->setBackgroundColor(m_adj.backgroundColor); // restored from sidecar, if any
+    m_canvas->setGuides(m_adj.guidesH, m_adj.guidesV);    // restored from sidecar, if any
     m_canvas->setPlaceholder("Decoding RAW…");
 
     // After dragging stops, upgrade the preview with the expensive convolutions.
@@ -328,6 +335,7 @@ void RetouchTab::applyHistoryState() {
     m_adj = m_history[m_histIndex];
     rebuildGeom();
     m_canvas->setBackgroundColor(m_adj.backgroundColor);
+    m_canvas->setGuides(m_adj.guidesH, m_adj.guidesV);
     // Keep the active-mask index valid after undo/redo changes the mask list.
     if (m_activeMask >= m_adj.masks.size())
         m_activeMask = m_adj.masks.isEmpty() ? -1 : m_adj.masks.size() - 1;

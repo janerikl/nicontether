@@ -64,6 +64,18 @@ QVector<QPointF> curveFromJson(const QJsonArray &a) {
     return curve;
 }
 
+QJsonArray doublesToJson(const QVector<double> &v) {
+    QJsonArray a;
+    for (double d : v) a.append(d);
+    return a;
+}
+
+QVector<double> doublesFromJson(const QJsonArray &a) {
+    QVector<double> v;
+    for (const QJsonValue &jv : a) v.append(jv.toDouble());
+    return v;
+}
+
 const char *shapeTypeName(ShapeType t) {
     switch (t) {
     case ShapeType::Rectangle: return "rectangle";
@@ -116,6 +128,8 @@ QJsonObject adjustmentsToJson(const Adjustments &a) {
     o["flipH"] = a.flipH;
     o["flipV"] = a.flipV;
     o["backgroundColor"] = a.backgroundColor.name(QColor::HexRgb);
+    if (!a.guidesH.isEmpty()) o["guidesH"] = doublesToJson(a.guidesH);
+    if (!a.guidesV.isEmpty()) o["guidesV"] = doublesToJson(a.guidesV);
     // Background layer visibility/presence is no longer tracked separately —
     // it's just a normal masks[] entry (MaskType::Background) now, written
     // through the generic masks loop below like any other layer.
@@ -340,6 +354,8 @@ Adjustments adjustmentsFromJson(const QJsonObject &o) {
     a.flipV = o["flipV"].toBool();
     a.backgroundColor = QColor(o["backgroundColor"].toString(QStringLiteral("#1e1e1e")));
     if (!a.backgroundColor.isValid()) a.backgroundColor = QColor(30, 30, 30);
+    a.guidesH = doublesFromJson(o["guidesH"].toArray());
+    a.guidesV = doublesFromJson(o["guidesV"].toArray());
     if (o.contains("crop")) {
         QJsonObject c = o["crop"].toObject();
         a.cropRect = QRect(c["x"].toInt(), c["y"].toInt(),

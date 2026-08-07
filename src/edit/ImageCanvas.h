@@ -153,6 +153,12 @@ public:
     // showing image-pixel coordinates at the current zoom/pan.
     void setShowRulers(bool on);
 
+    // Photoshop-style ruler guides: dragged out from the ruler bands.
+    // Positions are fractions of the displayed image (0..1) — guidesH of
+    // height, guidesV of width — so they survive image-size changes
+    // (crop/rotate) reasonably. Only interactive while rulers are shown.
+    void setGuides(const QVector<double> &horizontal, const QVector<double> &vertical);
+
 signals:
     void backgroundColorChanged(const QColor &color);
     void cropSelected(const QRect &imageRect, double angleDegrees);
@@ -227,6 +233,10 @@ signals:
     void maskEditFinished();                    // drag released → commit history
     void imageLayerDropped(const QString &path); // a photo was dropped in as a layer
 
+    // Guides were added/moved/deleted (drag from ruler, drag existing guide,
+    // drag back onto ruler to delete, or right-click delete/clear-all).
+    void guidesChanged(const QVector<double> &horizontal, const QVector<double> &vertical);
+
     // Click-to-select fallback fired from mousePressEvent when no
     // tool-specific handler above claimed the click (see the generic
     // hit-test just before the pan/zoom-marquee block). `markerIndex` is a
@@ -298,6 +308,9 @@ private:
     void zoomTo(double newScale, const QPointF &anchorWidgetPos);
     void clampPan();
     void drawRulers(QPainter &p); // top/left ruler overlay, painted last
+    void drawGuides(QPainter &p); // dragged-out guide lines, painted over the image but under rulers
+    int guideHAt(const QPoint &pos) const; // index into m_guidesH near widget y, or -1
+    int guideVAt(const QPoint &pos) const; // index into m_guidesV near widget x, or -1
 
     QImage m_img;
     QString m_placeholder = "Decoding…";
@@ -427,4 +440,14 @@ private:
     QColor m_backgroundColor = QColor(30, 30, 30);
     bool m_showCheckerboard = false;
     bool m_showRulers = false;
+
+    // Ruler guides (view-only overlay). Positions are fractions (0..1) of
+    // the displayed image's height (m_guidesH) / width (m_guidesV).
+    QVector<double> m_guidesH;
+    QVector<double> m_guidesV;
+    enum class GuideDrag { None, NewH, NewV, MoveH, MoveV };
+    GuideDrag m_guideDrag = GuideDrag::None;
+    int m_guideDragIndex = -1; // index into m_guidesH/m_guidesV being moved (MoveH/MoveV only)
+    QPoint m_guideDragPos;     // current widget-space position while dragging
+    void emitGuidesChanged() { emit guidesChanged(m_guidesH, m_guidesV); }
 };
