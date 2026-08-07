@@ -1299,6 +1299,13 @@ void ImageCanvas::drawRulers(QPainter &p) {
 
     p.save();
     p.setRenderHint(QPainter::Antialiasing, false);
+    // Subpixel (LCD) text antialiasing assumes horizontal RGB striping and
+    // produces colour-fringed, garbled glyphs once rotated 90° for the left
+    // ruler's labels, so force plain grayscale antialiasing for ruler text.
+    QFont rulerFont = p.font();
+    rulerFont.setStyleStrategy(QFont::StyleStrategy(QFont::PreferAntialias | QFont::NoSubpixelAntialias));
+    rulerFont.setHintingPreference(QFont::PreferNoHinting);
+    p.setFont(rulerFont);
 
     // Top ruler.
     p.fillRect(QRect(0, 0, width(), kThickness), bg);
@@ -1332,10 +1339,11 @@ void ImageCanvas::drawRulers(QPainter &p) {
             p.drawLine(QPointF(kThickness - 8, wy), QPointF(kThickness, wy));
             p.setPen(text);
             p.save();
-            p.translate(kThickness - 10, wy - 2);
+            p.setRenderHint(QPainter::TextAntialiasing, true);
+            p.translate(kThickness - 2, qRound(wy));
             p.rotate(-90);
-            p.drawText(QRectF(0, -kThickness, 60, kThickness), Qt::AlignLeft | Qt::AlignVCenter,
-                       QString::number(qRound(v)));
+            p.drawText(QRectF(-22, -(kThickness - 4), 44, kThickness - 4),
+                       Qt::AlignRight | Qt::AlignVCenter, QString::number(qRound(v)));
             p.restore();
         }
         double wyMid = m_topLeft.y() + (v + step / 2.0) * m_scale;
