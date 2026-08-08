@@ -1733,8 +1733,8 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         return;
     }
 
-    // Erase brush: only active while an image layer is selected.
-    if (m_eraseMode && m_hasActiveImageLayer && ev->button() == Qt::LeftButton) {
+    // Erase brush: active whenever any layer is selected, regardless of type.
+    if (m_eraseMode && m_hasActiveMask && ev->button() == Qt::LeftButton) {
         QPointF n = normPointAt(ev->pos());
         m_eraseDragging = true;
         m_lastEraseNorm = n;

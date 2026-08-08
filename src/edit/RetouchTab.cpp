@@ -1885,14 +1885,13 @@ void RetouchTab::onHealAt(const QPoint &imgPoint) {
 }
 
 // An erase dab was placed on the canvas (point in display-image, width-
-// normalized coords — same space as onMaskBrushPoint). Only image layers
-// can be erased; ImageCanvas already gates this on m_hasActiveImageLayer,
-// but the active layer can still be non-image if selection changed
-// mid-drag, so re-check here too.
+// normalized coords — same space as onMaskBrushPoint). Works on any layer
+// type — image, background, paint, brush, shape, text, text box, or an
+// adjustment mask — since applyMasks applies eraseStrokes to every layer's
+// final compositing weight, not just image-layer pixels.
 void RetouchTab::onEraseAt(const QPointF &ptNorm) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
     Mask &m = m_adj.masks[m_activeMask];
-    if (!m.isImageLayer()) return;
     double radiusNorm = (m_scaled.isNull() || m_scaled.width() <= 0)
                              ? 0.06
                              : m_eraseRadiusDisplay / double(m_scaled.width());

@@ -330,9 +330,10 @@ struct Mask {
     // like an image layer but never from an external file/path.
     bool isBackgroundLayer() const { return type == MaskType::Background; }
 
-    // Erase-tool strokes (image layers only): canvas-normalized dabs that
-    // punch feathered transparency into this layer's alpha at composite
-    // time. Empty for non-image layers.
+    // Erase-tool strokes: canvas-normalized dabs that punch a feathered
+    // reduction into this layer's final compositing weight at render time.
+    // Works on any layer type (image, background, paint, brush, shape,
+    // text, text box, or an adjustment mask).
     QVector<ErasePoint> eraseStrokes;
 
     bool operator==(const Mask &o) const {

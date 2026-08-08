@@ -1202,11 +1202,10 @@ void RetouchWindow::buildToolPanel() {
     });
     connect(m_eraseToggle, &QToolButton::toggled, this, [this](bool on) {
         RetouchTab *tab = currentTab();
-        // On a Paint-type mask, "Erase" reuses the brush stroke path with
-        // erase forced on (same subtract-coverage mechanism as Alt+drag)
-        // instead of the image-layer alpha-punch erase mechanism, since
-        // Paint masks have no source image to punch transparency into.
-        const bool paintTarget = tab && tab->isReady() && tab->canActivateTool(MaskType::Paint);
+        // Erase is a single unified tool: it works the same way (punching a
+        // feathered reduction into the active layer's compositing weight,
+        // via eraseStrokes) regardless of layer type — image, paint, brush,
+        // shape, text, text box, background, or an adjustment mask.
         if (on) {
             { QSignalBlocker b(m_toolZoom); m_toolZoom->setChecked(false); }
             { QSignalBlocker b(m_cropToggle); m_cropToggle->setChecked(false); }
@@ -1219,31 +1218,14 @@ void RetouchWindow::buildToolPanel() {
             { QSignalBlocker b(m_shapeToggle); m_shapeToggle->setChecked(false); }
             { QSignalBlocker b(m_removeObjectToggle); m_removeObjectToggle->setChecked(false); }
             if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
-            if (paintTarget) {
-                tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setColorRangePickMode(false); tab->setEraseMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); tab->setBucketMode(false);
-                tab->setPaintColor(m_colorSwatch->foregroundColor());
-                updatePaintSizePxLabel();
-                tab->setActiveMaskShape(false, 0.0, m_paintHardness->value() / 100.0,
-                                        m_paintSize->value() / 100.0, false);
-                tab->setActiveMaskOpacity(m_paintOpacity->value() / 100.0);
-                tab->setMaskForceErase(true);
-                tab->setMaskMode(true);
-                m_toolOptionsStack->setCurrentIndex(3); // reuse brush size/hardness controls
-            } else {
-                if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); tab->setBucketMode(false); }
-                m_toolOptionsStack->setCurrentIndex(4);
-            }
+            if (tab) { tab->setZoomMode(false); tab->setCropMode(false); tab->setHealMode(false); tab->setWbPickMode(false); tab->setMaskMode(false); tab->setColorRangePickMode(false); tab->setTextMode(false); tab->setShapeMode(false); tab->setRemoveObjectMode(false); tab->setBucketMode(false); }
+            m_toolOptionsStack->setCurrentIndex(4);
             m_toolOptionsBar->setVisible(true);
             if (m_layersDock) { m_layersDock->show(); m_layersDock->raise(); }
-            if (paintTarget) refreshMaskPanel();
         } else {
             m_toolOptionsBar->setVisible(false);
-            if (tab && tab->isReady()) {
-                tab->setMaskForceErase(false);
-                if (paintTarget) tab->setMaskMode(false);
-            }
         }
-        if (tab && tab->isReady() && !paintTarget) {
+        if (tab && tab->isReady()) {
             tab->setEraseBrush(m_eraseBrush->value());
             tab->setEraseMode(on);
         }

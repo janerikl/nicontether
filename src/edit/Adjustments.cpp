@@ -751,25 +751,51 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         const bool shapeLayer = m.type == MaskType::Shape;
         const bool textBoxLayer = m.type == MaskType::TextBox;
         if (!imageLayer && !backgroundLayer && !paintLayer && !textLayer && !shapeLayer &&
-            !textBoxLayer && m.adj.isZero()) {
+            !textBoxLayer && m.adj.isZero() && m.eraseStrokes.isEmpty()) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
-        if (m.type == MaskType::Brush && m.stroke.isEmpty()) {
+        if (m.type == MaskType::Brush && m.stroke.isEmpty() && m.eraseStrokes.isEmpty()) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
-        if (paintLayer && m.stroke.isEmpty() && m.fillMask.isNull()) {
+        if (paintLayer && m.stroke.isEmpty() && m.fillMask.isNull() && m.eraseStrokes.isEmpty()) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
-        if (textLayer && m.text.trimmed().isEmpty()) {
+        if (textLayer && m.text.trimmed().isEmpty() && m.eraseStrokes.isEmpty()) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
-        if (textBoxLayer && m.textBoxText.trimmed().isEmpty()) {
+        if (textBoxLayer && m.textBoxText.trimmed().isEmpty() && m.eraseStrokes.isEmpty()) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
+        }
+        // Erase-tool coverage: applies uniformly to this layer's final
+        // compositing weight regardless of layer type (image, background,
+        // paint, brush, shape, text box, text, or an adjustment mask), so
+        // "erase" works on anything, not just image-layer pixels.
+        std::vector<double> eraseCov;
+        if (!m.eraseStrokes.isEmpty()) {
+            eraseCov.assign(size_t(w) * h, 0.0);
+            for (const ErasePoint &ep : m.eraseStrokes) {
+                const double px = ep.pt.x() * W, py = ep.pt.y() * W;
+                const double rad = std::max(1.0, ep.radius * W);
+                const int x0 = std::max(0, int(px - rad));
+                const int x1 = std::min(w - 1, int(px + rad));
+                const int y0 = std::max(0, int(py - rad));
+                const int y1 = std::min(h - 1, int(py + rad));
+                for (int y = y0; y <= y1; ++y) {
+                    for (int x = x0; x <= x1; ++x) {
+                        double dx = x - px, dy = y - py;
+                        double dist = std::sqrt(dx * dx + dy * dy);
+                        double v = dist >= rad ? 0.0
+                                                : smoothstep01((rad - dist) / rad);
+                        double &c = eraseCov[size_t(y) * w + x];
+                        if (v > c) c = v;
+                    }
+                }
+            }
         }
         QImage loc;
         if (imageLayer) {
@@ -783,37 +809,6 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             p.setRenderHint(QPainter::SmoothPixmapTransform, true);
             p.drawImage(frame.topLeft(), fitted);
             p.end();
-            if (!m.eraseStrokes.isEmpty()) {
-                std::vector<double> cov(size_t(w) * h, 0.0);
-                for (const ErasePoint &ep : m.eraseStrokes) {
-                    const double px = ep.pt.x() * W, py = ep.pt.y() * W;
-                    const double rad = std::max(1.0, ep.radius * W);
-                    const int x0 = std::max(0, int(px - rad));
-                    const int x1 = std::min(w - 1, int(px + rad));
-                    const int y0 = std::max(0, int(py - rad));
-                    const int y1 = std::min(h - 1, int(py + rad));
-                    for (int y = y0; y <= y1; ++y) {
-                        for (int x = x0; x <= x1; ++x) {
-                            double dx = x - px, dy = y - py;
-                            double dist = std::sqrt(dx * dx + dy * dy);
-                            double v = dist >= rad ? 0.0
-                                                    : smoothstep01((rad - dist) / rad);
-                            double &c = cov[size_t(y) * w + x];
-                            if (v > c) c = v;
-                        }
-                    }
-                }
-                for (int y = 0; y < h; ++y) {
-                    QRgb *line = reinterpret_cast<QRgb *>(loc.scanLine(y));
-                    for (int x = 0; x < w; ++x) {
-                        double c = cov[size_t(y) * w + x];
-                        if (c <= 0.0) continue;
-                        QRgb px = line[x];
-                        int newAlpha = int(std::lround(qAlpha(px) * (1.0 - c)));
-                        line[x] = qRgba(qRed(px), qGreen(px), qBlue(px), newAlpha);
-                    }
-                }
-            }
             loc = applyLayerContent(loc, m.adj);
         } else if (backgroundLayer) {
             // Full-frame, non-repositionable: just the tab's base photo
@@ -949,6 +944,8 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                     wgt = covRead[size_t(y) * w + x] / 255.0;
                 if (imageLayer || backgroundLayer)
                     wgt *= locLine[x].alpha() / 65535.0;
+                if (!eraseCov.empty())
+                    wgt *= (1.0 - eraseCov[size_t(y) * w + x]);
                 wgt *= op;
                 if (wgt <= 0.0) continue;
                 QRgba64 src = line[x];
