@@ -42,7 +42,13 @@ constexpr int kHealBrushMin = 4;
 constexpr int kHealBrushMax = 80;
 constexpr double kMaskBrushMin = 0.01;
 constexpr double kMaskBrushMax = 0.40;
-constexpr double kMaskBrushStep = 0.01;
+constexpr double kMaskBrushStep = 0.005;
+// Per-notch brush-size step for ctrl+wheel resizing (one "notch" = the
+// standard 120 angleDelta units a physical mouse wheel reports). Scaling by
+// the actual delta rather than applying a full step per wheel event keeps
+// high-resolution mice/trackpads — which report many small deltas per
+// gesture — from blowing through the size range almost instantly.
+constexpr double kHealBrushStepPerNotch = 1.0;
 constexpr double kImageLayerScaleMin = 0.10;
 constexpr double kImageLayerScaleMax = 3.00;
 
@@ -2516,7 +2522,8 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
     if ((ev->modifiers() & Qt::ControlModifier) && !m_img.isNull()) {
         // In heal mode, ctrl+wheel resizes the brush instead of zooming.
         if (m_healMode) {
-            int step = ev->angleDelta().y() > 0 ? 2 : -2;
+            double notches = ev->angleDelta().y() / 120.0;
+            int step = int(std::lround(notches * kHealBrushStepPerNotch));
             m_brushRadius = std::clamp(m_brushRadius + step, kHealBrushMin, kHealBrushMax);
             emit healBrushRadiusChanged(m_brushRadius);
             update();
@@ -2525,7 +2532,8 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
         }
         // In erase mode, ctrl+wheel resizes the erase brush the same way.
         if (m_eraseMode) {
-            int step = ev->angleDelta().y() > 0 ? 2 : -2;
+            double notches = ev->angleDelta().y() / 120.0;
+            int step = int(std::lround(notches * kHealBrushStepPerNotch));
             m_brushRadius = std::clamp(m_brushRadius + step, kHealBrushMin, kHealBrushMax);
             emit eraseBrushRadiusChanged(m_brushRadius);
             update();
@@ -2534,7 +2542,8 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
         }
         // In remove-object mode, ctrl+wheel resizes its brush the same way.
         if (m_removeObjectMode) {
-            int step = ev->angleDelta().y() > 0 ? 2 : -2;
+            double notches = ev->angleDelta().y() / 120.0;
+            int step = int(std::lround(notches * kHealBrushStepPerNotch));
             m_brushRadius = std::clamp(m_brushRadius + step, kHealBrushMin, kHealBrushMax);
             emit removeObjectBrushRadiusChanged(m_brushRadius);
             update();
@@ -2543,8 +2552,9 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
         }
         // In brush-mask mode, ctrl+wheel resizes the mask brush the same way.
         if (m_maskMode && (m_maskKind == MaskType::Brush || m_maskKind == MaskType::Paint)) {
-            double step = ev->angleDelta().y() > 0 ? kMaskBrushStep : -kMaskBrushStep;
-            double r = std::clamp(m_activeMask.brushRadius + step, kMaskBrushMin, kMaskBrushMax);
+            double notches = ev->angleDelta().y() / 120.0;
+            double r = std::clamp(m_activeMask.brushRadius + notches * kMaskBrushStep,
+                                  kMaskBrushMin, kMaskBrushMax);
             emit maskBrushRadiusChanged(r);
             update();
             ev->accept();

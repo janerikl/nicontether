@@ -2617,8 +2617,15 @@ void RetouchWindow::wireTabSignals(RetouchTab *tab) {
         if (tab == currentTab()) refreshMaskPanel();
     });
     connect(tab, &RetouchTab::maskBrushChanged, this, [this, tab](double radiusNorm) {
-        if (tab != currentTab() || !m_layersPanel) return;
-        m_layersPanel->setMaskBrushRadius(radiusNorm); // reflect ctrl+wheel resize in the dock
+        if (tab != currentTab()) return;
+        if (m_layersPanel) m_layersPanel->setMaskBrushRadius(radiusNorm); // reflect ctrl+wheel resize in the dock
+        if (m_paintSize) {
+            m_syncingPaintSize = true;
+            QSignalBlocker b(m_paintSize);
+            m_paintSize->setValue(int(std::lround(radiusNorm * 100)));
+            m_syncingPaintSize = false;
+            updatePaintSizePxLabel();
+        }
     });
     connect(tab, &RetouchTab::previewUpdated, this, [this, tab] {
         if (tab == currentTab()) m_levelsPanel->setImage(tab->previewImage());
