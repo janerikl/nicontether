@@ -278,10 +278,11 @@ constexpr double kAutoMaskTolerance = 45.0;
 // a drag only rasterize the newly-appended stroke points instead of redoing
 // the whole stroke; see BrushRasterCache. Falls back to a full rebuild
 // whenever the cache doesn't (or can no longer) apply.
-// `colOut`, if given, receives the color of whichever dab last "won" the max
-// -coverage contest at each pixel (see per-dab BrushStrokePoint::color) — used
-// by Paint-type masks so a later color change only affects new dabs, not ones
-// already committed to the stroke.
+// `colOut`, if given, receives the color of whichever dab last "won" the
+// coverage contest at each pixel (see per-dab BrushStrokePoint::color) — used
+// by Paint-type masks. Ties (equal coverage) go to the later dab, so a new
+// stroke painted over an already fully-opaque area still takes over the
+// color there instead of being hidden behind the earlier stroke.
 //
 // When `cache` is given, the rasterization happens in place in the cache's
 // own buffers (only newly-appended points are touched) — `cov`/`colOut` are
@@ -348,7 +349,7 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                 uchar &dst = (*covBuf)[idx];
                 if (erase) {
                     dst = uchar(std::max(0, int(dst) - int(iv)));
-                } else if (iv > dst) {
+                } else if (iv >= dst) {
                     dst = iv;
                     if (colOut) (*colBuf)[idx] = color;
                 }
@@ -1500,7 +1501,11 @@ QString historyStepLabel(const Adjustments &prev, const Adjustments &curr) {
     if (curr.curve != prev.curve)             return QStringLiteral("Curve");
     if (curr.levels != prev.levels)           return QStringLiteral("Levels");
     if (curr.colorRanges != prev.colorRanges) return QStringLiteral("Color Range");
-    if (curr.masks != prev.masks)             return QStringLiteral("Layer");
+    if (curr.masks != prev.masks) {
+        if (curr.masks.size() != prev.masks.size())
+            return QStringLiteral("Layer");
+        return QStringLiteral("Paint");
+    }
     if (curr.heals != prev.heals)             return QStringLiteral("Spot Heal");
     if (curr.rotationQuadrants != prev.rotationQuadrants)
         return QStringLiteral("Rotate");
