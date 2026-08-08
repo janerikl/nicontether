@@ -884,9 +884,10 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             (bc && (m.type == MaskType::Brush || paintLayer)) ? bc->cov : cov;
         const std::vector<QRgb> &colRead = bc ? bc->col : colBuf;
         // Paint bucket: cumulative flood-filled regions, resampled to this
-        // render's resolution and merged with the stroke coverage/color
-        // above — whichever source has higher coverage at a pixel wins, same
-        // "last writer wins at the max" rule stroke dabs already use.
+        // render's resolution and alpha-composited under the stroke
+        // coverage/color above — brush dabs are always painted on top of a
+        // bucket fill (strokes are the "later" edit), instead of only the
+        // pixel with higher raw coverage winning.
         std::vector<uchar> paintFinalCov;
         QImage fillScaled;
         const bool hasFill = paintLayer && !m.fillMask.isNull();
@@ -904,25 +905,29 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                     const size_t idx = size_t(y) * w + x;
                     const uchar sc = hasStroke ? covRead[idx] : 0;
                     const uchar fc = hasFill ? uchar(qAlpha(fillLine[x])) : 0;
-                    if (fc >= sc) {
-                        paintFinalCov[idx] = fc;
-                        if (fc > 0) {
-                            QRgb c = fillLine[x];
-                            line[x] = qRgba64(quint16(qRed(c) * 257), quint16(qGreen(c) * 257),
-                                              quint16(qBlue(c) * 257), line[x].alpha());
-                        }
-                    } else {
-                        paintFinalCov[idx] = sc;
-                        if (sc > 0) {
-                            // Each dab's own color (captured at paint time) wins
-                            // wherever it set the max coverage, so re-picking the
-                            // color later only affects new dabs, not ones already
-                            // painted.
-                            QRgb c = colRead[idx];
-                            line[x] = qRgba64(quint16(qRed(c) * 257), quint16(qGreen(c) * 257),
-                                              quint16(qBlue(c) * 257), line[x].alpha());
-                        }
+                    int r = 0, g = 0, b = 0;
+                    if (fc > 0) {
+                        QRgb c = fillLine[x];
+                        r = qRed(c);
+                        g = qGreen(c);
+                        b = qBlue(c);
                     }
+                    if (sc > 0) {
+                        // Each dab's own color (captured at paint time) wins
+                        // wherever it set the max coverage, so re-picking the
+                        // color later only affects new dabs, not ones already
+                        // painted.
+                        QRgb c = colRead[idx];
+                        const double a = sc / 255.0;
+                        r = int(qRed(c) * a + r * (1.0 - a));
+                        g = int(qGreen(c) * a + g * (1.0 - a));
+                        b = int(qBlue(c) * a + b * (1.0 - a));
+                    }
+                    const uchar finalCov = uchar(std::min(255, fc + sc - (fc * sc) / 255));
+                    paintFinalCov[idx] = finalCov;
+                    if (finalCov > 0)
+                        line[x] = qRgba64(quint16(r * 257), quint16(g * 257), quint16(b * 257),
+                                          line[x].alpha());
                 }
             }
         }
