@@ -124,10 +124,21 @@ RetouchTab::RetouchTab(const QSize &blankSize, QWidget *parent)
     : QWidget(parent), m_path(QString()) {
     m_base = QImage(blankSize, QImage::Format_ARGB32);
     m_base.fill(Qt::transparent);
-    ensureBackgroundMask();
+    // A blank new document has no photo to hold, so its first layer is a
+    // normal, immediately-drawable Paint layer rather than a Background mask
+    // (applyAdjustments already composites straight onto the toned base when
+    // no Background-type mask is present, so this needs no other layer).
+    Mask m;
+    m.type = MaskType::Paint;
+    m.name = QStringLiteral("Layer 1");
+    m.brushRadius = defaultBrushRadiusNorm(blankSize.width());
+    m_adj.masks.append(m);
+    m_activeMask = 0;
+    m_maskMode = true;
 
     setupCanvasAndWiring();
 
+    m_canvas->setMaskMode(MaskType::Paint, true);
     rebuildGeom();
     retone();
     emit decoded(true);

@@ -11,29 +11,30 @@
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
 
-    // A fresh tab auto-creates one MaskType::Background entry (see
-    // RetouchTab::ensureBackgroundMask), so it's already in masks() before
-    // any addMask() call — a normal, reorderable, non-pinned entry like any
-    // other layer, which is exactly what this test exercises below (it's
-    // included in every permutation like the plain layers).
+    // A fresh blank tab starts with one MaskType::Paint entry already
+    // drawable (see the QSize constructor in RetouchTab.cpp), so it's
+    // already in masks() before any addMask() call — a normal, reorderable,
+    // non-pinned entry like any other layer, which is exactly what this
+    // test exercises below (it's included in every permutation like the
+    // plain layers).
     RetouchTab tab(QSize(8, 8));
     assert(tab.masks().size() == 1);
-    assert(tab.masks()[0].type == MaskType::Background);
+    assert(tab.masks()[0].type == MaskType::Paint);
     tab.addMask(MaskType::Radial);
     tab.addMask(MaskType::Radial);
     tab.addMask(MaskType::Radial);
     // addMask inserts each new layer at index 0 (top of the stack) and
-    // selects it, so after three calls masks() is [L2, L1, L0, Background]
-    // (insertion order, most-recent first, Background still at the bottom)
+    // selects it, so after three calls masks() is [L2, L1, L0, Paint]
+    // (insertion order, most-recent first, Paint still at the bottom)
     // with L2 active.
     assert(tab.masks().size() == 4);
     assert(tab.activeMaskIndex() == 0);
-    assert(tab.masks()[3].type == MaskType::Background);
+    assert(tab.masks()[3].type == MaskType::Paint);
 
     // A valid permutation reorders the stack and keeps the active mask
     // correctly tracked to its new position: the active mask was at index 0
     // before the call, and newOrder places old-index-0 at position 1.
-    // Background (index 3) is included like any other entry and stays put.
+    // Paint (index 3) is included like any other entry and stays put.
     {
         tab.reorderMasks({2, 0, 1, 3});
         assert(tab.masks().size() == 4);
@@ -101,14 +102,14 @@ int main(int argc, char **argv) {
     // with no deliberate reselection in between.
     {
         RetouchTab tab2(QSize(8, 8));
-        assert(tab2.masks().size() == 1); // just Background
+        assert(tab2.masks().size() == 1); // just Paint
         int blueIdx = tab2.addMask(MaskType::Shape, ShapeType::Rectangle);
         tab2.masks()[blueIdx]; // still active after creation (addMask sets m_activeMask)
         int redIdx = tab2.addMask(MaskType::Shape, ShapeType::Ellipse);
         int whiteIdx = tab2.addMask(MaskType::Shape, ShapeType::Rectangle);
         (void)blueIdx; (void)redIdx;
         // Newest-created (white) must be at index 0 (frontmost/top), then
-        // red, then blue, then Background last -- true creation-order,
+        // red, then blue, then Paint last -- true creation-order,
         // newest-is-topmost, matching both the Layers panel (built by
         // walking masks() index 0 upward) and applyMasks' render order.
         assert(tab2.masks().size() == 4);
@@ -116,7 +117,7 @@ int main(int argc, char **argv) {
         assert(tab2.masks()[0].shapeType == ShapeType::Rectangle); // white (created last)
         assert(tab2.masks()[1].shapeType == ShapeType::Ellipse);   // red (created 2nd)
         assert(tab2.masks()[2].shapeType == ShapeType::Rectangle); // blue (created 1st)
-        assert(tab2.masks()[3].type == MaskType::Background);
+        assert(tab2.masks()[3].type == MaskType::Paint);
         assert(tab2.activeMaskIndex() == 0); // most recently created shape stays active
     }
 
@@ -148,7 +149,7 @@ int main(int argc, char **argv) {
         // After the two creations above, masks() is [red(0), blue(1), Bg(2)]
         // with red active (most recently created). Clicking blue's shape
         // marker on the canvas (marker index 1, since updateShapeMarkers()
-        // walks masks front-to-back skipping Background) must move
+        // walks masks front-to-back skipping Paint) must move
         // m_activeMask onto blue's real masks index, not leave it on red.
         assert(tab3.activeMaskIndex() == 0); // red, just created
         tab3.selectShape(1); // marker index 1 -> blue
@@ -177,11 +178,11 @@ int main(int argc, char **argv) {
     // updateShapeMarkers() call after such a reorder.
     {
         RetouchTab tab4(QSize(8, 8));
-        assert(tab4.masks().size() == 1); // just Background
+        assert(tab4.masks().size() == 1); // just Paint
         // Creation order: liila (purple) created first, then keltainen
         // (yellow), then vihrea (green) -- each addMask() inserts at index
         // 0, so immediately after creation masks() is
-        // [vihrea, keltainen, liila, Background] (newest-first).
+        // [vihrea, keltainen, liila, Paint] (newest-first).
         tab4.addMask(MaskType::Shape, ShapeType::Rectangle); // liila
         tab4.addMask(MaskType::Shape, ShapeType::Rectangle); // keltainen
         tab4.addMask(MaskType::Shape, ShapeType::Rectangle); // vihrea
@@ -190,7 +191,7 @@ int main(int argc, char **argv) {
         // Manually reorder via the Layers panel's drag-drop entry point so
         // liila (currently at masks index 2) ends up on top (index 0),
         // matching the bug report's screenshot: liila (top/selected),
-        // keltainen, vihrea, Background.
+        // keltainen, vihrea, Paint.
         tab4.reorderMasks({2, 1, 0, 3});
         assert(tab4.masks()[0].groupId.isEmpty()); // sanity: still ungrouped
         QVector<Mask> afterManualReorder = tab4.masks();
@@ -236,28 +237,32 @@ int main(int argc, char **argv) {
 
         tab5.selectMask(0);
         tab5.deleteActiveMask();
-        assert(tab5.masks().size() == 2); // remaining Radial + Background
+        assert(tab5.masks().size() == 2); // remaining Radial + Paint
         assert(tab5.masks()[0].groupId == groupId); // stale: still tagged, now alone
     }
 
     // Known gap, documented rather than silently relied upon: neither
     // reorderMasks nor groupMasks special-cases MaskType::Background (see
     // RetouchTab::backgroundMaskIndex/ensureBackgroundMask -- the latter
-    // only guarantees a Background entry exists, it's called from load/init
-    // paths only, and is never re-invoked to re-pin position after a
-    // reorder or group call). The Layers panel's drag-drop UI happens to
-    // avoid ever constructing such a permutation, but RetouchTab's own API
-    // does not defend against it. If Background pinning is ever enforced at
-    // the RetouchTab level, this assertion should flip to the opposite and
-    // the comment updated accordingly.
+    // only guarantees a Background entry exists once added; it's called
+    // from the path/project load constructors, not the blank-document one,
+    // and is never re-invoked to re-pin position after a reorder or group
+    // call). A blank tab has no Background mask by default (its first layer
+    // is Paint), so this test adds one explicitly via addMask to exercise
+    // backgroundMaskIndex/pinning behavior. The Layers panel's drag-drop UI
+    // happens to avoid ever constructing such a permutation, but
+    // RetouchTab's own API does not defend against it. If Background
+    // pinning is ever enforced at the RetouchTab level, this assertion
+    // should flip to the opposite and the comment updated accordingly.
     {
         RetouchTab tab6(QSize(8, 8));
-        tab6.addMask(MaskType::Radial);
+        tab6.addMask(MaskType::Background); // masks: [Background, Paint]
+        tab6.addMask(MaskType::Radial);      // masks: [Radial, Background, Paint]
         assert(tab6.masks()[1].type == MaskType::Background); // starts pinned last
         int bgIndex = tab6.backgroundMaskIndex();
         assert(bgIndex == 1);
 
-        tab6.reorderMasks({1, 0}); // moves Background to index 0 (top)
+        tab6.reorderMasks({1, 0, 2}); // moves Background to index 0 (top)
         assert(tab6.masks()[0].type == MaskType::Background); // unpinned by this call
     }
 
