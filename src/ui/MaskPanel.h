@@ -12,6 +12,7 @@ class QLineEdit;
 class QFontComboBox;
 class QSpinBox;
 class QToolButton;
+class BrushPresetMenuButton;
 
 // Mask editor for whichever layer is selected in the Layers panel: a type
 // combo (None / Radial / Graduated / Brush) to add, remove, or change the
@@ -65,6 +66,7 @@ private:
     QSlider *m_brushSize = nullptr;
     QLabel *m_brushSizePx = nullptr; // live "NNpx" readout next to m_brushSize
     QCheckBox *m_autoMask = nullptr;
+    BrushPresetMenuButton *m_brushPresets = nullptr;
 
     QLineEdit *m_textContent = nullptr;
     QFontComboBox *m_textFont = nullptr;

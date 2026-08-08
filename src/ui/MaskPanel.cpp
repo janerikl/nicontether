@@ -13,6 +13,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include "ui/ScrubSpinBox.h"
+#include "ui/BrushPresetMenuButton.h"
 #include <cmath>
 
 MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
@@ -83,6 +84,8 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     brushSizeRow->addWidget(m_brushSize);
     brushSizeRow->addWidget(m_brushSizePx);
     shape->addRow(m_brushSizeLabel, brushSizeRow);
+    m_brushPresets = new BrushPresetMenuButton;
+    shape->addRow("Brush:", m_brushPresets);
     m_autoMask = new QCheckBox("Auto Mask (stop at edges)");
     shape->addRow(m_autoMask);
     root->addLayout(shape);
@@ -97,6 +100,15 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     connect(m_autoMask, &QCheckBox::toggled, this, [this] { emitShape(); });
     for (QSlider *s : {m_feather, m_hardness, m_brushSize})
         connect(s, &QSlider::valueChanged, this, [this] { emitShape(); });
+    connect(m_brushPresets, &BrushPresetMenuButton::presetApplied, this,
+            [this](double brushRadius, double hardness) {
+                m_brushSize->setValue(int(std::lround(brushRadius * 100)));
+                m_hardness->setValue(int(std::lround(hardness * 100)));
+            });
+    connect(m_brushPresets, &QToolButton::pressed, this, [this] {
+        m_brushPresets->setCurrentValues(m_brushSize->value() / 100.0,
+                                         m_hardness->value() / 100.0);
+    });
 
     connect(m_textContent, &QLineEdit::textChanged, this, [this] { emitText(); });
     connect(m_textFont, &QFontComboBox::currentFontChanged, this, [this] { emitText(); });
@@ -161,8 +173,8 @@ void MaskPanel::loadMask() {
     if (!maskable) {
         for (QWidget *w : std::initializer_list<QWidget *>{
                  m_invert, m_feather, m_hardnessLabel, m_hardness, m_brushSizeLabel,
-                 m_brushSize, m_brushSizePx, m_autoMask, m_textContent, m_textFont,
-                 m_textSize, m_textBold, m_textItalic})
+                 m_brushSize, m_brushSizePx, m_brushPresets, m_autoMask, m_textContent,
+                 m_textFont, m_textSize, m_textBold, m_textItalic})
             w->setVisible(false);
         m_syncing = false;
         return;
@@ -190,6 +202,7 @@ void MaskPanel::loadMask() {
     m_brushSizeLabel->setVisible(brush);
     m_brushSize->setVisible(brush);
     m_brushSizePx->setVisible(brush);
+    m_brushPresets->setVisible(brush);
     m_autoMask->setVisible(brush);
     m_invert->setVisible(geometric);
     m_feather->setVisible(geometric);

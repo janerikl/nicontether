@@ -131,9 +131,9 @@ constexpr ShortcutGroup kShortcutGroups[] = {
         {"Copy Edits", "Ctrl+Shift+C"},
         {"Paste Edits", "Ctrl+Shift+V"},
         {"Sync Edits to Selected", "Ctrl+Shift+S"},
-        {"Group Shapes", "Ctrl+G"},
-        {"Ungroup Shapes", "Ctrl+Shift+G"},
-        {"Preferences…", "Ctrl+,"},
+        {"Group Shapes/Layers", "Ctrl+G"},
+        {"Ungroup Shapes/Layers", "Ctrl+Shift+G"},
+        {"Preferences…", "Ctrl+, / F12"},
     }},
     {"Tools", {
         {"Zoom", "Z"},
@@ -156,6 +156,9 @@ constexpr ShortcutGroup kShortcutGroups[] = {
         {"Fill with background color", "Ctrl+Backspace"},
         {"Fill with foreground color", "Alt+Backspace"},
         {"Capture (tethering)", "Space"},
+    }},
+    {"Layers", {
+        {"Delete selected layer", "Delete"},
     }},
 };
 } // namespace

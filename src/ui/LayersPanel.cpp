@@ -20,6 +20,7 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QPointer>
 #include <QLineEdit>
@@ -261,8 +262,20 @@ public:
     // directly from dropEvent, once the base class has finished applying the
     // drop, sidesteps relying on any particular signal shape.
     std::function<void()> onDropped;
+    // Fired when Delete/Backspace is pressed with a row selected and no
+    // inline rename in progress (see keyPressEvent).
+    std::function<void()> onDeleteKeyPressed;
 
 protected:
+    void keyPressEvent(QKeyEvent *event) override {
+        if ((event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) &&
+            state() != QAbstractItemView::EditingState && !selectedItems().isEmpty()) {
+            if (onDeleteKeyPressed) onDeleteKeyPressed();
+            return;
+        }
+        QTreeWidget::keyPressEvent(event);
+    }
+
     // Photoshop lets you click a layer's visibility checkbox and drag up/down
     // to paint that same on/off state across every row the cursor passes
     // over, instead of clicking each checkbox individually. m_checkDragActive
@@ -649,6 +662,13 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
             "Images (*.jpg *.jpeg *.png *.tif *.tiff *.nef *.NEF);;All Files (*)");
         if (!path.isEmpty()) emit addImageLayerRequested(path);
     });
+
+    QAction *addSvgAction = addMenu->addAction("Add SVG Layer…");
+    connect(addSvgAction, &QAction::triggered, this, [this] {
+        QString path = QFileDialog::getOpenFileName(
+            this, "Add SVG Layer", QString(), "SVG Files (*.svg)");
+        if (!path.isEmpty()) emit addSvgLayerRequested(path);
+    });
     m_add->setMenu(addMenu);
 
     connect(m_duplicate, &QPushButton::clicked, this,
@@ -773,6 +793,7 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
             Qt::QueuedConnection);
     };
     maskTree->onDropped = handleReorder;
+    maskTree->onDeleteKeyPressed = [this] { emit deleteMaskRequested(); };
     connect(m_maskList, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem *item) {
         if (m_syncing) return;
         QString groupId = item->data(0, Qt::UserRole + 1).toString();

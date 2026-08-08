@@ -9,6 +9,7 @@
 
 #include <QPainter>
 #include <QPolygonF>
+#include <QSvgRenderer>
 
 #include <QVBoxLayout>
 #include <QFutureWatcher>
@@ -2098,6 +2099,54 @@ int RetouchTab::addImageLayer(const QString &path) {
     emit masksChanged();
     kickoffImageLayerDecode(storedPath);
     return m_activeMask;
+}
+
+int RetouchTab::addSvgLayer(const QString &svgPath) {
+    QSvgRenderer renderer(svgPath);
+    if (!renderer.isValid()) return -1;
+
+    QSize baseSize = renderer.defaultSize();
+    if (baseSize.isEmpty()) baseSize = QSize(512, 512);
+    // Rasterized once on import, so render well above the likely display
+    // size to stay crisp under later scaling.
+    const qreal kImportScale = 3.0;
+    QSize pixelSize = baseSize * kImportScale;
+
+    QImage image(pixelSize, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    renderer.render(&painter);
+    painter.end();
+
+    QString baseDir = m_path.isEmpty() ? QFileInfo(svgPath).absolutePath()
+                                        : QFileInfo(m_path).absolutePath();
+    QString baseName = m_path.isEmpty() ? QStringLiteral("layer")
+                                         : QFileInfo(m_path).completeBaseName();
+    QString uuid = QUuid::createUuid().toString(QUuid::Id128).left(8);
+    QString pngPath = QDir(baseDir).filePath(
+        QStringLiteral("%1.svg-layer.%2.png").arg(baseName, uuid));
+    if (!image.save(pngPath)) return -1;
+
+    int idx = addImageLayer(pngPath);
+    if (idx >= 0 && idx < m_adj.masks.size())
+        m_adj.masks[idx].name = QFileInfo(svgPath).completeBaseName();
+    return idx;
+}
+
+int RetouchTab::addImageLayerFromImage(const QImage &image, const QString &suggestedName) {
+    QString baseDir = m_path.isEmpty() ? QDir::tempPath() : QFileInfo(m_path).absolutePath();
+    QString baseName = m_path.isEmpty() ? QStringLiteral("layer")
+                                         : QFileInfo(m_path).completeBaseName();
+    QString uuid = QUuid::createUuid().toString(QUuid::Id128).left(8);
+    QString pngPath = QDir(baseDir).filePath(
+        QStringLiteral("%1.svg-layer.%2.png").arg(baseName, uuid));
+    if (!image.save(pngPath)) return -1;
+
+    int idx = addImageLayer(pngPath);
+    if (idx >= 0 && idx < m_adj.masks.size())
+        m_adj.masks[idx].name = suggestedName.isEmpty() ? QStringLiteral("SVG Layer") : suggestedName;
+    return idx;
 }
 
 // Copies `sourcePath` into an app-managed file next to the base photo so the

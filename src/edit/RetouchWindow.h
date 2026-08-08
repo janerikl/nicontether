@@ -45,7 +45,7 @@ public:
     // Create a new blank/untitled tab (File > New). Never touches the filmstrip.
     void createUntitledTab(const QSize &size);
 
-    enum class Mode { Retouch, Tether };
+    enum class Mode { Retouch, Tether, Svg };
     void setMode(Mode mode);
 
 protected:
@@ -84,6 +84,7 @@ private:
     void applyModeChrome(Mode mode);
     class QAction *m_tetherModeAction = nullptr;
     class QAction *m_retouchModeAction = nullptr;
+    class QAction *m_svgModeAction = nullptr;
 
     QTabWidget *m_tabs = nullptr;
     FilmstripWidget *m_filmstrip = nullptr;
@@ -91,9 +92,11 @@ private:
     QMap<QString, RetouchTab *> m_openTabs;
     int m_untitledCounter = 0;
 
-    // Unified window: central stack swaps editing tabs (page 0) / tether (page 1).
+    // Unified window: central stack swaps editing tabs (page 0) / tether
+    // (page 1) / the SVG icon/logo editor (page 2).
     QStackedWidget *m_modeStack = nullptr;
     TetherView *m_tetherView = nullptr;
+    class SvgEditorTab *m_svgEditorTab = nullptr;
     PreferencesDialog *m_prefsDialog = nullptr;
     QDockWidget *m_controlsDock = nullptr; // camera controls, shown in Tether mode
     QToolBar *m_tetherToolBar = nullptr;   // Connect/Disconnect/LiveView/Capture/…
@@ -173,7 +176,8 @@ private:
     QToolButton *m_healToggle = nullptr; // left icon bar: spot-heal tool
     QSlider *m_healBrush = nullptr;
     QPushButton *m_healClear = nullptr;
-    QToolButton *m_brushToggle = nullptr; // left icon bar: paint-brush tool
+    QToolButton *m_brushToggle = nullptr; // left icon bar: paint-brush tool (requires a Paint layer already selected)
+    QToolButton *m_bucketToggle = nullptr; // left icon bar: paint bucket (flood-fill), requires a Paint layer already selected
     QSlider *m_paintSize = nullptr;
     QLabel *m_paintSizePx = nullptr; // live "NNpx" readout next to m_paintSize
     bool m_paintSizeCustomized = false; // once the user drags m_paintSize, stop auto-defaulting it
@@ -181,6 +185,7 @@ private:
     void updatePaintSizePxLabel();
     QSlider *m_paintHardness = nullptr;
     QSlider *m_paintOpacity = nullptr;
+    class BrushPresetMenuButton *m_brushToolPresets = nullptr;
     FlyoutToolButton *m_maskToggle = nullptr; // left icon bar: local-mask tool
     QToolButton *m_eraseToggle = nullptr; // left icon bar: erase tool
     QSlider *m_eraseBrush = nullptr;

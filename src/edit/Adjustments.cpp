@@ -404,6 +404,101 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
     }
 }
 
+} // namespace
+
+QImage bucketFillPaintMask(const Mask &m, const QPointF &clickNorm,
+                          const QColor &color, int w, int h) {
+    if (w <= 0 || h <= 0) return m.fillMask;
+
+    std::vector<uchar> cov;
+    rasterizeBrush(m, cov, w, h);
+
+    const int px = std::clamp(int(std::lround(clickNorm.x() * w)), 0, w - 1);
+    const int py = std::clamp(int(std::lround(clickNorm.y() * w)), 0, h - 1);
+
+    const bool hasPrevFill = !m.fillMask.isNull();
+    QImage prevFillScaled;
+    if (hasPrevFill)
+        prevFillScaled = m.fillMask.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                             .convertToFormat(QImage::Format_ARGB32);
+
+    // Brush strokes are a separate layer of paint the bucket never touches
+    // (matches the original "don't fill over hand-painted areas" behaviour):
+    // they always act as flood-fill walls, regardless of color.
+    auto covBlocked = [&](int x, int y) -> bool {
+        return cov[size_t(y) * w + x] > 0;
+    };
+    // Existing bucket-filled pixels are transparent under the color's own
+    // alpha, so treat anything with alpha above a small anti-aliasing
+    // threshold as "painted" and everything else as empty canvas.
+    auto fillPixel = [&](int x, int y) -> QRgb {
+        if (!hasPrevFill) return qRgba(0, 0, 0, 0);
+        return reinterpret_cast<const QRgb *>(prevFillScaled.constScanLine(y))[x];
+    };
+    auto closeColor = [](QRgb a, QRgb b) -> bool {
+        return std::abs(qRed(a) - qRed(b)) <= 24 &&
+               std::abs(qGreen(a) - qGreen(b)) <= 24 &&
+               std::abs(qBlue(a) - qBlue(b)) <= 24 &&
+               std::abs(qAlpha(a) - qAlpha(b)) <= 24;
+    };
+
+    if (py >= h || px >= w || covBlocked(px, py)) return m.fillMask; // clicked on a brush stroke
+
+    // What the click landed on determines the flood target: either empty
+    // canvas (classic fill-the-hole behavior) or an existing flat-colored
+    // fill region, which lets a second click recolor it (e.g. white -> green)
+    // instead of being a no-op.
+    const QRgb clickFill = fillPixel(px, py);
+    const bool startFilled = qAlpha(clickFill) > 16;
+
+    auto matchesRegion = [&](int x, int y) -> bool {
+        if (covBlocked(x, y)) return false;
+        const QRgb p = fillPixel(x, y);
+        const bool filled = qAlpha(p) > 16;
+        if (startFilled) return filled && closeColor(p, clickFill);
+        return !filled;
+    };
+
+    std::vector<uchar> visited(size_t(w) * h, 0);
+    QImage regionImg(w, h, QImage::Format_ARGB32);
+    regionImg.fill(Qt::transparent);
+    const QRgb fillRgb = color.rgba();
+
+    std::vector<QPoint> stack;
+    stack.reserve(4096);
+    stack.push_back(QPoint(px, py));
+    visited[size_t(py) * w + px] = 1;
+    static const int dx[4] = {1, -1, 0, 0};
+    static const int dy[4] = {0, 0, 1, -1};
+    while (!stack.empty()) {
+        const QPoint p = stack.back();
+        stack.pop_back();
+        reinterpret_cast<QRgb *>(regionImg.scanLine(p.y()))[p.x()] = fillRgb;
+        for (int k = 0; k < 4; ++k) {
+            const int nx = p.x() + dx[k], ny = p.y() + dy[k];
+            if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+            const size_t nidx = size_t(ny) * w + nx;
+            if (visited[nidx] || !matchesRegion(nx, ny)) continue;
+            visited[nidx] = 1;
+            stack.push_back(QPoint(nx, ny));
+        }
+    }
+
+    QImage merged;
+    if (hasPrevFill) {
+        merged = prevFillScaled;
+    } else {
+        merged = QImage(w, h, QImage::Format_ARGB32);
+        merged.fill(Qt::transparent);
+    }
+    QPainter p(&merged);
+    p.drawImage(0, 0, regionImg);
+    p.end();
+    return merged;
+}
+
+namespace {
+
 // Rasterizes a Text-type mask's glyph shape into a coverage buffer, same
 // uchar-per-pixel layout as rasterizeBrush's `cov` output (0 = no coverage,
 // 255 = full). `textPos`/`textPixelSize` are width-normalized like other
@@ -660,7 +755,11 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
-        if ((m.type == MaskType::Brush || paintLayer) && m.stroke.isEmpty()) {
+        if (m.type == MaskType::Brush && m.stroke.isEmpty()) {
+            if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
+            continue;
+        }
+        if (paintLayer && m.stroke.isEmpty() && m.fillMask.isNull()) {
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
@@ -784,18 +883,46 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         const std::vector<uchar> &covRead =
             (bc && (m.type == MaskType::Brush || paintLayer)) ? bc->cov : cov;
         const std::vector<QRgb> &colRead = bc ? bc->col : colBuf;
-        if (paintLayer && (bc ? !bc->cov.empty() : !colBuf.empty())) {
-            // Each dab's own color (captured at paint time) wins wherever it
-            // set the max coverage, so re-picking the color later only
-            // affects new dabs, not ones already painted.
+        // Paint bucket: cumulative flood-filled regions, resampled to this
+        // render's resolution and merged with the stroke coverage/color
+        // above — whichever source has higher coverage at a pixel wins, same
+        // "last writer wins at the max" rule stroke dabs already use.
+        std::vector<uchar> paintFinalCov;
+        QImage fillScaled;
+        const bool hasFill = paintLayer && !m.fillMask.isNull();
+        if (hasFill)
+            fillScaled = m.fillMask.scaled(w, h, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+                             .convertToFormat(QImage::Format_ARGB32);
+        if (paintLayer) {
+            const bool hasStroke = bc ? !bc->cov.empty() : !colBuf.empty();
+            paintFinalCov.assign(size_t(w) * h, 0);
             for (int y = 0; y < h; ++y) {
                 QRgba64 *line = reinterpret_cast<QRgba64 *>(loc.scanLine(y));
+                const QRgb *fillLine =
+                    hasFill ? reinterpret_cast<const QRgb *>(fillScaled.constScanLine(y)) : nullptr;
                 for (int x = 0; x < w; ++x) {
-                    size_t idx = size_t(y) * w + x;
-                    if (covRead[idx] == 0) continue;
-                    QRgb c = colRead[idx];
-                    line[x] = qRgba64(quint16(qRed(c) * 257), quint16(qGreen(c) * 257),
-                                      quint16(qBlue(c) * 257), line[x].alpha());
+                    const size_t idx = size_t(y) * w + x;
+                    const uchar sc = hasStroke ? covRead[idx] : 0;
+                    const uchar fc = hasFill ? uchar(qAlpha(fillLine[x])) : 0;
+                    if (fc >= sc) {
+                        paintFinalCov[idx] = fc;
+                        if (fc > 0) {
+                            QRgb c = fillLine[x];
+                            line[x] = qRgba64(quint16(qRed(c) * 257), quint16(qGreen(c) * 257),
+                                              quint16(qBlue(c) * 257), line[x].alpha());
+                        }
+                    } else {
+                        paintFinalCov[idx] = sc;
+                        if (sc > 0) {
+                            // Each dab's own color (captured at paint time) wins
+                            // wherever it set the max coverage, so re-picking the
+                            // color later only affects new dabs, not ones already
+                            // painted.
+                            QRgb c = colRead[idx];
+                            line[x] = qRgba64(quint16(qRed(c) * 257), quint16(qGreen(c) * 257),
+                                              quint16(qBlue(c) * 257), line[x].alpha());
+                        }
+                    }
                 }
             }
         }
@@ -811,6 +938,8 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                     wgt = radialWeight(m, x / W, y / W);
                 else if (m.type == MaskType::Linear)
                     wgt = linearWeight(m, x / W, y / W);
+                else if (paintLayer)
+                    wgt = paintFinalCov[size_t(y) * w + x] / 255.0;
                 else
                     wgt = covRead[size_t(y) * w + x] / 255.0;
                 if (imageLayer || backgroundLayer)
@@ -1231,7 +1360,7 @@ static bool hasMaskEdits(const Adjustments &adj) {
         // entry contributes no edit of its own; only a non-identity `adj`
         // does (falls through to the generic check below).
         if (m.type == MaskType::Paint) {
-            if (m.stroke.isEmpty()) continue;
+            if (m.stroke.isEmpty() && m.fillMask.isNull()) continue;
             return true;
         }
         if (m.type == MaskType::Text) {

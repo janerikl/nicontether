@@ -18,6 +18,7 @@
 #include "ui/ControlsPanel.h"
 #include "ui/ScrubSpinBox.h"
 #include "ui/BrushPresetMenuButton.h"
+#include "svg/SvgEditorTab.h"
 #include <QFrame>
 #include "capture/NefPreview.h"
 
@@ -489,19 +490,24 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     toolbar->setObjectName("mainToolBar");
     toolbar->setMovable(false);
 
-    // Mode switch: mutually-exclusive Tether / Retouch at the far left.
+    // Mode switch: mutually-exclusive Retouch / Tether / SVG at the far left.
     m_retouchModeAction = toolbar->addAction("Retouch");
     m_tetherModeAction = toolbar->addAction("Tether");
+    m_svgModeAction = toolbar->addAction("SVG");
     m_retouchModeAction->setCheckable(true);
     m_tetherModeAction->setCheckable(true);
+    m_svgModeAction->setCheckable(true);
     auto *modeGroup = new QActionGroup(this);
     modeGroup->setExclusive(true);
     modeGroup->addAction(m_retouchModeAction);
     modeGroup->addAction(m_tetherModeAction);
+    modeGroup->addAction(m_svgModeAction);
     connect(m_retouchModeAction, &QAction::triggered, this,
             [this] { setMode(Mode::Retouch); });
     connect(m_tetherModeAction, &QAction::triggered, this,
             [this] { setMode(Mode::Tether); });
+    connect(m_svgModeAction, &QAction::triggered, this,
+            [this] { setMode(Mode::Svg); });
     // Save / Save All / Export live in the File menu only (not the toolbar).
     m_saveAction = new QAction("Save", this);
     m_saveAction->setShortcut(QKeySequence::Save); // Ctrl+S
@@ -623,9 +629,23 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
 
     m_tetherView = new TetherView;
 
+    m_svgEditorTab = new SvgEditorTab;
+    connect(m_svgEditorTab, &SvgEditorTab::sendToRetouchRequested, this,
+            [this](const QImage &image, const QString &name) {
+                RetouchTab *tab = currentTab();
+                if (tab && tab->isReady()) {
+                    tab->addImageLayerFromImage(image, name);
+                    refreshMaskPanel();
+                } else {
+                    QMessageBox::information(this, "Send to Retouch",
+                        "Open or select a Retouch document tab first.");
+                }
+            });
+
     m_modeStack = new QStackedWidget;
-    m_modeStack->addWidget(m_tabs);       // index 0 = Retouch
-    m_modeStack->addWidget(m_tetherView); // index 1 = Tether
+    m_modeStack->addWidget(m_tabs);         // index 0 = Retouch
+    m_modeStack->addWidget(m_tetherView);   // index 1 = Tether
+    m_modeStack->addWidget(m_svgEditorTab); // index 2 = SVG
 
     m_filmstrip = new FilmstripWidget;
     connect(m_filmstrip, &FilmstripWidget::frameSelected, this,
@@ -2045,6 +2065,11 @@ void RetouchWindow::buildLayersDock() {
                 RetouchTab *tab = currentTab();
                 if (tab && tab->isReady()) { tab->addImageLayer(path); refreshMaskPanel(); }
             });
+    connect(m_layersPanel, &LayersPanel::addSvgLayerRequested, this,
+            [this](const QString &path) {
+                RetouchTab *tab = currentTab();
+                if (tab && tab->isReady()) { tab->addSvgLayer(path); refreshMaskPanel(); }
+            });
     connect(m_layersPanel, &LayersPanel::duplicateMaskRequested, this, [this] {
         RetouchTab *tab = currentTab();
         if (!tab) return;
@@ -2641,15 +2666,18 @@ void RetouchWindow::onFilmstripSelected(const QString &path) {
 }
 
 void RetouchWindow::setMode(Mode mode) {
-    m_modeStack->setCurrentWidget(mode == Mode::Tether
-                                      ? static_cast<QWidget *>(m_tetherView)
-                                      : static_cast<QWidget *>(m_tabs));
+    QWidget *page = m_tabs;
+    if (mode == Mode::Tether) page = m_tetherView;
+    else if (mode == Mode::Svg) page = m_svgEditorTab;
+    m_modeStack->setCurrentWidget(page);
     applyModeChrome(mode);
     // Keep the toolbar buttons in sync when called programmatically.
     QSignalBlocker b1(m_tetherModeAction);
     QSignalBlocker b2(m_retouchModeAction);
+    QSignalBlocker b3(m_svgModeAction);
     m_tetherModeAction->setChecked(mode == Mode::Tether);
     m_retouchModeAction->setChecked(mode == Mode::Retouch);
+    m_svgModeAction->setChecked(mode == Mode::Svg);
 }
 
 void RetouchWindow::closeEvent(QCloseEvent *event) {
@@ -2670,24 +2698,26 @@ void RetouchWindow::closeEvent(QCloseEvent *event) {
 
 void RetouchWindow::applyModeChrome(Mode mode) {
     const bool tether = (mode == Mode::Tether);
+    const bool retouch = (mode == Mode::Retouch);
 
     // Tether chrome.
     if (m_tetherToolBar) m_tetherToolBar->setVisible(tether);
     if (m_controlsDock)  m_controlsDock->setVisible(tether);
     if (m_tetherView)    m_tetherView->setActive(tether);
 
-    // Editing chrome.
-    if (tether) deselectAllTools(); // exit any active tool + hide the options row
-    if (m_toolsBar)        m_toolsBar->setVisible(!tether);
-    if (m_adjustmentsDock) m_adjustmentsDock->setVisible(!tether);
-    if (m_historyDock)     m_historyDock->setVisible(!tether);
-    if (m_layersDock)      m_layersDock->setVisible(!tether);
+    // Editing chrome (Retouch mode only — hidden for both Tether and Svg).
+    if (!retouch) deselectAllTools(); // exit any active tool + hide the options row
+    if (m_toolsBar)        m_toolsBar->setVisible(retouch);
+    if (m_adjustmentsDock) m_adjustmentsDock->setVisible(retouch);
+    if (m_historyDock)     m_historyDock->setVisible(retouch);
+    if (m_layersDock)      m_layersDock->setVisible(retouch);
+    if (m_levelsDock)      m_levelsDock->setVisible(retouch);
 
-    // Editing-only actions are meaningless while tethering.
-    m_saveAction->setEnabled(!tether);
-    m_saveAllAction->setEnabled(!tether);
-    m_exportAction->setEnabled(!tether);
-    if (tether) {
+    // Editing-only actions are meaningless outside Retouch mode.
+    m_saveAction->setEnabled(retouch);
+    m_saveAllAction->setEnabled(retouch);
+    m_exportAction->setEnabled(retouch);
+    if (!retouch) {
         m_undoAction->setEnabled(false);
         m_redoAction->setEnabled(false);
     } else {
@@ -2810,6 +2840,11 @@ void RetouchWindow::deselectAllTools() {
         m_removeObjectToggle->setChecked(false);
     }
     if (tab) tab->setRemoveObjectMode(false);
+    if (m_bucketToggle) {
+        QSignalBlocker b(m_bucketToggle);
+        m_bucketToggle->setChecked(false);
+    }
+    if (tab) tab->setBucketMode(false);
     if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
     if (tab) tab->setColorRangePickMode(false);
     if (m_toolOptionsBar) m_toolOptionsBar->setVisible(false);

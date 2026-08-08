@@ -95,6 +95,7 @@ signals:
     // its own signal. shapeType is only meaningful when type == Shape.
     void addLayerRequested(MaskType type, ShapeType shapeType = ShapeType::Rectangle);
     void addImageLayerRequested(const QString &path); // "Add Image Layer…" chosen a file
+    void addSvgLayerRequested(const QString &path); // "Add SVG Layer…" chosen a file
     void selectMaskRequested(int index);
     void deleteMaskRequested();
     void duplicateMaskRequested();

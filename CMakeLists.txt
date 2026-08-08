@@ -11,7 +11,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent Svg)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GPHOTO2 REQUIRED IMPORTED_TARGET libgphoto2)
 pkg_check_modules(LIBRAW REQUIRED IMPORTED_TARGET libraw)
@@ -40,6 +40,7 @@ add_executable(photonloom
     src/ui/ColorSwatchWidget.cpp
     src/ui/ToolFlyout.cpp
     src/ui/AppIcon.cpp
+    src/ui/BrushPresetMenuButton.cpp
     src/edit/Adjustments.cpp
     src/edit/RawLoader.cpp
     src/edit/ImageCanvas.cpp
@@ -47,6 +48,7 @@ add_executable(photonloom
     src/edit/RetouchWindow.cpp
     src/edit/ExportPreset.cpp
     src/edit/AdjustmentPreset.cpp
+    src/edit/BrushPreset.cpp
     src/edit/RecentSessions.cpp
     src/edit/RecentFiles.cpp
     src/edit/RecentProjects.cpp
@@ -60,11 +62,15 @@ add_executable(photonloom
     src/edit/InpaintTool.cpp
     src/edit/NewDocumentDialog.cpp
     src/edit/NewDocumentSize.cpp
+    src/svg/SvgEditorTab.cpp
+    src/svg/SvgCanvas.cpp
+    src/svg/SvgRender.cpp
+    src/svg/SvgFileIO.cpp
 )
 
 target_include_directories(photonloom PRIVATE src)
 target_link_libraries(photonloom PRIVATE
-    Qt6::Widgets Qt6::Concurrent PkgConfig::GPHOTO2 PkgConfig::LIBRAW PkgConfig::LIBZIP)
+    Qt6::Widgets Qt6::Concurrent Qt6::Svg PkgConfig::GPHOTO2 PkgConfig::LIBRAW PkgConfig::LIBZIP)
 
 # `sudo cmake --install build` copies the binary to ${CMAKE_INSTALL_PREFIX}/bin
 # (default /usr/local/bin).
@@ -129,7 +135,7 @@ add_executable(layer_reorder_test
     src/edit/InpaintTool.cpp
 )
 target_include_directories(layer_reorder_test PRIVATE src)
-target_link_libraries(layer_reorder_test PRIVATE Qt6::Widgets Qt6::Concurrent PkgConfig::LIBRAW PkgConfig::LIBZIP)
+target_link_libraries(layer_reorder_test PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Svg PkgConfig::LIBRAW PkgConfig::LIBZIP)
 target_compile_options(layer_reorder_test PRIVATE -UNDEBUG)
 add_test(NAME layer_reorder_test COMMAND layer_reorder_test)
 set_tests_properties(layer_reorder_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

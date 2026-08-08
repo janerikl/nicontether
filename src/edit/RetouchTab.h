@@ -139,6 +139,15 @@ public:
     // type == MaskType::Shape (sets Mask::shapeType on the new layer).
     int addMask(MaskType type, ShapeType shapeType = ShapeType::Rectangle);
     int addImageLayer(const QString &path); // append an image layer; returns its index
+    // Rasterizes an .svg file via QSvgRenderer and adds it as an image layer
+    // through the same path as addImageLayer(); returns its index, or -1 if
+    // the file couldn't be parsed/rendered.
+    int addSvgLayer(const QString &svgPath);
+    // Adds an already-rendered image (e.g. from SvgEditorWindow's "Send to
+    // Retouch as Layer") as an image layer, saving it as a managed PNG asset
+    // first so it goes through the same addImageLayer path as any other
+    // image layer.
+    int addImageLayerFromImage(const QImage &image, const QString &suggestedName);
     // Photoshop-style Ctrl/Alt+Backspace: flat-fills the active layer with
     // `color`. Background -> inserts a new full-canvas Paint layer above it;
     // Paint -> appends full coverage to its existing stroke. No-op for mask

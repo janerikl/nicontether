@@ -115,6 +115,59 @@ const QCursor &pipetteCursor() {
     }();
     return c;
 }
+
+// A paint-bucket cursor for the flood-fill tool: a tilted bucket silhouette
+// with a paint droplet falling from the spout, tip pointing down-left to
+// where the fill originates.
+const QCursor &bucketCursor() {
+    static const QCursor c = [] {
+        constexpr int px = 32;
+        QPixmap pm(px, px);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        // Build the bucket in local space, then rotate to a natural pour angle.
+        QPainterPath body;
+        body.moveTo(-9, -6);
+        body.lineTo(9, -6);
+        body.lineTo(6, 8);
+        body.lineTo(-6, 8);
+        body.closeSubpath();
+
+        QPainterPath handle;
+        handle.addRoundedRect(QRectF(-6, -12, 12, 8), 5, 5);
+
+        QTransform t;
+        t.translate(15, 10);
+        t.rotate(-30);
+        QPainterPath outline = t.map(body);
+        QPainterPath handleOutline = t.map(handle);
+
+        p.setPen(QPen(Qt::white, 2.2));
+        p.setBrush(Qt::black);
+        p.drawPath(outline);
+
+        p.setBrush(Qt::NoBrush);
+        p.drawPath(handleOutline);
+
+        // Paint droplet falling from the spout toward the cursor tip.
+        QPainterPath drop;
+        drop.moveTo(-1.5, 0);
+        drop.cubicTo(-3, 3, -3, 6, 0, 6);
+        drop.cubicTo(3, 6, 3, 3, 1.5, 0);
+        drop.closeSubpath();
+        QTransform dt;
+        dt.translate(3, 24);
+        p.setPen(QPen(Qt::white, 1.4));
+        p.setBrush(Qt::black);
+        p.drawPath(dt.map(drop));
+
+        p.end();
+        return QCursor(pm, 2, 30);
+    }();
+    return c;
+}
 }
 
 ImageCanvas::ImageCanvas(QWidget *parent) : QWidget(parent) {
@@ -167,7 +220,7 @@ void ImageCanvas::setPickMode(bool on) {
 
 void ImageCanvas::setBucketMode(bool on) {
     m_bucketMode = on;
-    if (on) setCursor(Qt::PointingHandCursor);
+    if (on) setCursor(bucketCursor());
     else setCursor(m_cropMode ? Qt::CrossCursor : Qt::ArrowCursor);
 }
 
@@ -2194,6 +2247,12 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
     } else if (m_marquee) {
         m_mp1 = ev->pos();
         update();
+    } else if (m_bucketMode) {
+        // Re-assert the bucket cursor on every hover so nothing (mask-panel
+        // refresh, focus changes, etc.) can silently revert it to the arrow
+        // between fills; the tool otherwise stays active until the user
+        // explicitly switches tools or presses Esc.
+        setCursor(bucketCursor());
     } else if (m_cropMode) {
         Handle h = handleAt(ev->pos());
         Qt::CursorShape c = Qt::CrossCursor;

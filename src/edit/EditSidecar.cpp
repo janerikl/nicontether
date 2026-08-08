@@ -190,6 +190,16 @@ QJsonObject adjustmentsToJson(const Adjustments &a) {
             j["hardness"] = m.hardness;
             j["autoMask"] = m.autoMask;
             j["paintColor"] = m.paintColor.name(QColor::HexArgb);
+            // Paint bucket result, embedded as base64 PNG (same convention as
+            // RemoveObjectOp::mask/fill below) so it round-trips exactly
+            // instead of needing to be recomputed from a click point.
+            if (!m.fillMask.isNull()) {
+                QByteArray fillBytes;
+                QBuffer fillBuf(&fillBytes);
+                fillBuf.open(QIODevice::WriteOnly);
+                m.fillMask.save(&fillBuf, "PNG");
+                j["fillMask"] = QString::fromLatin1(fillBytes.toBase64());
+            }
             j["text"] = m.text;
             j["textFamily"] = m.textFamily;
             j["textPixelSize"] = m.textPixelSize;
@@ -402,6 +412,10 @@ Adjustments adjustmentsFromJson(const QJsonObject &o) {
         m.hardness = j["hardness"].toDouble(0.5);
         m.autoMask = j["autoMask"].toBool(false);
         m.paintColor = QColor(j["paintColor"].toString(QStringLiteral("#ff000000")));
+        if (j.contains("fillMask")) {
+            const QByteArray fillBytes = QByteArray::fromBase64(j["fillMask"].toString().toLatin1());
+            if (!fillBytes.isEmpty()) m.fillMask.loadFromData(fillBytes, "PNG");
+        }
         m.text = j["text"].toString();
         m.textFamily = j["textFamily"].toString(QStringLiteral("Sans Serif"));
         m.textPixelSize = j["textPixelSize"].toDouble(0.08);
