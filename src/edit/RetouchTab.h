@@ -8,6 +8,7 @@
 #include <QSet>
 #include <QMap>
 #include <QList>
+#include <QPainterPath>
 
 #include "edit/Adjustments.h"
 
@@ -82,6 +83,21 @@ public:
     void setMaskForceErase(bool on); // E toggle while a Paint mask is active
     void setEraseBrush(int radiusDisplayPx);
     void setBucketMode(bool on); // paint bucket: single click flood-fills the active Paint layer
+
+    // Selection tools: marquee/lasso/magic-wand build an active selection
+    // region on the canvas; paint/erase/bucket clip their writes to it (see
+    // onMaskBrushPoint/onEraseAt/onBucketFillRequested).
+    void setSelectMarqueeMode(bool on);
+    void setSelectLassoMode(bool on);
+    void setSelectMagicWandMode(bool on);
+    void setMagicWandTolerance(int tolerance);
+    void clearActiveSelection();
+    bool hasActiveSelection() const { return m_hasSelection; }
+
+    // Clone stamp: paints into the active Paint-type layer (auto-created if
+    // needed, same as Pen/Brush), sampling per-dab color from the pre-
+    // adjustment source image (m_geomImg) at the offset source point.
+    void setCloneMode(bool on);
 
     // Remove Object tool: paint a stroke over an unwanted object; on stroke
     // release, a content-aware fill (InpaintTool) is computed once and
@@ -320,6 +336,10 @@ private slots:
     void onBucketFillRequested(const QPointF &ptNorm);
     void onMaskEditFinished();
     void onQuickColorPicked(const QColor &c);
+    void onSelectionPathChanged(const QPainterPath &pathNorm, bool hasSelection);
+    void onCloneStrokePoint(const QPointF &ptNorm, const QPointF &sourceNorm, bool newStroke,
+                            double pressure);
+    void onCloneFinished();
 
 private:
     void rebuildGeom();  // recompute oriented(+crop) full image + display base
@@ -420,6 +440,12 @@ private:
     // far; committed as a new RemoveObjectOp on release.
     QVector<QPointF> m_removeObjectStroke;
     QImage m_removeObjectMaskDraft; // full oriented-image size, alpha = coverage so far
+    // Mirrors ImageCanvas's active selection (see onSelectionPathChanged),
+    // width-normalized. Paint/erase/bucket handlers clip to this when set.
+    QPainterPath m_selectionPath;
+    bool m_hasSelection = false;
+    bool m_selectionStrokeBroken = false; // a brush/pen dab was just skipped for being outside the selection
+    bool m_cloneStrokeBroken = false; // same idea as m_selectionStrokeBroken, for Clone dabs
     bool m_removeObjectDragging = false;
     double m_removeObjectRadiusUsed = 24.0; // last dab's radius (oriented-image px), for the new op
     // The content-aware fill for a committed stroke runs on a QtConcurrent

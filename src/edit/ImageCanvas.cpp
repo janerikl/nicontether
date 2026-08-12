@@ -675,6 +675,118 @@ void ImageCanvas::setZoomMode(bool on) {
     else setCursor(Qt::ArrowCursor);
 }
 
+void ImageCanvas::setSelectMarqueeMode(bool on) {
+    m_selectMarqueeMode = on;
+    if (!on) m_selectDrag = SelectDrag::None;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+void ImageCanvas::setSelectLassoMode(bool on) {
+    m_selectLassoMode = on;
+    if (!on) { m_selectDrag = SelectDrag::None; m_lassoPolygonWidget.clear(); }
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+void ImageCanvas::setSelectMagicWandMode(bool on) {
+    m_selectMagicWandMode = on;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+void ImageCanvas::setMagicWandTolerance(int tolerance) {
+    m_magicWandTolerance = std::clamp(tolerance, 0, 255);
+}
+
+void ImageCanvas::setCloneMode(bool on) {
+    m_cloneMode = on;
+    if (!on) m_cloneDragging = false;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+void ImageCanvas::clearActiveSelection() {
+    if (!m_hasSelection) return;
+    m_selectionPath = QPainterPath();
+    m_hasSelection = false;
+    emit selectionPathChanged(m_selectionPath, m_hasSelection);
+    update();
+}
+
+// Inverse of normPointAt(): maps a width-normalized point (both axes scaled
+// by image width, per maskBrushPoint's convention) to widget coordinates.
+QTransform ImageCanvas::normToWidgetTransform() const {
+    QRect tr = targetRect();
+    if (m_img.isNull() || m_img.height() <= 0) return QTransform();
+    double sx = tr.width();                                   // norm.x() * imgW * (trW/imgW)
+    double sy = double(m_img.width()) * tr.height() / m_img.height(); // norm.y() * imgW * (trH/imgH)
+    QTransform t;
+    t.translate(tr.x(), tr.y());
+    t.scale(sx, sy);
+    return t;
+}
+
+// Flood-fills from (seedPx, seedPy) over m_img, growing while each candidate
+// pixel's per-channel distance from the seed color is within `tolerance`.
+// Returns the result as a width-normalized QPainterPath built from one rect
+// per contiguous horizontal run (keeps the path's subpath count reasonable
+// instead of one rect per pixel).
+QPainterPath ImageCanvas::magicWandPath(int seedPx, int seedPy, int tolerance) const {
+    QPainterPath path;
+    if (m_img.isNull()) return path;
+    const int w = m_img.width(), h = m_img.height();
+    if (seedPx < 0 || seedPx >= w || seedPy < 0 || seedPy >= h) return path;
+    const QRgb seed = m_img.pixel(seedPx, seedPy);
+    auto matches = [&](QRgb c) {
+        return std::abs(qRed(c) - qRed(seed)) <= tolerance &&
+               std::abs(qGreen(c) - qGreen(seed)) <= tolerance &&
+               std::abs(qBlue(c) - qBlue(seed)) <= tolerance;
+    };
+    QVector<bool> visited(w * h, false);
+    QVector<QPoint> stack;
+    stack.reserve(1024);
+    stack.append(QPoint(seedPx, seedPy));
+    visited[seedPy * w + seedPx] = true;
+    const double W = w;
+    while (!stack.isEmpty()) {
+        QPoint p = stack.takeLast();
+        int y = p.y();
+        const uchar *row = m_img.constScanLine(y);
+        // Grow this row's run left/right from p.x(), matching contiguously.
+        int xL = p.x(), xR = p.x();
+        while (xL > 0 && !visited[y * w + (xL - 1)] &&
+               matches(reinterpret_cast<const QRgb *>(row)[xL - 1]))
+            visited[y * w + (--xL)] = true;
+        while (xR < w - 1 && !visited[y * w + (xR + 1)] &&
+               matches(reinterpret_cast<const QRgb *>(row)[xR + 1]))
+            visited[y * w + (++xR)] = true;
+        path.addRect(QRectF(xL / W, y / W, (xR - xL + 1) / W, 1.0 / W));
+        // Queue matching, unvisited pixels directly above/below this run.
+        for (int x = xL; x <= xR; ++x) {
+            for (int ny : {y - 1, y + 1}) {
+                if (ny < 0 || ny >= h) continue;
+                if (visited[ny * w + x]) continue;
+                if (!matches(m_img.pixel(x, ny))) continue;
+                visited[ny * w + x] = true;
+                stack.append(QPoint(x, ny));
+            }
+        }
+    }
+    return path;
+}
+
+void ImageCanvas::applySelectionOp(const QPainterPath &opPath, Qt::KeyboardModifiers mods) {
+    if (mods & Qt::ShiftModifier)
+        m_selectionPath = m_hasSelection ? m_selectionPath.united(opPath) : opPath;
+    else if (mods & Qt::AltModifier)
+        m_selectionPath = m_hasSelection ? m_selectionPath.subtracted(opPath) : QPainterPath();
+    else
+        m_selectionPath = opPath;
+    m_hasSelection = !m_selectionPath.isEmpty();
+    emit selectionPathChanged(m_selectionPath, m_hasSelection);
+}
+
 void ImageCanvas::setMaskMode(MaskType kind, bool on) {
     m_maskMode = on;
     m_maskKind = kind;
@@ -1383,6 +1495,53 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         p.drawRect(rect().adjusted(2, 2, -2, -2));
     }
 
+    // Clone stamp source marker: a small crosshair at the sampled point.
+    if (m_cloneMode && m_cloneSourceNorm.x() >= 0 && !m_img.isNull()) {
+        QPointF src = normToWidgetTransform().map(
+            m_cloneDragging ? QPointF(m_lastCloneNorm + m_cloneOffsetNorm) : m_cloneSourceNorm);
+        p.save();
+        p.setPen(QPen(Qt::white, 1.5));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(src, 6, 6);
+        p.drawLine(src + QPointF(-9, 0), src + QPointF(9, 0));
+        p.drawLine(src + QPointF(0, -9), src + QPointF(0, 9));
+        p.restore();
+    }
+
+    // Active selection: marching-ants-style outline (two dashed passes with
+    // an offset dash pattern) plus a faint fill so the selected region reads
+    // clearly even when the outline is hard to see against busy content.
+    if (m_hasSelection && !m_img.isNull()) {
+        QPainterPath widgetPath = normToWidgetTransform().map(m_selectionPath);
+        p.save();
+        p.setBrush(QColor(255, 255, 255, 24));
+        p.setPen(Qt::NoPen);
+        p.drawPath(widgetPath);
+        QPen ants(Qt::black, 1, Qt::DashLine);
+        p.setBrush(Qt::NoBrush);
+        p.setPen(ants);
+        p.drawPath(widgetPath);
+        QPen antsInverse(Qt::white, 1, Qt::DashLine);
+        antsInverse.setDashOffset(4);
+        p.setPen(antsInverse);
+        p.drawPath(widgetPath);
+        p.restore();
+    }
+    // Live preview of an in-progress marquee/lasso drag.
+    if (m_selectDrag == SelectDrag::Marquee) {
+        p.save();
+        p.setPen(QPen(Qt::white, 1, Qt::DashLine));
+        p.setBrush(Qt::NoBrush);
+        p.drawRect(QRect(m_selectDragStartWidget, m_selectDragCurrentWidget).normalized());
+        p.restore();
+    } else if (m_selectDrag == SelectDrag::Lasso && m_lassoPolygonWidget.size() >= 2) {
+        p.save();
+        p.setPen(QPen(Qt::white, 1, Qt::DashLine));
+        p.setBrush(Qt::NoBrush);
+        p.drawPolyline(m_lassoPolygonWidget);
+        p.restore();
+    }
+
     if (m_showRulers && !m_img.isNull()) {
         drawGuides(p);
         if (m_guideDrag == GuideDrag::NewH) {
@@ -1809,8 +1968,11 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         else if (m_maskKind == MaskType::Linear)
             emit maskLinearDragged(n, n);
         else {
+            // Ctrl+click with an existing stroke point: connect a straight
+            // line from the last point instead of starting a fresh stroke.
+            bool straightLine = (ev->modifiers() & Qt::ControlModifier) && m_lastBrushNorm.x() >= 0;
             m_lastBrushNorm = n;
-            emit maskBrushPoint(n, m_maskErasing, true, 1.0);
+            emit maskBrushPoint(n, m_maskErasing, !straightLine, 1.0);
         }
         update();
         return;
@@ -1835,6 +1997,49 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         m_lastRemoveObjectNorm = n;
         m_mousePos = ev->pos();
         emit removeObjectAt(n);
+        update();
+        return;
+    }
+
+    // Clone stamp: Alt+click sets the source point; a plain drag paints,
+    // sampling from source + (current - firstDragPoint).
+    if (m_cloneMode && ev->button() == Qt::LeftButton) {
+        QPointF n = normPointAt(ev->pos());
+        if (ev->modifiers() & Qt::AltModifier) {
+            m_cloneSourceNorm = n;
+            emit cloneSourcePicked(n);
+            update();
+            return;
+        }
+        if (m_cloneSourceNorm.x() < 0) return; // Alt+click a source first
+        m_cloneOffsetNorm = m_cloneSourceNorm - n;
+        m_cloneDragging = true;
+        m_lastCloneNorm = n;
+        emit cloneStrokePoint(n, n + m_cloneOffsetNorm, true, 1.0);
+        update();
+        return;
+    }
+
+    // Selection tools: marquee/lasso drag out a new region; magic wand is a
+    // single click. Shift adds to the existing selection, Alt subtracts.
+    if (m_selectMarqueeMode && ev->button() == Qt::LeftButton) {
+        m_selectDrag = SelectDrag::Marquee;
+        m_selectDragStartWidget = m_selectDragCurrentWidget = ev->pos();
+        update();
+        return;
+    }
+    if (m_selectLassoMode && ev->button() == Qt::LeftButton) {
+        m_selectDrag = SelectDrag::Lasso;
+        m_lassoPolygonWidget.clear();
+        m_lassoPolygonWidget << ev->pos();
+        update();
+        return;
+    }
+    if (m_selectMagicWandMode && ev->button() == Qt::LeftButton) {
+        QPointF n = normPointAt(ev->pos());
+        int px = std::clamp(int(std::lround(n.x() * m_img.width())), 0, m_img.width() - 1);
+        int py = std::clamp(int(std::lround(n.y() * m_img.width())), 0, m_img.height() - 1);
+        applySelectionOp(magicWandPath(px, py, m_magicWandTolerance), ev->modifiers());
         update();
         return;
     }
@@ -1954,6 +2159,27 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
     }
     if (m_colorRangeDragging) {
         emit colorRangeDragged(ev->pos().x() - m_colorRangeStart.x());
+        update();
+        return;
+    }
+    if (m_cloneDragging) {
+        m_mousePos = ev->pos();
+        QPointF n = normPointAt(ev->pos());
+        double dx = n.x() - m_lastCloneNorm.x(), dy = n.y() - m_lastCloneNorm.y();
+        if (dx * dx + dy * dy > 0.004 * 0.004) { // throttle stroke samples, matches mask-brush dragging
+            m_lastCloneNorm = n;
+            emit cloneStrokePoint(n, n + m_cloneOffsetNorm, false, 1.0);
+        }
+        update();
+        return;
+    }
+    if (m_selectDrag == SelectDrag::Marquee) {
+        m_selectDragCurrentWidget = ev->pos();
+        update();
+        return;
+    }
+    if (m_selectDrag == SelectDrag::Lasso) {
+        m_lassoPolygonWidget << ev->pos();
         update();
         return;
     }
@@ -2473,6 +2699,41 @@ void ImageCanvas::tabletEvent(QTabletEvent *ev) {
 }
 
 void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
+    if (m_cloneDragging && ev->button() == Qt::LeftButton) {
+        m_cloneDragging = false;
+        emit cloneFinished();
+        update();
+        return;
+    }
+    if (m_selectDrag == SelectDrag::Marquee && ev->button() == Qt::LeftButton) {
+        m_selectDrag = SelectDrag::None;
+        QRect r = QRect(m_selectDragStartWidget, m_selectDragCurrentWidget).normalized();
+        QPainterPath opPath;
+        if (!r.isEmpty()) {
+            QPointF n0 = normPointAt(r.topLeft());
+            QPointF n1 = normPointAt(r.bottomRight());
+            opPath.addRect(QRectF(n0, n1).normalized());
+        }
+        applySelectionOp(opPath, ev->modifiers());
+        update();
+        return;
+    }
+    if (m_selectDrag == SelectDrag::Lasso && ev->button() == Qt::LeftButton) {
+        m_selectDrag = SelectDrag::None;
+        QPainterPath opPath;
+        if (m_lassoPolygonWidget.size() >= 3) {
+            QPolygonF polyNorm;
+            polyNorm.reserve(m_lassoPolygonWidget.size());
+            for (const QPointF &wp : m_lassoPolygonWidget)
+                polyNorm << normPointAt(wp.toPoint());
+            opPath.addPolygon(polyNorm);
+            opPath.closeSubpath();
+        }
+        m_lassoPolygonWidget.clear();
+        applySelectionOp(opPath, ev->modifiers());
+        update();
+        return;
+    }
     if (m_quickColorPicking && ev->button() == Qt::RightButton) {
         m_quickColorPicking = false;
         m_suppressNextContextMenu = true; // swallow the native RMB-release context menu
@@ -2720,6 +2981,11 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
 }
 
 void ImageCanvas::keyPressEvent(QKeyEvent *ev) {
+    if (ev->key() == Qt::Key_Escape && m_hasSelection) {
+        clearActiveSelection();
+        ev->accept();
+        return;
+    }
     if (m_cropMode && (ev->key() == Qt::Key_Return || ev->key() == Qt::Key_Enter) &&
         !selectionInImage().isEmpty()) {
         emit commitCropRequested();

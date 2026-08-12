@@ -19,6 +19,7 @@ class QTabWidget;
 class QSlider;
 class QPushButton;
 class QToolButton;
+class QAbstractButton;
 class QCheckBox;
 class FlyoutToolButton;
 class QLabel;
@@ -241,6 +242,14 @@ private:
     class QDoubleSpinBox *m_shapeStrokeWidth = nullptr;
     QPushButton *m_shapeDelete = nullptr;
     void updateShapeOptionsFromTab(); // refresh the shape options row from the active/selected shape
+
+    QToolButton *m_selectMarqueeToggle = nullptr; // left icon bar: rectangular selection
+    QToolButton *m_selectLassoToggle = nullptr;   // left icon bar: freehand-polygon selection
+    QToolButton *m_selectWandToggle = nullptr;    // left icon bar: magic-wand (color-similarity) selection
+    QSlider *m_wandTolerance = nullptr;
+    QToolButton *m_cloneToggle = nullptr; // left icon bar: clone-stamp tool (requires a Paint layer already selected)
+    QSlider *m_cloneSize = nullptr;
+    QSlider *m_cloneHardness = nullptr;
     ColorSwatchWidget *m_colorSwatch = nullptr; // left icon bar: fg/bg color swatch
     QDockWidget *m_layersDock = nullptr;
     LayersPanel *m_layersPanel = nullptr;
@@ -253,6 +262,11 @@ private:
     void openMaskFlyout();       // pop the subtool strip next to the mask button
     void setMaskSubtool(MaskType t); // set active subtool + refresh tool glyph
     void addActiveMask();        // create a mask of the active subtool
+    // Shared mutual-exclusion helpers used by every left-bar tool toggle's
+    // toggled(true) handler, replacing what used to be an identical
+    // QSignalBlocker/setXMode(false) block copy-pasted per tool.
+    void deactivateOtherToolButtons(QAbstractButton *keep);
+    void deactivateAllToolModes(RetouchTab *tab);
     QLabel *m_statusLabel = nullptr;
     class QAction *m_undoAction = nullptr;
     class QAction *m_redoAction = nullptr;

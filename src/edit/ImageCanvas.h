@@ -10,6 +10,8 @@
 #include <QElapsedTimer>
 #include <QSet>
 #include <QList>
+#include <QPainterPath>
+#include <QPolygonF>
 
 #include "edit/Adjustments.h"
 
@@ -105,6 +107,28 @@ public:
 
     void setZoomMode(bool on); // zoom tool: enables marquee-drag zoom + Ctrl+wheel
     void setBrushRadius(int displayPx);
+
+    // Selection tools: build/replace an active selection region that other
+    // tools (brush/pen, erase, paint bucket) clip their writes to. All three
+    // are mutually exclusive with each other and with every other tool mode,
+    // same as setHealMode/setShapeMode/etc. The active selection itself
+    // persists across tool switches until cleared.
+    void setSelectMarqueeMode(bool on); // drag a rectangle
+    void setSelectLassoMode(bool on);   // drag a freehand polygon
+    void setSelectMagicWandMode(bool on); // click: flood-fill by color similarity
+    void setMagicWandTolerance(int tolerance); // 0..255 per-channel distance
+    // Clears the active selection (Deselect action / Esc).
+    void clearActiveSelection();
+    bool hasActiveSelection() const { return m_hasSelection; }
+    // Current selection region, width-normalized (same convention as
+    // maskBrushPoint/maskRadialDragged etc: both axes divided by image width).
+    QPainterPath selectionPathNorm() const { return m_selectionPath; }
+
+    // Clone stamp: Alt+click sets the source point; subsequent drag strokes
+    // sample from source + (current - firstDragPoint), same convention as
+    // Photoshop. Respects the active selection as a clip (enforced by
+    // RetouchTab, same as Brush/Erase).
+    void setCloneMode(bool on);
 
     // Click-to-select fallback: bounding rects (same display-image pixel
     // space as ShapeMarker/TextMarker) for Paint layers and image layers,
@@ -254,6 +278,18 @@ signals:
     // Adjustments::masks index the same way onShapeSelected/onTextSelected do.
     void objectClicked(MaskType type, int markerIndex);
 
+    // Fires whenever the active selection region changes (drag committed,
+    // magic-wand click, or Deselect/Esc). `pathNorm` uses the same
+    // width-normalized convention as maskBrushPoint/maskRadialDragged.
+    void selectionPathChanged(const QPainterPath &pathNorm, bool hasSelection);
+
+    // Clone stamp. `ptNorm`/`sourceNorm` are width-normalized, same
+    // convention as maskBrushPoint. `sourceSet` fires on Alt+click.
+    void cloneSourcePicked(const QPointF &sourceNorm);
+    void cloneStrokePoint(const QPointF &ptNorm, const QPointF &sourceNorm, bool newStroke,
+                          double pressure);
+    void cloneFinished(); // drag released -> commit history
+
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
     void paintEvent(QPaintEvent *) override;
@@ -312,6 +348,13 @@ private:
 
     int paintMarkerAt(const QPoint &pos) const; // which Paint-layer bounding box is under pos, or -1
     int imageLayerMarkerAt(const QPoint &pos) const; // which image-layer bounding box is under pos, or -1
+
+    // Selection tools.
+    QTransform normToWidgetTransform() const; // inverse of normPointAt, for drawing/hit-testing
+    QPainterPath magicWandPath(int seedPx, int seedPy, int tolerance) const;
+    // Combines `opPath` (already width-normalized) into m_selectionPath per
+    // modifier keys: Shift = add, Alt = subtract, neither = replace.
+    void applySelectionOp(const QPainterPath &opPath, Qt::KeyboardModifiers mods);
 
     void relayoutFit();  // recompute scale/offset to fit + centre
     void zoomTo(double newScale, const QPointF &anchorWidgetPos);
@@ -406,6 +449,25 @@ private:
     int m_activeRemovalIndex = -1;
     bool m_zoomMode = false; // gates marquee-drag zoom + Ctrl+wheel zoom
     int m_brushRadius = 20; // display px, for the brush cursor
+
+    // Selection tool state.
+    bool m_selectMarqueeMode = false;
+    bool m_selectLassoMode = false;
+    bool m_selectMagicWandMode = false;
+    int m_magicWandTolerance = 32; // 0..255 per-channel color distance
+    QPainterPath m_selectionPath; // width-normalized, see selectionPathNorm()
+    bool m_hasSelection = false;
+    enum class SelectDrag { None, Marquee, Lasso };
+    SelectDrag m_selectDrag = SelectDrag::None;
+    QPoint m_selectDragStartWidget, m_selectDragCurrentWidget; // marquee, widget px
+    QPolygonF m_lassoPolygonWidget; // lasso, widget px, accumulated while dragging
+
+    // Clone stamp state.
+    bool m_cloneMode = false;
+    bool m_cloneDragging = false;
+    QPointF m_cloneSourceNorm{-1, -1}; // set via Alt+click; (-1,-1) = unset
+    QPointF m_cloneOffsetNorm{0, 0};   // source - firstDragPoint, captured at drag start
+    QPointF m_lastCloneNorm{-1, -1};   // throttles stroke samples, same pattern as m_lastBrushNorm
 
     // Local-mask editing state.
     bool m_maskMode = false;

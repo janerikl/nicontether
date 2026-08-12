@@ -221,6 +221,9 @@ void RetouchTab::setupCanvasAndWiring() {
     connect(m_canvas, &ImageCanvas::maskBrushPoint, this, &RetouchTab::onMaskBrushPoint);
     connect(m_canvas, &ImageCanvas::bucketFillRequested, this, &RetouchTab::onBucketFillRequested);
     connect(m_canvas, &ImageCanvas::maskEditFinished, this, &RetouchTab::onMaskEditFinished);
+    connect(m_canvas, &ImageCanvas::selectionPathChanged, this, &RetouchTab::onSelectionPathChanged);
+    connect(m_canvas, &ImageCanvas::cloneStrokePoint, this, &RetouchTab::onCloneStrokePoint);
+    connect(m_canvas, &ImageCanvas::cloneFinished, this, &RetouchTab::onCloneFinished);
     connect(m_canvas, &ImageCanvas::imageLayerDropped, this, &RetouchTab::addImageLayer);
     connect(m_canvas, &ImageCanvas::maskBrushRadiusChanged, this, [this](double r) {
         if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
@@ -930,6 +933,41 @@ void RetouchTab::setMaskForceErase(bool on) {
 void RetouchTab::setBucketMode(bool on) {
     m_canvas->setBucketMode(on);
     if (on) m_canvas->setFocus();
+}
+
+void RetouchTab::setSelectMarqueeMode(bool on) {
+    m_canvas->setSelectMarqueeMode(on);
+    if (on) m_canvas->setFocus();
+}
+
+void RetouchTab::setSelectLassoMode(bool on) {
+    m_canvas->setSelectLassoMode(on);
+    if (on) m_canvas->setFocus();
+}
+
+void RetouchTab::setSelectMagicWandMode(bool on) {
+    m_canvas->setSelectMagicWandMode(on);
+    if (on) m_canvas->setFocus();
+}
+
+void RetouchTab::setMagicWandTolerance(int tolerance) {
+    m_canvas->setMagicWandTolerance(tolerance);
+}
+
+void RetouchTab::clearActiveSelection() {
+    m_canvas->clearActiveSelection();
+}
+
+void RetouchTab::setCloneMode(bool on) {
+    m_canvas->setCloneMode(on);
+    if (on) m_canvas->setFocus();
+}
+
+// Mirrors ImageCanvas's selection so tool handlers below (paint/erase/bucket)
+// can clip their writes to it without round-tripping through the canvas.
+void RetouchTab::onSelectionPathChanged(const QPainterPath &pathNorm, bool hasSelection) {
+    m_selectionPath = pathNorm;
+    m_hasSelection = hasSelection;
 }
 
 void RetouchTab::setEraseBrush(int radiusDisplayPx) {
@@ -1892,6 +1930,7 @@ void RetouchTab::onHealAt(const QPoint &imgPoint) {
 // final compositing weight, not just image-layer pixels.
 void RetouchTab::onEraseAt(const QPointF &ptNorm) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    if (m_hasSelection && !m_selectionPath.contains(ptNorm)) return;
     Mask &m = m_adj.masks[m_activeMask];
     double radiusNorm = (m_scaled.isNull() || m_scaled.width() <= 0)
                              ? 0.06
@@ -1901,6 +1940,39 @@ void RetouchTab::onEraseAt(const QPointF &ptNorm) {
 }
 
 void RetouchTab::onEraseFinished() {
+    markEdited(); // schedule one coalesced undo step for the whole drag
+}
+
+// A clone-stamp dab: samples one pixel color from the pre-adjustment source
+// image (m_geomImg) at `sourceNorm` and bakes it into a BrushStrokePoint —
+// the same per-dab-baked-color mechanism Brush/Pen already use (see
+// onMaskBrushPoint), just with a per-dab sampled color instead of one fixed
+// foreground color. This reproduces the source's broad color/tone but not
+// its fine texture — rasterizeBrush (Adjustments.cpp) samples per-pixel from
+// the composite-so-far reference image at (pixel + offset) for isClone dabs,
+// rather than filling the whole dab with one flat baked color.
+void RetouchTab::onCloneStrokePoint(const QPointF &ptNorm, const QPointF &sourceNorm,
+                                    bool newStroke, double pressure) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    if (m.type != MaskType::Paint) return;
+    if (m_hasSelection && !m_selectionPath.contains(ptNorm)) {
+        m_cloneStrokeBroken = true; // re-entering the selection starts a fresh dab, not a connecting line
+        return;
+    }
+    if (m_cloneStrokeBroken) { newStroke = true; m_cloneStrokeBroken = false; }
+    BrushStrokePoint sp{ptNorm, false, m.brushRadius, m.hardness, m.paintColor.rgb(), newStroke};
+    sp.pressure = pressure;
+    sp.isPen = false;
+    sp.penGrade = m.penGrade;
+    sp.isClone = true;
+    sp.cloneSourcePt = sourceNorm;
+    m.stroke.append(sp);
+    pushMaskGizmo();
+    retoneDrag(newStroke);
+}
+
+void RetouchTab::onCloneFinished() {
     markEdited(); // schedule one coalesced undo step for the whole drag
 }
 
@@ -2621,6 +2693,11 @@ void RetouchTab::onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm) {
 
 void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke, double pressure) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    if (m_hasSelection && !m_selectionPath.contains(ptNorm)) {
+        m_selectionStrokeBroken = true; // re-entering the selection should start a fresh dab, not connect across the gap
+        return;
+    }
+    if (m_selectionStrokeBroken) { newStroke = true; m_selectionStrokeBroken = false; }
     Mask &m = m_adj.masks[m_activeMask];
     // Bake in the brush size/hardness/(paint) color at paint time so later
     // changes only affect new dabs, not ones already committed to the stroke.
@@ -2650,6 +2727,12 @@ void RetouchTab::setActivePenGrade(double grade) {
 
 void RetouchTab::onBucketFillRequested(const QPointF &ptNorm) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    // Gates the click itself; doesn't clip the flood-fill's grown region to
+    // the selection boundary (that would need threading the selection mask
+    // into bucketFillPaintMask's region-growing loop) — a click just outside
+    // the selection is rejected, but a fill that starts inside can still
+    // spread past the selection edge if the underlying colors are similar.
+    if (m_hasSelection && !m_selectionPath.contains(ptNorm)) return;
     Mask &m = m_adj.masks[m_activeMask];
     if (m.type != MaskType::Paint || m_geomImg.isNull()) return;
     // Flood-fill at a capped working resolution (full geom resolution can be

@@ -175,9 +175,18 @@ struct BrushStrokePoint {
     bool isPen = false;
     double penGrade = 0.0; // -6.0(6B)..5.0(5H), see rasterizeBrush's penParams
 
+    // Clone-stamp dab: instead of filling with a flat `color`, rasterizeBrush
+    // samples per-pixel from the composite-so-far reference image (`ref`),
+    // offset by (cloneSourcePt - pt) — so the dab reproduces the source's
+    // actual texture, not a single averaged color. `color` is unused when
+    // this is true.
+    bool isClone = false;
+    QPointF cloneSourcePt; // width-normalized, same convention as pt
+
     bool operator==(const BrushStrokePoint &o) const {
         return pt == o.pt && erase == o.erase && color == o.color &&
-               newStroke == o.newStroke && isPen == o.isPen &&
+               newStroke == o.newStroke && isPen == o.isPen && isClone == o.isClone &&
+               cloneSourcePt == o.cloneSourcePt &&
                std::abs(radius - o.radius) < 1e-9 &&
                std::abs(hardness - o.hardness) < 1e-9 &&
                std::abs(pressure - o.pressure) < 1e-9 &&

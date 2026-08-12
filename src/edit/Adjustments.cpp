@@ -332,7 +332,12 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
     // (0..1, default 0 = no effect) multiplies the computed coverage by a
     // deterministic per-dab noise term derived from a hash of each pixel's
     // integer coordinates, giving Pen-type dabs a graphite-like texture.
-    auto stampDab = [&](double px, double py, double rad, double hardness, bool erase, QRgb color, double grain = 0.0) {
+    // `cloneOffsetPx` is only meaningful when `isClone` — the (source - dab)
+    // translation, in `ref`'s own pixel space (see the isClone branch below
+    // for how it's derived), so each covered pixel samples the
+    // correspondingly offset pixel from `ref` instead of one flat `color`.
+    auto stampDab = [&](double px, double py, double rad, double hardness, bool erase, QRgb color,
+                        double grain = 0.0, bool isClone = false, QPointF cloneOffsetPx = QPointF()) {
         const double inner = clampd(hardness, 0.0, 1.0) * rad;
         const double band = std::max(1e-6, rad - inner);
         const int x0 = std::max(0, int(px - rad));
@@ -343,6 +348,8 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
         if (autoMask)
             seed = ref->pixel(std::clamp(int(std::lround(px)), 0, w - 1),
                               std::clamp(int(std::lround(py)), 0, h - 1));
+        const bool canClone = isClone && ref && ref->width() > 0 && ref->height() > 0;
+        const double cloneScale = canClone ? double(ref->width()) / W : 1.0;
         for (int y = y0; y <= y1; ++y) {
             for (int x = x0; x <= x1; ++x) {
                 double dx = x - px, dy = y - py;
@@ -367,7 +374,17 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                     dst = uchar(std::max(0, int(dst) - int(iv)));
                 } else if (iv >= dst) {
                     dst = iv;
-                    if (colOut) (*colBuf)[idx] = color;
+                    if (colOut) {
+                        if (canClone) {
+                            int sx = std::clamp(int(std::lround(x * cloneScale + cloneOffsetPx.x())),
+                                                0, ref->width() - 1);
+                            int sy = std::clamp(int(std::lround(y * cloneScale + cloneOffsetPx.y())),
+                                                0, ref->height() - 1);
+                            (*colBuf)[idx] = ref->pixel(sx, sy);
+                        } else {
+                            (*colBuf)[idx] = color;
+                        }
+                    }
                 }
             }
         }
@@ -416,6 +433,12 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
             dabColor = qRgba(qRed(dabColor), qGreen(dabColor), qBlue(dabColor),
                              int(std::lround(qAlpha(dabColor) * opacityMul)));
         }
+        // Clone dabs: offset in `ref`'s own pixel space (see stampDab), so
+        // the per-pixel sample point is independent of the raster resolution.
+        const QPointF cloneOffsetPx = (sp.isClone && ref)
+            ? QPointF((sp.cloneSourcePt.x() - sp.pt.x()) * ref->width(),
+                     (sp.cloneSourcePt.y() - sp.pt.y()) * ref->width())
+            : QPointF();
 
         // Dab spacing (mouse-move sampling) is independent of brush radius,
         // so consecutive dabs of a soft brush can land far enough apart that
@@ -430,21 +453,27 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
             double pphardness = pp.hardness;
             double ppOpacityMul = 1.0, ppGrain = 0.0;
             if (pp.isPen) penParams(pp, pprad, pphardness, ppOpacityMul, ppGrain);
+            const QPointF ppCloneOffsetPx = (pp.isClone && ref)
+                ? QPointF((pp.cloneSourcePt.x() - pp.pt.x()) * ref->width(),
+                         (pp.cloneSourcePt.y() - pp.pt.y()) * ref->width())
+                : QPointF();
             const double dx = px - ppx, dy = py - ppy;
             const double dist = std::sqrt(dx * dx + dy * dy);
             const double spacing = std::max(1.0, std::min(rad, pprad) * 0.2);
             const int steps = int(dist / spacing);
             for (int s = 1; s < steps; ++s) {
                 const double t = double(s) / steps;
+                QPointF interpOffsetPx = ppCloneOffsetPx + (cloneOffsetPx - ppCloneOffsetPx) * t;
                 stampDab(ppx + dx * t, ppy + dy * t,
                          pprad + (rad - pprad) * t,
                          pphardness + (hardness - pphardness) * t,
                          sp.erase, dabColor,
-                         ppGrain + (grain - ppGrain) * t);
+                         ppGrain + (grain - ppGrain) * t,
+                         sp.isClone, interpOffsetPx);
             }
         }
 
-        stampDab(px, py, rad, hardness, sp.erase, dabColor, grain);
+        stampDab(px, py, rad, hardness, sp.erase, dabColor, grain, sp.isClone, cloneOffsetPx);
     }
 
     if (cache) {
