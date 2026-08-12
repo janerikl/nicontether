@@ -272,6 +272,16 @@ struct Mask {
     // Adjustments.cpp). Unused by all other mask types.
     QColor paintColor = Qt::black;
 
+    // Gradient Fill: when true, a Radial/Linear mask's own content is a flat
+    // two-color interpolation (see renderGradientFill in Adjustments.cpp)
+    // instead of a tone-adjusted copy of the image below — `gradientColorA`
+    // shows at the mask's center/start point, `gradientColorB` at/beyond its
+    // far edge. Unused when false (the mask behaves as an ordinary Radial/
+    // Linear adjustment mask, using `adj` as normal).
+    bool isGradientFill = false;
+    QColor gradientColorA = Qt::white;
+    QColor gradientColorB = Qt::black;
+
     // Paint bucket: cumulative flood-filled regions, composited alongside
     // `stroke` coverage for MaskType::Paint (see applyMasks in
     // Adjustments.cpp). ARGB32, resolution-independent the same way

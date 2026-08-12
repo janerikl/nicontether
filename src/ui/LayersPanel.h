@@ -119,6 +119,7 @@ signals:
                           double brushRadius, bool autoMask);
     void maskTextChanged(const QString &text, const QString &family, double pixelSize,
                          bool bold, bool italic);
+    void gradientFillChanged(bool enabled, const QColor &colorA, const QColor &colorB);
 
     void selectRemovalRequested(int index);
     void removalVisibleChanged(int index, bool visible);

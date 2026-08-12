@@ -337,6 +337,34 @@ double linearWeight(const Mask &m, double nx, double ny) {
     return m.inverted ? 1.0 - w : w;
 }
 
+// Gradient Fill's own layer content: a full-canvas two-color interpolation,
+// using the SAME radial/linear weight field a Radial/Linear mask already
+// computes for masking (see radialWeight/linearWeight above) — but here as a
+// per-pixel color-mix factor (t: 1 at center/start, 0 at/beyond the far
+// edge), not as this layer's alpha. Alpha is always opaque; the composite
+// loop deliberately skips the usual mask-weight-as-alpha step for gradient
+// fills (see applyMasks) so the fill covers the whole layer like a real
+// gradient tool, rather than fading to transparent past the feather point.
+QImage renderGradientFill(const Mask &m, int w, int h) {
+    QImage loc(w, h, QImage::Format_RGBA64);
+    const double W = w;
+    const QColor &ca = m.gradientColorA, &cb = m.gradientColorB;
+    for (int y = 0; y < h; ++y) {
+        QRgba64 *line = reinterpret_cast<QRgba64 *>(loc.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            const double t = clampd(m.type == MaskType::Radial ? radialWeight(m, x / W, y / W)
+                                                                : linearWeight(m, x / W, y / W),
+                                    0.0, 1.0);
+            line[x] = qRgba64(
+                quint16(std::lround((ca.redF() * t + cb.redF() * (1.0 - t)) * 65535.0)),
+                quint16(std::lround((ca.greenF() * t + cb.greenF() * (1.0 - t)) * 65535.0)),
+                quint16(std::lround((ca.blueF() * t + cb.blueF() * (1.0 - t)) * 65535.0)),
+                65535);
+        }
+    }
+    return loc;
+}
+
 // Cheap perceptual ("redmean") weighted colour distance — no colourspace
 // conversion needed, good enough to decide "same object or not" for Auto Mask.
 inline double colorDist(QRgb a, QRgb b) {
@@ -1031,6 +1059,8 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             // applyLayerContent (which would tone-adjust the composite-so-
             // far, not this layer's own drawn content).
             loc = rasterizeShapeOrTextBox(m, cov, w, h, orientedToGeom, geomRotationDeg, scale);
+        } else if (m.isGradientFill && (m.type == MaskType::Radial || m.type == MaskType::Linear)) {
+            loc = renderGradientFill(m, w, h);
         } else {
             loc = applyLayerContent(img, m.adj);
         }
@@ -1105,7 +1135,14 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             const QRgba64 *locLine = reinterpret_cast<const QRgba64 *>(loc.scanLine(y));
             for (int x = 0; x < w; ++x) {
                 double wgt;
-                if (m.type == MaskType::None || backgroundLayer)
+                // Gradient Fill uses its Radial/Linear weight field to choose
+                // this layer's own per-pixel color (see renderGradientFill),
+                // not as this layer's alpha — it covers the whole canvas at
+                // full opacity, like a real gradient tool, rather than fading
+                // to transparent past the feather point the way an ordinary
+                // Radial/Linear adjustment mask does.
+                if (m.type == MaskType::None || backgroundLayer ||
+                    (m.isGradientFill && (m.type == MaskType::Radial || m.type == MaskType::Linear)))
                     wgt = 1.0;
                 else if (m.type == MaskType::Radial)
                     wgt = radialWeight(m, x / W, y / W);

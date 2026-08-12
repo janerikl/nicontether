@@ -2650,6 +2650,17 @@ void RetouchTab::setActiveMaskShape(bool inverted, double feather,
     markEdited();
 }
 
+void RetouchTab::setActiveMaskGradientFill(bool enabled, const QColor &colorA, const QColor &colorB) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    if (m.type != MaskType::Radial && m.type != MaskType::Linear) return;
+    m.isGradientFill = enabled;
+    m.gradientColorA = colorA;
+    m.gradientColorB = colorB;
+    retone();
+    markEdited();
+}
+
 void RetouchTab::setPaintColor(const QColor &color) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
     Mask &m = m_adj.masks[m_activeMask];

@@ -2433,6 +2433,11 @@ void RetouchWindow::buildLayersDock() {
                 RetouchTab *tab = currentTab();
                 if (tab) tab->setActiveMaskText(text, family, pixelSize, bold, italic);
             });
+    connect(m_layersPanel, &LayersPanel::gradientFillChanged, this,
+            [this](bool enabled, const QColor &colorA, const QColor &colorB) {
+                RetouchTab *tab = currentTab();
+                if (tab) tab->setActiveMaskGradientFill(enabled, colorA, colorB);
+            });
     connect(m_layersPanel, &LayersPanel::maskOpacityChanged, this,
             [this](double opacity) {
                 RetouchTab *tab = currentTab();

@@ -178,6 +178,8 @@ public:
                                      double scaleY, bool lockRatio);
     void setActiveMaskShape(bool inverted, double feather, double hardness,
                             double brushRadius, bool autoMask);
+    // No-op unless the active layer is Radial/Linear. See Mask::isGradientFill.
+    void setActiveMaskGradientFill(bool enabled, const QColor &colorA, const QColor &colorB);
     void setPaintColor(const QColor &color); // no-op unless the active layer is MaskType::Paint
     // Sets the pencil-grade to bake into new Pen-tool dabs on this Paint
     // layer (see BrushStrokePoint::penGrade); no-op unless the active layer

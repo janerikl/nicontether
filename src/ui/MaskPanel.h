@@ -43,6 +43,9 @@ signals:
     // is width-normalized, same convention as brushRadius.
     void maskTextChanged(const QString &text, const QString &family, double pixelSize,
                          bool bold, bool italic);
+    // Gradient Fill: a Radial/Linear mask's content is a flat two-color
+    // interpolation instead of a tone adjustment (see Mask::isGradientFill).
+    void gradientFillChanged(bool enabled, const QColor &colorA, const QColor &colorB);
 
 private:
     void emitShape();
@@ -67,6 +70,13 @@ private:
     QLabel *m_brushSizePx = nullptr; // live "NNpx" readout next to m_brushSize
     QCheckBox *m_autoMask = nullptr;
     BrushPresetMenuButton *m_brushPresets = nullptr;
+
+    QCheckBox *m_gradientFill = nullptr; // Radial/Linear only: flat two-color fill instead of a tone adjustment
+    class QPushButton *m_gradientColorABtn = nullptr;
+    class QPushButton *m_gradientColorBBtn = nullptr;
+    QColor m_gradientColorA = Qt::white, m_gradientColorB = Qt::black;
+    void emitGradientFill();
+    void setColorButton(QPushButton *btn, const QColor &color);
 
     QLineEdit *m_textContent = nullptr;
     QFontComboBox *m_textFont = nullptr;

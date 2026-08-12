@@ -12,6 +12,8 @@
 #include <QSpinBox>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QPushButton>
+#include <QColorDialog>
 #include "ui/ScrubSpinBox.h"
 #include "ui/BrushPresetMenuButton.h"
 #include <cmath>
@@ -88,6 +90,16 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     shape->addRow("Brush:", m_brushPresets);
     m_autoMask = new QCheckBox("Auto Mask (stop at edges)");
     shape->addRow(m_autoMask);
+    m_gradientFill = new QCheckBox("Gradient Fill");
+    shape->addRow(m_gradientFill);
+    m_gradientColorABtn = new QPushButton;
+    m_gradientColorABtn->setFixedWidth(50);
+    m_gradientColorBBtn = new QPushButton;
+    m_gradientColorBBtn->setFixedWidth(50);
+    auto *gradientColorsRow = new QHBoxLayout;
+    gradientColorsRow->addWidget(m_gradientColorABtn);
+    gradientColorsRow->addWidget(m_gradientColorBBtn);
+    shape->addRow("Colors:", gradientColorsRow);
     root->addLayout(shape);
     root->addStretch(1);
 
@@ -100,6 +112,15 @@ MaskPanel::MaskPanel(QWidget *parent) : QWidget(parent) {
     connect(m_autoMask, &QCheckBox::toggled, this, [this] { emitShape(); });
     for (QSlider *s : {m_feather, m_hardness, m_brushSize})
         connect(s, &QSlider::valueChanged, this, [this] { emitShape(); });
+    connect(m_gradientFill, &QCheckBox::toggled, this, [this] { emitGradientFill(); });
+    connect(m_gradientColorABtn, &QPushButton::clicked, this, [this] {
+        QColor c = QColorDialog::getColor(m_gradientColorA, this, "Gradient Color A");
+        if (c.isValid()) { m_gradientColorA = c; setColorButton(m_gradientColorABtn, c); emitGradientFill(); }
+    });
+    connect(m_gradientColorBBtn, &QPushButton::clicked, this, [this] {
+        QColor c = QColorDialog::getColor(m_gradientColorB, this, "Gradient Color B");
+        if (c.isValid()) { m_gradientColorB = c; setColorButton(m_gradientColorBBtn, c); emitGradientFill(); }
+    });
     connect(m_brushPresets, &BrushPresetMenuButton::presetApplied, this,
             [this](double brushRadius, double hardness) {
                 m_brushSize->setValue(int(std::lround(brushRadius * 100)));
@@ -174,7 +195,8 @@ void MaskPanel::loadMask() {
         for (QWidget *w : std::initializer_list<QWidget *>{
                  m_invert, m_feather, m_hardnessLabel, m_hardness, m_brushSizeLabel,
                  m_brushSize, m_brushSizePx, m_brushPresets, m_autoMask, m_textContent,
-                 m_textFont, m_textSize, m_textBold, m_textItalic})
+                 m_textFont, m_textSize, m_textBold, m_textItalic, m_gradientFill,
+                 m_gradientColorABtn, m_gradientColorBBtn})
             w->setVisible(false);
         m_syncing = false;
         return;
@@ -187,6 +209,11 @@ void MaskPanel::loadMask() {
     m_brushSize->setValue(int(m_mask.brushRadius * 100));
     updateBrushSizePxLabel();
     m_autoMask->setChecked(m_mask.autoMask);
+    m_gradientFill->setChecked(m_mask.isGradientFill);
+    m_gradientColorA = m_mask.gradientColorA;
+    m_gradientColorB = m_mask.gradientColorB;
+    setColorButton(m_gradientColorABtn, m_gradientColorA);
+    setColorButton(m_gradientColorBBtn, m_gradientColorB);
     m_textContent->setText(m_mask.text);
     m_textFont->setCurrentFont(QFont(m_mask.textFamily));
     m_textSize->setValue(int(std::lround(m_mask.textPixelSize * 100)));
@@ -207,6 +234,11 @@ void MaskPanel::loadMask() {
     m_invert->setVisible(geometric);
     m_feather->setVisible(geometric);
     m_feather->setEnabled(geometric && m_mask.type != MaskType::Brush);
+    const bool gradientCapable = m_hasSelection &&
+                                 (m_mask.type == MaskType::Radial || m_mask.type == MaskType::Linear);
+    m_gradientFill->setVisible(gradientCapable);
+    m_gradientColorABtn->setVisible(gradientCapable);
+    m_gradientColorBBtn->setVisible(gradientCapable);
     m_textContent->setVisible(text);
     m_textFont->setVisible(text);
     m_textSize->setVisible(text);
@@ -229,4 +261,13 @@ void MaskPanel::emitShape() {
                           m_hardness->value() / 100.0,
                           m_brushSize->value() / 100.0,
                           m_autoMask->isChecked());
+}
+
+void MaskPanel::emitGradientFill() {
+    if (m_syncing) return;
+    emit gradientFillChanged(m_gradientFill->isChecked(), m_gradientColorA, m_gradientColorB);
+}
+
+void MaskPanel::setColorButton(QPushButton *btn, const QColor &color) {
+    btn->setStyleSheet(QString("background-color: %1;").arg(color.name()));
 }
