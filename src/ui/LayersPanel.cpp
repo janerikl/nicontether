@@ -496,10 +496,20 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     props->addRow("Opacity:", m_opacity);
     m_blend = new QComboBox;
     m_blend->addItem("Normal", int(BlendMode::Normal));
+    m_blend->addItem("Darken", int(BlendMode::Darken));
     m_blend->addItem("Multiply", int(BlendMode::Multiply));
+    m_blend->addItem("Color Burn", int(BlendMode::ColorBurn));
+    m_blend->addItem("Lighten", int(BlendMode::Lighten));
     m_blend->addItem("Screen", int(BlendMode::Screen));
+    m_blend->addItem("Color Dodge", int(BlendMode::ColorDodge));
     m_blend->addItem("Overlay", int(BlendMode::Overlay));
     m_blend->addItem("Soft Light", int(BlendMode::SoftLight));
+    m_blend->addItem("Difference", int(BlendMode::Difference));
+    m_blend->addItem("Exclusion", int(BlendMode::Exclusion));
+    m_blend->addItem("Hue", int(BlendMode::Hue));
+    m_blend->addItem("Saturation", int(BlendMode::Saturation));
+    m_blend->addItem("Color", int(BlendMode::Color));
+    m_blend->addItem("Luminosity", int(BlendMode::Luminosity));
     props->addRow("Blend:", m_blend);
     root->addLayout(props);
 

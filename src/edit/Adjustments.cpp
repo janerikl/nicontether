@@ -11,6 +11,7 @@
 #include <QFontMetrics>
 #include <QStringList>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -221,10 +222,94 @@ inline double blendChannel(BlendMode mode, double dst, double src) {
                             : a + (2.0 * b - 1.0) * (d - a);
         return r * kMax;
     }
+    case BlendMode::Darken:
+        return std::min(dst, src);
+    case BlendMode::Lighten:
+        return std::max(dst, src);
+    case BlendMode::ColorDodge:
+        return src >= kMax ? kMax : std::min(kMax, dst * kMax / (kMax - src));
+    case BlendMode::ColorBurn:
+        return src <= 0.0 ? 0.0 : kMax - std::min(kMax, (kMax - dst) * kMax / src);
+    case BlendMode::Difference:
+        return std::abs(dst - src);
+    case BlendMode::Exclusion:
+        return dst + src - 2.0 * dst * src / kMax;
+    // Hue/Saturation/Color/Luminosity are handled by blendHSLTriple(), not
+    // per-channel — callers must branch before reaching here.
+    case BlendMode::Hue:
+    case BlendMode::Saturation:
+    case BlendMode::Color:
+    case BlendMode::Luminosity:
     case BlendMode::Normal:
     default:
         return src;
     }
+}
+
+// Full-RGB-triple blend for the HSL-based modes (Hue/Saturation/Color/
+// Luminosity), per the standard Photoshop/PDF compositing formulas: `dst` is
+// the backdrop (image so far), `src` the layer's own content. Works in
+// 0..1 float per channel; `dst`/`src` channels are 0..65535 (16-bit).
+QRgba64 blendHSLTriple(BlendMode mode, QRgba64 dst, QRgba64 src) {
+    auto toVec = [](QRgba64 c) {
+        return std::array<double, 3>{c.red() / 65535.0, c.green() / 65535.0, c.blue() / 65535.0};
+    };
+    auto lum = [](const std::array<double, 3> &c) {
+        return 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
+    };
+    auto clipColor = [&](std::array<double, 3> c) {
+        double l = lum(c);
+        double n = std::min({c[0], c[1], c[2]});
+        double x = std::max({c[0], c[1], c[2]});
+        if (n < 0.0)
+            for (double &v : c) v = l + (v - l) * l / std::max(1e-9, l - n);
+        if (x > 1.0)
+            for (double &v : c) v = l + (v - l) * (1.0 - l) / std::max(1e-9, x - l);
+        return c;
+    };
+    auto setLum = [&](std::array<double, 3> c, double l) {
+        double d = l - lum(c);
+        for (double &v : c) v += d;
+        return clipColor(c);
+    };
+    auto sat = [](const std::array<double, 3> &c) {
+        return std::max({c[0], c[1], c[2]}) - std::min({c[0], c[1], c[2]});
+    };
+    auto setSat = [](std::array<double, 3> c, double s) {
+        int lo = 0, mid = 1, hi = 2;
+        for (int i = 1; i < 3; ++i) if (c[i] < c[lo]) lo = i;
+        for (int i = 0; i < 3; ++i) if (c[i] > c[hi]) hi = i;
+        for (int i = 0; i < 3; ++i) if (i != lo && i != hi) mid = i;
+        if (lo == hi) { c[0] = c[1] = c[2] = 0.0; return c; } // fully desaturated backdrop/source
+        if (c[hi] > c[lo]) {
+            c[mid] = (c[mid] - c[lo]) * s / (c[hi] - c[lo]);
+            c[hi] = s;
+        } else {
+            c[mid] = c[hi] = 0.0;
+        }
+        c[lo] = 0.0;
+        return c;
+    };
+
+    const std::array<double, 3> cb = toVec(dst), cs = toVec(src);
+    std::array<double, 3> out;
+    switch (mode) {
+    case BlendMode::Hue:
+        out = setLum(setSat(cs, sat(cb)), lum(cb));
+        break;
+    case BlendMode::Saturation:
+        out = setLum(setSat(cb, sat(cs)), lum(cb));
+        break;
+    case BlendMode::Color:
+        out = setLum(cs, lum(cb));
+        break;
+    case BlendMode::Luminosity:
+    default:
+        out = setLum(cb, lum(cs));
+        break;
+    }
+    auto to16 = [](double v) { return quint16(std::clamp(int(std::lround(v * 65535.0)), 0, 65535)); };
+    return qRgba64(to16(out[0]), to16(out[1]), to16(out[2]), dst.alpha());
 }
 
 // Mask weight [0,1] at a width-normalized point for radial/linear masks.
@@ -1038,9 +1123,21 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                 if (wgt <= 0.0) continue;
                 QRgba64 src = line[x];
                 QRgba64 locPx = locLine[x];
-                double br = blendChannel(m.blend, src.red(), locPx.red());
-                double bg = blendChannel(m.blend, src.green(), locPx.green());
-                double bb = blendChannel(m.blend, src.blue(), locPx.blue());
+                double br, bg, bb;
+                const bool isHSL = m.blend == BlendMode::Hue || m.blend == BlendMode::Saturation ||
+                                   m.blend == BlendMode::Color || m.blend == BlendMode::Luminosity;
+                if (isHSL) {
+                    // Hue/Saturation/Color/Luminosity act on the full RGB
+                    // triple, not independently per channel.
+                    QRgba64 blended = blendHSLTriple(m.blend, src, locPx);
+                    br = blended.red();
+                    bg = blended.green();
+                    bb = blended.blue();
+                } else {
+                    br = blendChannel(m.blend, src.red(), locPx.red());
+                    bg = blendChannel(m.blend, src.green(), locPx.green());
+                    bb = blendChannel(m.blend, src.blue(), locPx.blue());
+                }
                 double inv = 1.0 - wgt;
                 line[x] = qRgba64(
                     clamp16(int(std::lround(src.red() * inv + br * wgt))),

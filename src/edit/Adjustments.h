@@ -144,7 +144,13 @@ enum class ShapeType { Rectangle, Ellipse, Line, Polygon, Star, Heart };
 // How a layer's local adjustment composites over what's below it. Applied
 // per-channel in sRGB space, then mixed with the layer below by mask weight
 // x opacity (see blendChannel in Adjustments.cpp).
-enum class BlendMode { Normal, Multiply, Screen, Overlay, SoftLight };
+// Hue/Saturation/Color/Luminosity aren't per-channel-independent (they act on
+// the layer's/backdrop's full RGB triple via the standard HSL swap formulas),
+// so they're handled by blendHSLTriple() rather than blendChannel() — see
+// Adjustments.cpp's composite loop for the branch.
+enum class BlendMode { Normal, Multiply, Screen, Overlay, SoftLight,
+                       Darken, Lighten, ColorDodge, ColorBurn, Difference, Exclusion,
+                       Hue, Saturation, Color, Luminosity };
 
 // One sampled point of a brush stroke (width-normalized). `erase` marks a dab
 // painted while holding Alt, which subtracts coverage instead of adding it.
