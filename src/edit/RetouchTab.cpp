@@ -233,6 +233,9 @@ void RetouchTab::setupCanvasAndWiring() {
         markEdited();
         emit maskBrushChanged(r);
     });
+    connect(m_canvas, &ImageCanvas::selectBrushRadiusChanged, this, [this](double r) {
+        emit selectBrushChanged(r);
+    });
     connect(m_canvas, &ImageCanvas::imageLayerTransformChanged, this,
             [this](const QPointF &offset, const QPointF &scale, bool lockRatio) {
                 if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
@@ -952,6 +955,15 @@ void RetouchTab::setSelectMagicWandMode(bool on) {
 
 void RetouchTab::setMagicWandTolerance(int tolerance) {
     m_canvas->setMagicWandTolerance(tolerance);
+}
+
+void RetouchTab::setSelectBrushMode(bool on) {
+    m_canvas->setSelectBrushMode(on);
+    if (on) m_canvas->setFocus();
+}
+
+void RetouchTab::setSelectBrushRadius(double normRadius) {
+    m_canvas->setSelectBrushRadius(normRadius);
 }
 
 void RetouchTab::clearActiveSelection() {
@@ -1930,8 +1942,8 @@ void RetouchTab::onHealAt(const QPoint &imgPoint) {
 // final compositing weight, not just image-layer pixels.
 void RetouchTab::onEraseAt(const QPointF &ptNorm) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
-    if (m_hasSelection && !m_selectionPath.contains(ptNorm)) return;
     Mask &m = m_adj.masks[m_activeMask];
+    m.selectionClipNorm = m_hasSelection ? m_selectionPath : QPainterPath();
     double radiusNorm = (m_scaled.isNull() || m_scaled.width() <= 0)
                              ? 0.06
                              : m_eraseRadiusDisplay / double(m_scaled.width());
@@ -1956,11 +1968,16 @@ void RetouchTab::onCloneStrokePoint(const QPointF &ptNorm, const QPointF &source
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
     Mask &m = m_adj.masks[m_activeMask];
     if (m.type != MaskType::Paint) return;
+    // Per-pixel clip to the selection boundary happens in rasterizeBrush via
+    // Mask::selectionClipNorm; this center-point check only decides whether
+    // re-entering the selection should start a fresh dab (see onMaskBrushPoint).
     if (m_hasSelection && !m_selectionPath.contains(ptNorm)) {
-        m_cloneStrokeBroken = true; // re-entering the selection starts a fresh dab, not a connecting line
-        return;
+        m_cloneStrokeBroken = true;
+    } else if (m_cloneStrokeBroken) {
+        newStroke = true;
+        m_cloneStrokeBroken = false;
     }
-    if (m_cloneStrokeBroken) { newStroke = true; m_cloneStrokeBroken = false; }
+    m.selectionClipNorm = m_hasSelection ? m_selectionPath : QPainterPath();
     BrushStrokePoint sp{ptNorm, false, m.brushRadius, m.hardness, m.paintColor.rgb(), newStroke};
     sp.pressure = pressure;
     sp.isPen = false;
@@ -2736,12 +2753,19 @@ void RetouchTab::onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm) {
 
 void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke, double pressure) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    // Re-entering the selection after a dab landed fully outside it should
+    // start a fresh dab, not connect a straight line across the gap. The
+    // actual per-pixel clip to the selection boundary happens in
+    // rasterizeBrush (Adjustments.cpp) via Mask::selectionClipNorm below —
+    // this center-point check is only used to decide the stroke break.
     if (m_hasSelection && !m_selectionPath.contains(ptNorm)) {
-        m_selectionStrokeBroken = true; // re-entering the selection should start a fresh dab, not connect across the gap
-        return;
+        m_selectionStrokeBroken = true;
+    } else if (m_selectionStrokeBroken) {
+        newStroke = true;
+        m_selectionStrokeBroken = false;
     }
-    if (m_selectionStrokeBroken) { newStroke = true; m_selectionStrokeBroken = false; }
     Mask &m = m_adj.masks[m_activeMask];
+    m.selectionClipNorm = m_hasSelection ? m_selectionPath : QPainterPath();
     // Bake in the brush size/hardness/(paint) color at paint time so later
     // changes only affect new dabs, not ones already committed to the stroke.
     // `pressure` (stylus pressure, 1.0 for mouse input) is likewise captured
@@ -2770,14 +2794,13 @@ void RetouchTab::setActivePenGrade(double grade) {
 
 void RetouchTab::onBucketFillRequested(const QPointF &ptNorm) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
-    // Gates the click itself; doesn't clip the flood-fill's grown region to
-    // the selection boundary (that would need threading the selection mask
-    // into bucketFillPaintMask's region-growing loop) — a click just outside
-    // the selection is rejected, but a fill that starts inside can still
-    // spread past the selection edge if the underlying colors are similar.
     if (m_hasSelection && !m_selectionPath.contains(ptNorm)) return;
     Mask &m = m_adj.masks[m_activeMask];
     if (m.type != MaskType::Paint || m_geomImg.isNull()) return;
+    // Clips the flood-fill's grown region to the selection boundary, not just
+    // the click point, via Mask::selectionClipNorm (see matchesRegion in
+    // bucketFillPaintMask, Adjustments.cpp).
+    m.selectionClipNorm = m_hasSelection ? m_selectionPath : QPainterPath();
     // Flood-fill at a capped working resolution (full geom resolution can be
     // tens of megapixels; the result is stored in `fillMask` and resampled to
     // whatever the render buffer needs, so this only trades off fill edge

@@ -372,6 +372,25 @@ QPixmap drawSelectWand(const QColor &c) {
     return pm;
 }
 
+// Filled circle with a dashed selection ring around it — glyph for the
+// Selection Brush (paint to add/subtract from the active selection).
+QPixmap drawSelectBrush(const QColor &c) {
+    QPixmap pm(kIconPx, kIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(Qt::NoPen);
+    QColor fill = c;
+    fill.setAlpha(90);
+    p.setBrush(fill);
+    p.drawEllipse(QRectF(9, 9, 12, 12));
+    QPen dashed(c, 1.5, Qt::DashLine);
+    p.setPen(dashed);
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QRectF(3, 3, 24, 24));
+    return pm;
+}
+
 // Two overlapping rectangles (source + destination) glyph for Clone Stamp.
 QPixmap drawCloneStamp(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
@@ -425,6 +444,7 @@ QIcon makeShapeIcon() { return makeToolIcon(drawShapeTool); }
 QIcon makeSelectMarqueeIcon() { return makeToolIcon(drawSelectMarquee); }
 QIcon makeSelectLassoIcon() { return makeToolIcon(drawSelectLasso); }
 QIcon makeSelectWandIcon() { return makeToolIcon(drawSelectWand); }
+QIcon makeSelectBrushIcon() { return makeToolIcon(drawSelectBrush); }
 QIcon makeCloneStampIcon() { return makeToolIcon(drawCloneStamp); }
 QIcon makeRemoveObjectIcon() { return makeToolIcon(drawRemoveObject); }
 
@@ -684,6 +704,21 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
         RetouchTab *tab = currentTab();
         if (tab) { tab->ungroupSelectedShapes(); refreshMaskPanel(); }
     });
+
+    editMenu->addSeparator();
+    m_deselectAction = editMenu->addAction("Deselect");
+    m_deselectAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
+    m_invertSelectionAction = editMenu->addAction("Invert Selection");
+    m_invertSelectionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I));
+    m_copySelectionAction = editMenu->addAction("Copy");
+    m_copySelectionAction->setShortcut(QKeySequence::Copy);
+    m_pasteSelectionAction = editMenu->addAction("Paste");
+    m_pasteSelectionAction->setShortcut(QKeySequence::Paste);
+    m_pasteSelectionAction->setEnabled(false);
+    connect(m_deselectAction, &QAction::triggered, this, &RetouchWindow::onDeselect);
+    connect(m_invertSelectionAction, &QAction::triggered, this, &RetouchWindow::onInvertSelection);
+    connect(m_copySelectionAction, &QAction::triggered, this, &RetouchWindow::onCopySelection);
+    connect(m_pasteSelectionAction, &QAction::triggered, this, &RetouchWindow::onPasteSelection);
 
     // Center: a stack (editing tabs / tether) with the shared filmstrip below,
     // so the filmstrip is visible in both modes.
@@ -1187,6 +1222,14 @@ void RetouchWindow::buildToolPanel() {
         "Magic Wand (W) — click to select similar colors; Shift adds, Alt subtracts");
     m_toolsBar->addWidget(m_selectWandToggle);
 
+    m_selectBrushToggle = new QToolButton;
+    m_selectBrushToggle->setIcon(makeSelectBrushIcon());
+    m_selectBrushToggle->setCheckable(true);
+    m_selectBrushToggle->setShortcut(QKeySequence(Qt::Key_Q));
+    m_selectBrushToggle->setToolTip(
+        "Selection Brush (Q) — drag to add to the selection; Alt subtracts");
+    m_toolsBar->addWidget(m_selectBrushToggle);
+
     m_cloneToggle = new QToolButton;
     m_cloneToggle->setIcon(makeCloneStampIcon());
     m_cloneToggle->setCheckable(true);
@@ -1507,6 +1550,19 @@ void RetouchWindow::buildToolPanel() {
             m_toolOptionsBar->setVisible(false);
         }
         if (tab && tab->isReady()) tab->setSelectMagicWandMode(on);
+    });
+    connect(m_selectBrushToggle, &QToolButton::toggled, this, [this](bool on) {
+        RetouchTab *tab = currentTab();
+        if (on) {
+            deactivateOtherToolButtons(m_selectBrushToggle);
+            deactivateAllToolModes(tab);
+            if (tab) tab->setSelectBrushRadius(m_selectBrushSize->value() / 100.0);
+            m_toolOptionsStack->setCurrentIndex(11);
+            m_toolOptionsBar->setVisible(true);
+        } else {
+            m_toolOptionsBar->setVisible(false);
+        }
+        if (tab && tab->isReady()) tab->setSelectBrushMode(on);
     });
     connect(m_cloneToggle, &QToolButton::toggled, this, [this](bool on) {
         RetouchTab *tab = currentTab();
@@ -2062,6 +2118,24 @@ void RetouchWindow::buildToolOptionsBar() {
     connect(m_cloneSize, &QSlider::valueChanged, this, [applyCloneShape](int) { applyCloneShape(); });
     connect(m_cloneHardness, &QSlider::valueChanged, this, [applyCloneShape](int) { applyCloneShape(); });
 
+    // --- Selection Brush page (index 11) ---
+    auto *selectBrushPage = new QWidget;
+    auto *selectBrushRow = new QHBoxLayout(selectBrushPage);
+    selectBrushRow->setContentsMargins(4, 2, 4, 2);
+    m_selectBrushSize = new QSlider(Qt::Horizontal);
+    m_selectBrushSize->setRange(1, 40); // percent of image width, same scale as Brush/Clone Size
+    m_selectBrushSize->setValue(4);
+    m_selectBrushSize->setMinimumWidth(140);
+    selectBrushRow->addWidget(new QLabel("Size:"));
+    selectBrushRow->addWidget(m_selectBrushSize);
+    selectBrushRow->addStretch(1);
+    m_toolOptionsStack->addWidget(selectBrushPage);
+
+    connect(m_selectBrushSize, &QSlider::valueChanged, this, [this](int v) {
+        RetouchTab *tab = currentTab();
+        if (tab) tab->setSelectBrushRadius(v / 100.0);
+    });
+
     connect(m_shapeType, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
         RetouchTab *tab = currentTab();
         if (!tab) return;
@@ -2568,6 +2642,7 @@ void RetouchWindow::deactivateAllToolModes(RetouchTab *tab) {
     tab->setSelectMarqueeMode(false);
     tab->setSelectLassoMode(false);
     tab->setSelectMagicWandMode(false);
+    tab->setSelectBrushMode(false);
     tab->setCloneMode(false);
 }
 
@@ -2783,6 +2858,71 @@ void RetouchWindow::onSyncEdits() {
         QString("Synced edits to %1 of %2 selected")
             .arg(changed)
             .arg(targets.size()));
+}
+
+void RetouchWindow::onDeselect() {
+    RetouchTab *tab = currentTab();
+    if (tab && tab->isReady()) tab->clearActiveSelection();
+}
+
+void RetouchWindow::onInvertSelection() {
+    RetouchTab *tab = currentTab();
+    if (!tab || !tab->isReady()) return;
+    tab->canvas()->invertSelection();
+}
+
+// Extracts the pixels currently under the active selection from the tab's
+// composited render into an in-app clipboard (not the system clipboard),
+// keeping the copied region's exact position within the full image so Paste
+// can drop it back at the same place via a full-frame image layer.
+void RetouchWindow::onCopySelection() {
+    RetouchTab *tab = currentTab();
+    if (!tab || !tab->isReady() || !tab->hasActiveSelection()) {
+        m_statusLabel->setText("Make a selection first");
+        return;
+    }
+    QImage src = tab->previewImage();
+    if (src.isNull()) return;
+    const double W = src.width();
+    QTransform normToPx;
+    normToPx.scale(W, W); // width-normalized -> pixel space, same convention as onMaskBrushPoint
+    QPainterPath pathPx = normToPx.map(tab->canvas()->selectionPathNorm());
+    QRect bounds = pathPx.boundingRect().toAlignedRect().intersected(src.rect());
+    if (bounds.isEmpty()) return;
+
+    QImage clip(bounds.size(), QImage::Format_ARGB32_Premultiplied);
+    clip.fill(Qt::transparent);
+    QPainter p(&clip);
+    p.setClipPath(pathPx.translated(-bounds.topLeft()));
+    p.drawImage(-bounds.topLeft(), src);
+    p.end();
+
+    m_selectionClipboard = clip;
+    m_selectionClipboardOffsetPx = bounds.topLeft();
+    m_pasteSelectionAction->setEnabled(true);
+    m_statusLabel->setText("Selection copied");
+}
+
+// Pastes the in-app selection clipboard as a new full-frame image layer
+// (transparent outside the copied region), reusing addImageLayerFromImage's
+// existing cover-fit placement — since the pasted image is exactly the same
+// size as the tab's composite, cover-fit maps it back 1:1 with no distortion,
+// landing the copied pixels at their original position.
+void RetouchWindow::onPasteSelection() {
+    RetouchTab *tab = currentTab();
+    if (!tab || !tab->isReady() || m_selectionClipboard.isNull()) return;
+    QImage full = tab->previewImage();
+    if (full.isNull()) return;
+    QImage layer(full.size(), QImage::Format_ARGB32_Premultiplied);
+    layer.fill(Qt::transparent);
+    QPainter p(&layer);
+    p.drawImage(m_selectionClipboardOffsetPx, m_selectionClipboard);
+    p.end();
+    int idx = tab->addImageLayerFromImage(layer, "Pasted Selection");
+    if (idx >= 0) {
+        refreshMaskPanel();
+        m_statusLabel->setText("Selection pasted as new layer");
+    }
 }
 
 // Repopulate the Presets menu: built-in templates, then custom presets, then
@@ -3037,6 +3177,11 @@ void RetouchWindow::wireTabSignals(RetouchTab *tab) {
             m_syncingPaintSize = false;
             updatePaintSizePxLabel();
         }
+    });
+    connect(tab, &RetouchTab::selectBrushChanged, this, [this, tab](double radiusNorm) {
+        if (tab != currentTab() || !m_selectBrushSize) return;
+        QSignalBlocker b(m_selectBrushSize);
+        m_selectBrushSize->setValue(int(std::lround(radiusNorm * 100))); // reflect ctrl+wheel resize in the dock
     });
     connect(tab, &RetouchTab::previewUpdated, this, [this, tab] {
         if (tab == currentTab()) m_levelsPanel->setImage(tab->previewImage());

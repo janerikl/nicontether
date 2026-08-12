@@ -117,8 +117,14 @@ public:
     void setSelectLassoMode(bool on);   // drag a freehand polygon
     void setSelectMagicWandMode(bool on); // click: flood-fill by color similarity
     void setMagicWandTolerance(int tolerance); // 0..255 per-channel distance
+    // Selection Brush: drag paints a brush-sized dab that's continuously
+    // unioned into (or, with Alt held, subtracted from) the active selection
+    // as you drag — Photoshop's Quick Selection/Selection Brush equivalent.
+    void setSelectBrushMode(bool on);
+    void setSelectBrushRadius(double normRadius); // width-normalized, same convention as brushRadius
     // Clears the active selection (Deselect action / Esc).
     void clearActiveSelection();
+    void invertSelection();
     bool hasActiveSelection() const { return m_hasSelection; }
     // Current selection region, width-normalized (same convention as
     // maskBrushPoint/maskRadialDragged etc: both axes divided by image width).
@@ -253,6 +259,7 @@ signals:
     void eraseBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while erasing
     void removeObjectBrushRadiusChanged(int radiusDisplayPx); // ctrl+wheel resize while remove-object brushing
     void maskBrushRadiusChanged(double radiusNorm); // ctrl+wheel resize while brush-masking
+    void selectBrushRadiusChanged(double radiusNorm); // ctrl+wheel resize while selection-brushing
     void imageLayerTransformChanged(const QPointF &offsetNorm, const QPointF &scaleNorm,
                                     bool lockRatio);
 
@@ -355,6 +362,12 @@ private:
     // Combines `opPath` (already width-normalized) into m_selectionPath per
     // modifier keys: Shift = add, Alt = subtract, neither = replace.
     void applySelectionOp(const QPainterPath &opPath, Qt::KeyboardModifiers mods);
+    // One Selection Brush dab: only the pixels within the brush's circle at
+    // `centerNorm` that are color-similar to the pixel under the brush center
+    // (same per-channel tolerance concept as the magic wand) are included, so
+    // painting near an edge "sticks" to the object instead of also picking up
+    // the background just because the circle overlapped it.
+    QPainterPath selectBrushDabPath(const QPointF &centerNorm) const;
 
     void relayoutFit();  // recompute scale/offset to fit + centre
     void zoomTo(double newScale, const QPointF &anchorWidgetPos);
@@ -457,10 +470,18 @@ private:
     int m_magicWandTolerance = 32; // 0..255 per-channel color distance
     QPainterPath m_selectionPath; // width-normalized, see selectionPathNorm()
     bool m_hasSelection = false;
-    enum class SelectDrag { None, Marquee, Lasso };
+    enum class SelectDrag { None, Marquee, Lasso, Brush };
     SelectDrag m_selectDrag = SelectDrag::None;
     QPoint m_selectDragStartWidget, m_selectDragCurrentWidget; // marquee, widget px
     QPolygonF m_lassoPolygonWidget; // lasso, widget px, accumulated while dragging
+
+    // Selection Brush state.
+    bool m_selectBrushMode = false;
+    double m_selectBrushRadiusNorm = 0.04; // width-normalized dab radius
+    bool m_selectBrushSubtract = false;    // Alt held at drag start
+    QPainterPath m_selectionAtBrushDragStart; // baseline the drag's dabs are unioned/subtracted against
+    QPainterPath m_selectBrushStrokeAccum;    // union of every dab painted so far this drag
+    QPointF m_lastSelectBrushNorm{-1, -1};
 
     // Clone stamp state.
     bool m_cloneMode = false;

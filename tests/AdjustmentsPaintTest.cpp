@@ -936,6 +936,35 @@ int main(int argc, char **argv) {
         assert(qRed(centerHidden) < 5 && qGreen(centerHidden) < 5 && qBlue(centerHidden) < 5);
     }
 
+    // A large brush dab must not bleed past Mask::selectionClipNorm even
+    // though its center point sits well inside the clip — regression test
+    // for the reported bug where a big brush painted outside the selection.
+    {
+        QImage base(8, 8, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask paint;
+        paint.type = MaskType::Paint;
+        paint.paintColor = QColor(255, 0, 0);
+        paint.brushRadius = 2.0; // huge dab, covers the whole 8x8 frame unclipped
+        paint.hardness = 1.0;
+        paint.opacity = 1.0;
+        paint.blend = BlendMode::Normal;
+        // Clip to the left half only (x in [0, 0.5)), width-normalized.
+        paint.selectionClipNorm.addRect(QRectF(0.0, 0.0, 0.5, 1.0));
+        paint.stroke.append(BrushStrokePoint{QPointF(0.5, 0.5), false, paint.brushRadius,
+                                             paint.hardness, paint.paintColor.rgb()});
+
+        Adjustments adj;
+        adj.masks.append(paint);
+
+        QImage out = applyAdjustments(base, adj);
+        QRgb inside = out.pixel(1, 4);  // left half: inside the clip
+        QRgb outside = out.pixel(6, 4); // right half: outside the clip
+        assert(qRed(inside) > 250 && qGreen(inside) < 5 && qBlue(inside) < 5);
+        assert(qRed(outside) < 5 && qGreen(outside) < 5 && qBlue(outside) < 5);
+    }
+
     std::printf("AdjustmentsPaintTest: all assertions passed\n");
     return 0;
 }

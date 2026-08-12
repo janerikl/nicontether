@@ -8,6 +8,7 @@
 #include <QColor>
 #include <QMetaType>
 #include <QTransform>
+#include <QPainterPath>
 #include <cmath>
 #include <vector>
 
@@ -383,6 +384,14 @@ struct Mask {
     // Works on any layer type (image, background, paint, brush, shape,
     // text, text box, or an adjustment mask).
     QVector<ErasePoint> eraseStrokes;
+
+    // Active-selection clip (width-normalized), baked in by RetouchTab
+    // whenever a marquee/lasso/magic-wand selection is active while this
+    // layer is being painted/erased — new pixels only land inside it, tested
+    // per-pixel at rasterization time (see rasterizeBrush/applyMasks in
+    // Adjustments.cpp), not just gated at each dab's center point. Transient
+    // UI state like sourceImageCache above: never serialized, never compared.
+    QPainterPath selectionClipNorm;
 
     bool operator==(const Mask &o) const {
         return name == o.name && visible == o.visible && groupId == o.groupId &&

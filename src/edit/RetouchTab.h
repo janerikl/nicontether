@@ -91,6 +91,8 @@ public:
     void setSelectLassoMode(bool on);
     void setSelectMagicWandMode(bool on);
     void setMagicWandTolerance(int tolerance);
+    void setSelectBrushMode(bool on);
+    void setSelectBrushRadius(double normRadius);
     void clearActiveSelection();
     bool hasActiveSelection() const { return m_hasSelection; }
 
@@ -284,6 +286,7 @@ signals:
     void maskPreviewUpdated(); // a new per-layer histogram source image is available
     void masksChanged();   // mask list or active-mask geometry changed
     void maskBrushChanged(double radiusNorm); // ctrl+wheel resized the mask brush
+    void selectBrushChanged(double radiusNorm); // ctrl+wheel resized the selection brush
     void textsChanged();   // text list, active text, or its style changed
     void shapesChanged();  // shape list, active shape, or its style changed
     void removeObjectBrushChanged(int radiusDisplayPx); // ctrl+wheel resized the brush

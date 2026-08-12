@@ -464,6 +464,7 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                               std::clamp(int(std::lround(py)), 0, h - 1));
         const bool canClone = isClone && ref && ref->width() > 0 && ref->height() > 0;
         const double cloneScale = canClone ? double(ref->width()) / W : 1.0;
+        const bool hasClip = !m.selectionClipNorm.isEmpty();
         for (int y = y0; y <= y1; ++y) {
             for (int x = x0; x <= x1; ++x) {
                 double dx = x - px, dy = y - py;
@@ -472,6 +473,11 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                            : dist >= rad ? 0.0
                                          : smoothstep01((rad - dist) / band);
                 if (v <= 0.0) continue;
+                // Clip each covered pixel to the selection active when this
+                // dab was painted, not just the dab's center point — a large
+                // brush near a selection edge must not bleed past it.
+                if (hasClip && !m.selectionClipNorm.contains(QPointF(x / W, y / W)))
+                    continue;
                 if (autoMask) {
                     double cd = colorDist(ref->pixel(x, y), seed);
                     v *= 1.0 - smoothstep01(cd / kAutoMaskTolerance);
@@ -653,8 +659,11 @@ QImage bucketFillPaintMask(const Mask &m, const QPointF &clickNorm,
     const QRgb clickFill = fillPixel(px, py);
     const bool startFilled = qAlpha(clickFill) > 16;
 
+    const bool hasClip = !m.selectionClipNorm.isEmpty();
+    const double W = w;
     auto matchesRegion = [&](int x, int y) -> bool {
         if (covBlocked(x, y)) return false;
+        if (hasClip && !m.selectionClipNorm.contains(QPointF(x / W, y / W))) return false;
         const QRgb p = fillPixel(x, y);
         const bool filled = qAlpha(p) > 16;
         if (startFilled) return filled && closeColor(p, clickFill);
@@ -1076,6 +1085,9 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                         double dist = std::sqrt(dx * dx + dy * dy);
                         double v = dist >= rad ? 0.0
                                                 : smoothstep01((rad - dist) / rad);
+                        if (v > 0.0 && !m.selectionClipNorm.isEmpty() &&
+                            !m.selectionClipNorm.contains(QPointF(x / W, y / W)))
+                            v = 0.0;
                         double &c = eraseCov[size_t(y) * w + x];
                         if (v > c) c = v;
                     }

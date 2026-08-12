@@ -699,6 +699,17 @@ void ImageCanvas::setMagicWandTolerance(int tolerance) {
     m_magicWandTolerance = std::clamp(tolerance, 0, 255);
 }
 
+void ImageCanvas::setSelectBrushMode(bool on) {
+    m_selectBrushMode = on;
+    if (!on) m_selectDrag = SelectDrag::None;
+    setCursor(on ? Qt::CrossCursor : Qt::ArrowCursor);
+    update();
+}
+
+void ImageCanvas::setSelectBrushRadius(double normRadius) {
+    m_selectBrushRadiusNorm = std::max(0.001, normRadius);
+}
+
 void ImageCanvas::setCloneMode(bool on) {
     m_cloneMode = on;
     if (!on) m_cloneDragging = false;
@@ -710,6 +721,21 @@ void ImageCanvas::clearActiveSelection() {
     if (!m_hasSelection) return;
     m_selectionPath = QPainterPath();
     m_hasSelection = false;
+    emit selectionPathChanged(m_selectionPath, m_hasSelection);
+    update();
+}
+
+// Replaces the selection with everything currently NOT selected, within the
+// full image bounds (width-normalized, same convention as m_selectionPath —
+// height is imgH/imgW since both axes share the width divisor). An empty
+// current selection inverts to "select all".
+void ImageCanvas::invertSelection() {
+    if (m_img.isNull()) return;
+    const double fullH = double(m_img.height()) / double(m_img.width());
+    QPainterPath full;
+    full.addRect(QRectF(0.0, 0.0, 1.0, fullH));
+    m_selectionPath = m_hasSelection ? full.subtracted(m_selectionPath) : full;
+    m_hasSelection = !m_selectionPath.isEmpty();
     emit selectionPathChanged(m_selectionPath, m_hasSelection);
     update();
 }
@@ -738,6 +764,15 @@ QPainterPath ImageCanvas::magicWandPath(int seedPx, int seedPy, int tolerance) c
     const int w = m_img.width(), h = m_img.height();
     if (seedPx < 0 || seedPx >= w || seedPy < 0 || seedPy >= h) return path;
     const QRgb seed = m_img.pixel(seedPx, seedPy);
+    // Caps how far the flood-fill can grow from the click, in pixels, so a
+    // large uniform-color area (e.g. a plain background) doesn't select far
+    // beyond where the user actually clicked — stays "close to the cursor"
+    // instead of potentially selecting most of the image.
+    const double maxDist = 0.22 * std::max(w, h);
+    auto withinReach = [&](int x, int y) {
+        double dx = x - seedPx, dy = y - seedPy;
+        return dx * dx + dy * dy <= maxDist * maxDist;
+    };
     auto matches = [&](QRgb c) {
         return std::abs(qRed(c) - qRed(seed)) <= tolerance &&
                std::abs(qGreen(c) - qGreen(seed)) <= tolerance &&
@@ -755,10 +790,10 @@ QPainterPath ImageCanvas::magicWandPath(int seedPx, int seedPy, int tolerance) c
         const uchar *row = m_img.constScanLine(y);
         // Grow this row's run left/right from p.x(), matching contiguously.
         int xL = p.x(), xR = p.x();
-        while (xL > 0 && !visited[y * w + (xL - 1)] &&
+        while (xL > 0 && !visited[y * w + (xL - 1)] && withinReach(xL - 1, y) &&
                matches(reinterpret_cast<const QRgb *>(row)[xL - 1]))
             visited[y * w + (--xL)] = true;
-        while (xR < w - 1 && !visited[y * w + (xR + 1)] &&
+        while (xR < w - 1 && !visited[y * w + (xR + 1)] && withinReach(xR + 1, y) &&
                matches(reinterpret_cast<const QRgb *>(row)[xR + 1]))
             visited[y * w + (++xR)] = true;
         path.addRect(QRectF(xL / W, y / W, (xR - xL + 1) / W, 1.0 / W));
@@ -767,6 +802,7 @@ QPainterPath ImageCanvas::magicWandPath(int seedPx, int seedPy, int tolerance) c
             for (int ny : {y - 1, y + 1}) {
                 if (ny < 0 || ny >= h) continue;
                 if (visited[ny * w + x]) continue;
+                if (!withinReach(x, ny)) continue;
                 if (!matches(m_img.pixel(x, ny))) continue;
                 visited[ny * w + x] = true;
                 stack.append(QPoint(x, ny));
@@ -774,6 +810,67 @@ QPainterPath ImageCanvas::magicWandPath(int seedPx, int seedPy, int tolerance) c
         }
     }
     return path;
+}
+
+QPainterPath ImageCanvas::selectBrushDabPath(const QPointF &centerNorm) const {
+    // Plain circular dab, clipped to the seed color's connected region within
+    // the dab's own bounding box, so the brush stops at a real color edge
+    // instead of crossing it — but stays contiguous-run based (same approach
+    // as magicWandPath) rather than a raw per-pixel threshold test, which is
+    // what produced the speckled/jagged outline: plain per-pixel comparisons
+    // pick up isolated, disconnected pixels wherever local texture noise
+    // happens to fall within tolerance, instead of only the connected blob
+    // actually touching the cursor.
+    QPainterPath dab;
+    dab.addEllipse(centerNorm, m_selectBrushRadiusNorm, m_selectBrushRadiusNorm);
+    if (m_img.isNull()) return dab;
+    const int w = m_img.width(), h = m_img.height();
+    const double W = w;
+    const int cx = std::clamp(int(std::lround(centerNorm.x() * W)), 0, w - 1);
+    const int cy = std::clamp(int(std::lround(centerNorm.y() * W)), 0, h - 1);
+    const double rad = std::max(1.0, m_selectBrushRadiusNorm * W);
+    const int x0 = std::max(0, int(cx - rad)), x1 = std::min(w - 1, int(cx + rad));
+    const int y0 = std::max(0, int(cy - rad)), y1 = std::min(h - 1, int(cy + rad));
+    const int bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+    if (bw <= 0 || bh <= 0) return dab;
+    const QRgb seed = m_img.pixel(cx, cy);
+    const int tol = m_magicWandTolerance; // shared tolerance concept/slider with the magic wand
+    auto matches = [&](QRgb c) {
+        return std::abs(qRed(c) - qRed(seed)) <= tol &&
+               std::abs(qGreen(c) - qGreen(seed)) <= tol &&
+               std::abs(qBlue(c) - qBlue(seed)) <= tol;
+    };
+
+    QVector<bool> visited(bw * bh, false);
+    QVector<QPoint> stack;
+    stack.reserve(256);
+    stack.append(QPoint(cx, cy));
+    visited[(cy - y0) * bw + (cx - x0)] = true;
+    QPainterPath region;
+    while (!stack.isEmpty()) {
+        QPoint p = stack.takeLast();
+        int y = p.y();
+        const uchar *row = m_img.constScanLine(y);
+        int xL = p.x(), xR = p.x();
+        while (xL > x0 && !visited[(y - y0) * bw + (xL - 1 - x0)] &&
+               matches(reinterpret_cast<const QRgb *>(row)[xL - 1]))
+            visited[(y - y0) * bw + (--xL - x0)] = true;
+        while (xR < x1 && !visited[(y - y0) * bw + (xR + 1 - x0)] &&
+               matches(reinterpret_cast<const QRgb *>(row)[xR + 1]))
+            visited[(y - y0) * bw + (++xR - x0)] = true;
+        region.addRect(QRectF(xL / W, y / W, (xR - xL + 1) / W, 1.0 / W));
+        for (int x = xL; x <= xR; ++x) {
+            for (int ny : {y - 1, y + 1}) {
+                if (ny < y0 || ny > y1) continue;
+                int idx = (ny - y0) * bw + (x - x0);
+                if (visited[idx]) continue;
+                if (!matches(m_img.pixel(x, ny))) continue;
+                visited[idx] = true;
+                stack.append(QPoint(x, ny));
+            }
+        }
+    }
+    return dab.intersected(region);
 }
 
 void ImageCanvas::applySelectionOp(const QPainterPath &opPath, Qt::KeyboardModifiers mods) {
@@ -1181,6 +1278,20 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setPen(QPen(QColor(120, 200, 255, 220), 1));
         p.setBrush(QColor(90, 170, 255, 40));
+        p.drawEllipse(QPointF(m_mousePos), rad, rad);
+    }
+
+    if (m_selectBrushMode && underMouse() && !m_img.isNull()) {
+        // Width-normalized radius, same convention as the mask brush cursor.
+        double rad = m_selectBrushRadiusNorm * m_img.width() * m_scale;
+        p.setRenderHint(QPainter::Antialiasing, true);
+        if (m_selectDrag == SelectDrag::Brush && m_selectBrushSubtract) {
+            p.setPen(QPen(QColor(255, 90, 90, 220), 1));
+            p.setBrush(QColor(255, 60, 60, 40));
+        } else {
+            p.setPen(QPen(QColor(255, 255, 255, 200), 1));
+            p.setBrush(QColor(120, 200, 255, 30));
+        }
         p.drawEllipse(QPointF(m_mousePos), rad, rad);
     }
 
@@ -2043,6 +2154,22 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         update();
         return;
     }
+    if (m_selectBrushMode && ev->button() == Qt::LeftButton) {
+        m_selectDrag = SelectDrag::Brush;
+        m_selectBrushSubtract = ev->modifiers() & Qt::AltModifier;
+        m_selectionAtBrushDragStart = m_selectionPath;
+        m_selectBrushStrokeAccum = QPainterPath();
+        QPointF n = normPointAt(ev->pos());
+        m_lastSelectBrushNorm = n;
+        m_selectBrushStrokeAccum = selectBrushDabPath(n);
+        m_selectionPath = m_selectBrushSubtract
+            ? m_selectionAtBrushDragStart.subtracted(m_selectBrushStrokeAccum)
+            : m_selectionAtBrushDragStart.united(m_selectBrushStrokeAccum);
+        m_hasSelection = !m_selectionPath.isEmpty();
+        emit selectionPathChanged(m_selectionPath, m_hasSelection);
+        update();
+        return;
+    }
 
     // Crop mode.
     if (m_cropMode && ev->button() == Qt::LeftButton) {
@@ -2180,6 +2307,27 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
     }
     if (m_selectDrag == SelectDrag::Lasso) {
         m_lassoPolygonWidget << ev->pos();
+        update();
+        return;
+    }
+    if (m_selectDrag == SelectDrag::Brush) {
+        m_mousePos = ev->pos();
+        QPointF n = normPointAt(ev->pos());
+        double dx = n.x() - m_lastSelectBrushNorm.x(), dy = n.y() - m_lastSelectBrushNorm.y();
+        if (dx * dx + dy * dy > (m_selectBrushRadiusNorm * 0.25) * (m_selectBrushRadiusNorm * 0.25)) {
+            m_lastSelectBrushNorm = n;
+            m_selectBrushStrokeAccum = m_selectBrushStrokeAccum.united(selectBrushDabPath(n));
+            m_selectionPath = m_selectBrushSubtract
+                ? m_selectionAtBrushDragStart.subtracted(m_selectBrushStrokeAccum)
+                : m_selectionAtBrushDragStart.united(m_selectBrushStrokeAccum);
+            m_hasSelection = !m_selectionPath.isEmpty();
+            emit selectionPathChanged(m_selectionPath, m_hasSelection);
+        }
+        update();
+        return;
+    }
+    if (m_selectBrushMode) {
+        m_mousePos = ev->pos();
         update();
         return;
     }
@@ -2718,6 +2866,12 @@ void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
         update();
         return;
     }
+    if (m_selectDrag == SelectDrag::Brush && ev->button() == Qt::LeftButton) {
+        m_selectDrag = SelectDrag::None;
+        m_selectBrushStrokeAccum = QPainterPath();
+        update();
+        return;
+    }
     if (m_selectDrag == SelectDrag::Lasso && ev->button() == Qt::LeftButton) {
         m_selectDrag = SelectDrag::None;
         QPainterPath opPath;
@@ -2954,6 +3108,16 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
             double r = std::clamp(m_activeMask.brushRadius + notches * kMaskBrushStep,
                                   kMaskBrushMin, kMaskBrushMax);
             emit maskBrushRadiusChanged(r);
+            update();
+            ev->accept();
+            return;
+        }
+        // In selection-brush mode, ctrl+wheel resizes the brush the same way.
+        if (m_selectBrushMode) {
+            double notches = ev->angleDelta().y() / 120.0;
+            m_selectBrushRadiusNorm = std::clamp(m_selectBrushRadiusNorm + notches * kMaskBrushStep,
+                                                 kMaskBrushMin, kMaskBrushMax);
+            emit selectBrushRadiusChanged(m_selectBrushRadiusNorm);
             update();
             ev->accept();
             return;

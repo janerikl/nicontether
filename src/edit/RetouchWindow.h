@@ -247,6 +247,8 @@ private:
     QToolButton *m_selectLassoToggle = nullptr;   // left icon bar: freehand-polygon selection
     QToolButton *m_selectWandToggle = nullptr;    // left icon bar: magic-wand (color-similarity) selection
     QSlider *m_wandTolerance = nullptr;
+    QToolButton *m_selectBrushToggle = nullptr;   // left icon bar: paint to add/subtract from selection
+    QSlider *m_selectBrushSize = nullptr;
     QToolButton *m_cloneToggle = nullptr; // left icon bar: clone-stamp tool (requires a Paint layer already selected)
     QSlider *m_cloneSize = nullptr;
     QSlider *m_cloneHardness = nullptr;
@@ -278,6 +280,20 @@ private:
     class QAction *m_syncEditsAction = nullptr;
     class QAction *m_groupShapesAction = nullptr;
     class QAction *m_ungroupShapesAction = nullptr;
+
+    // Pixel-selection actions (Deselect/Invert/Copy/Paste), operating on the
+    // marquee/lasso/magic-wand selection, distinct from Copy/Paste Edits above.
+    class QAction *m_deselectAction = nullptr;
+    class QAction *m_invertSelectionAction = nullptr;
+    class QAction *m_copySelectionAction = nullptr;
+    class QAction *m_pasteSelectionAction = nullptr;
+    QImage m_selectionClipboard;         // extracted pixels, transparent outside the copied region
+    QPoint m_selectionClipboardOffsetPx; // top-left of m_selectionClipboard within the full image
+    void onDeselect();
+    void onInvertSelection();
+    void onCopySelection();
+    void onPasteSelection();
+
     Adjustments m_editClipboard;
     bool m_hasEditClipboard = false;
     void onCopyEdits();
