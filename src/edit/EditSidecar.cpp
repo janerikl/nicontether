@@ -190,6 +190,9 @@ QJsonObject adjustmentsToJson(const Adjustments &a) {
             j["hardness"] = m.hardness;
             j["autoMask"] = m.autoMask;
             j["paintColor"] = m.paintColor.name(QColor::HexArgb);
+            j["isGradientFill"] = m.isGradientFill;
+            j["gradientColorA"] = m.gradientColorA.name(QColor::HexArgb);
+            j["gradientColorB"] = m.gradientColorB.name(QColor::HexArgb);
             // Paint bucket result, embedded as base64 PNG (same convention as
             // RemoveObjectOp::mask/fill below) so it round-trips exactly
             // instead of needing to be recomputed from a click point.
@@ -253,7 +256,8 @@ QJsonObject adjustmentsToJson(const Adjustments &a) {
             QJsonArray stroke;
             for (const BrushStrokePoint &sp : m.stroke)
                 stroke.append(QJsonArray{sp.pt.x(), sp.pt.y(), sp.erase, sp.radius, sp.hardness,
-                                          double(sp.color), sp.newStroke});
+                                          double(sp.color), sp.newStroke, sp.isClone,
+                                          sp.cloneSourcePt.x(), sp.cloneSourcePt.y()});
             j["stroke"] = stroke;
             QJsonArray erases;
             for (const ErasePoint &ep : m.eraseStrokes)
@@ -283,6 +287,21 @@ QJsonObject adjustmentsToJson(const Adjustments &a) {
             masks.append(j);
         }
         o["masks"] = masks;
+    }
+
+    if (!a.groups.isEmpty()) {
+        QJsonArray groups;
+        for (const MaskGroup &g : a.groups) {
+            QJsonObject j;
+            j["id"] = g.id;
+            j["name"] = g.name;
+            j["opacity"] = g.opacity;
+            j["visible"] = g.visible;
+            j["blend"] = int(g.blend);
+            j["collapsed"] = g.collapsed;
+            groups.append(j);
+        }
+        o["groups"] = groups;
     }
 
     QJsonArray heals;
@@ -412,6 +431,9 @@ Adjustments adjustmentsFromJson(const QJsonObject &o) {
         m.hardness = j["hardness"].toDouble(0.5);
         m.autoMask = j["autoMask"].toBool(false);
         m.paintColor = QColor(j["paintColor"].toString(QStringLiteral("#ff000000")));
+        m.isGradientFill = j["isGradientFill"].toBool(false);
+        m.gradientColorA = QColor(j["gradientColorA"].toString(QStringLiteral("#ffffffff")));
+        m.gradientColorB = QColor(j["gradientColorB"].toString(QStringLiteral("#ff000000")));
         if (j.contains("fillMask")) {
             const QByteArray fillBytes = QByteArray::fromBase64(j["fillMask"].toString().toLatin1());
             if (!fillBytes.isEmpty()) m.fillMask.loadFromData(fillBytes, "PNG");
@@ -461,10 +483,10 @@ Adjustments adjustmentsFromJson(const QJsonObject &o) {
 
         for (const QJsonValue &sv : j["stroke"].toArray()) {
             QJsonArray p = sv.toArray();
-            if (p.size() >= 2)
+            if (p.size() >= 2) {
                 // radius/hardness/color fall back to the mask's own values
                 // for sidecars saved before per-point brush settings were tracked.
-                m.stroke.append(BrushStrokePoint{
+                BrushStrokePoint sp{
                     QPointF(p[0].toDouble(), p[1].toDouble()),
                     p.size() >= 3 && p[2].toBool(),
                     p.size() >= 4 ? p[3].toDouble() : m.brushRadius,
@@ -474,7 +496,13 @@ Adjustments adjustmentsFromJson(const QJsonObject &o) {
                     // marker here; treat every loaded point as a fresh stroke
                     // start so reopening a file never draws a phantom
                     // connecting line between what were separate strokes.
-                    p.size() >= 7 ? p[6].toBool() : true});
+                    p.size() >= 7 ? p[6].toBool() : true};
+                if (p.size() >= 10) {
+                    sp.isClone = p[7].toBool();
+                    sp.cloneSourcePt = QPointF(p[8].toDouble(), p[9].toDouble());
+                }
+                m.stroke.append(sp);
+            }
         }
         for (const QJsonValue &ev : j["eraseStrokes"].toArray()) {
             QJsonArray p = ev.toArray();
@@ -503,6 +531,17 @@ Adjustments adjustmentsFromJson(const QJsonObject &o) {
         m.adj.curve = curveFromJson(ad["curve"].toArray());
         if (ad.contains("levels")) m.adj.levels = levelsFromJson(ad["levels"].toObject());
         a.masks.append(m);
+    }
+    for (const QJsonValue &v : o["groups"].toArray()) {
+        QJsonObject j = v.toObject();
+        MaskGroup g;
+        g.id = j["id"].toString();
+        g.name = j["name"].toString();
+        g.opacity = j["opacity"].toDouble(1.0);
+        g.visible = j["visible"].toBool(true);
+        g.blend = static_cast<BlendMode>(j["blend"].toInt(0));
+        g.collapsed = j["collapsed"].toBool(false);
+        a.groups.append(g);
     }
     for (const QJsonValue &v : o["heals"].toArray()) {
         QJsonObject h = v.toObject();

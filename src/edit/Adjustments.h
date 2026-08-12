@@ -603,6 +603,27 @@ struct RemoveObjectOp {
     bool operator!=(const RemoveObjectOp &o) const { return !(*this == o); }
 };
 
+// Persisted state for a layer group, identified by `id` matching the
+// `groupId` string shared by its member Masks. Group membership/order is
+// still entirely determined by which masks share `id` and their contiguous
+// position in Adjustments::masks (see Mask::groupId) — this struct only
+// carries the group's OWN properties, which apply on top of its members like
+// a single virtual layer wrapping them (see applyMasks in Adjustments.cpp).
+struct MaskGroup {
+    QString id;
+    QString name;
+    double opacity = 1.0;
+    bool visible = true;
+    BlendMode blend = BlendMode::Normal;
+    bool collapsed = false; // UI expand/collapse state, persisted so it survives a reload
+
+    bool operator==(const MaskGroup &o) const {
+        return id == o.id && name == o.name && visible == o.visible && blend == o.blend &&
+               collapsed == o.collapsed && std::abs(opacity - o.opacity) < 1e-9;
+    }
+    bool operator!=(const MaskGroup &o) const { return !(*this == o); }
+};
+
 // Non-destructive edit parameters applied on top of an immutable base image.
 // Unless noted, sliders are in [-100, 100] with 0 = no change.
 struct Adjustments {
@@ -655,6 +676,14 @@ struct Adjustments {
     // order — the "Base" layer is the global fields above; each entry here is
     // an additional layer with its own tone/colour, mask, opacity and blend.
     QVector<Mask> masks;
+
+    // Persisted per-group state for layer groups (see Mask::groupId). A
+    // group with no matching entry here (e.g. one created before this field
+    // existed) falls back to defaults: fully visible, opacity 1.0, Normal
+    // blend, not collapsed — see applyMasks in Adjustments.cpp for how a
+    // group's own opacity/blend wraps its members like a single virtual
+    // layer, and LayersPanel for the collapse/expand UI.
+    QVector<MaskGroup> groups;
 
     // Spot-heal ops (oriented-image coords; applied before crop).
     QVector<HealOp> heals;
