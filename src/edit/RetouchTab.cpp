@@ -2081,7 +2081,13 @@ int RetouchTab::addMask(MaskType type, ShapeType shapeType) {
         m.brushRadius = defaultBrushRadiusNorm(m_base.width());
     m_adj.masks.insert(0, m);
     m_activeMask = 0;
-    m_maskMode = (type != MaskType::None);
+    // Only Radial/Linear/Brush/Paint are edited via canvas drag-mask mode;
+    // Shape/TextBox/image layers have their own dedicated tool modes, so
+    // leaving this on after they're created would swallow the next drag
+    // gesture (mouseMoveEvent short-circuits on m_maskMode, see ImageCanvas).
+    bool isDragMask = (type == MaskType::Radial || type == MaskType::Linear ||
+                        type == MaskType::Brush || type == MaskType::Paint);
+    m_maskMode = isDragMask;
     m_canvas->setMaskMode(type, m_maskMode);
     pushMaskGizmo();
     if (m_maskPreviewEnabled) retone();

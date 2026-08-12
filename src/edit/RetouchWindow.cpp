@@ -1642,7 +1642,7 @@ void RetouchWindow::buildToolOptionsBar() {
         updateTextOptionsFromTab();
     });
 
-    setColorSwatchButton(m_textColorBtn, Qt::white);
+    setColorSwatchButton(m_textColorBtn, Qt::black);
     setColorSwatchButton(m_textOutlineColorBtn, Qt::black);
     setColorSwatchButton(m_textShadowColorBtn, Qt::black);
     setColorSwatchButton(m_textBgColorBtn, Qt::black);

@@ -440,7 +440,7 @@ struct TextOp {
     bool bold = false;
     bool italic = false;
 
-    QColor color{255, 255, 255, 255};
+    QColor color{0, 0, 0, 255};
 
     bool outlineEnabled = false;
     QColor outlineColor{0, 0, 0, 255};
