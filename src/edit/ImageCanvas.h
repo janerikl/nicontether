@@ -171,6 +171,11 @@ signals:
     void colorRangePickStarted(const QColor &color);
     void colorRangeDragged(int dxPixels);
     void colorRangeReleased();
+    // Right-click-and-hold on the canvas while a paint tool (Brush/Pen/
+    // Bucket) is active: a round HSV wheel appears at the press point (see
+    // paintEvent), and this fires once on release with whatever color was
+    // under the cursor.
+    void quickColorPicked(const QColor &color);
     void healAt(const QPoint &imagePoint);
     void bucketFillRequested(const QPointF &ptNorm); // width-normalized, same convention as maskBrushPoint
     void textPlaceRequested(const QPoint &imagePoint);
@@ -329,6 +334,19 @@ private:
     QColor m_colorRangeColor;   // sampled target color (swatch fill)
     int m_colorRangeChannel = 0; // 0=R,1=G,2=B — dominant channel (swatch border)
     int m_colorRangeAmount = 0;  // -100..100, shown in the amount bar
+
+    // Quick color-wheel picker: right-click-and-hold on the canvas while a
+    // paint tool (Brush/Pen/Bucket) is active. The wheel's on-screen
+    // position stays fixed at the press point; only the highlighted color
+    // (and the indicator dot inside the wheel) tracks the cursor while held.
+    static constexpr int kQuickColorWheelRadius = 60; // widget px
+    bool m_quickColorPicking = false;
+    QPoint m_quickColorCenter;   // widget coords: wheel center, fixed at press point
+    QColor m_quickColorPreview;  // live color under the cursor while held
+    QImage m_quickColorWheelImg; // cached wheel bitmap, rebuilt once per press
+    bool m_suppressNextContextMenu = false; // swallow the native RMB-release context menu after a pick
+    QColor quickColorAt(const QPoint &pos) const;
+
     bool m_healMode = false;
     bool m_textMode = false;
     QVector<TextMarker> m_textMarkers; // display-image-space, index-aligned with Adjustments::texts

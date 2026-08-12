@@ -2718,6 +2718,9 @@ void RetouchWindow::wireTabSignals(RetouchTab *tab) {
             m_statusLabel->setText("White balance set");
         }
     });
+    connect(tab, &RetouchTab::quickColorPicked, this, [this, tab](const QColor &c) {
+        if (tab == currentTab()) m_colorSwatch->setForegroundColor(c);
+    });
     connect(tab, &RetouchTab::historyChanged, this,
             [this, tab](bool canUndo, bool canRedo) {
                 if (tab != currentTab()) return;

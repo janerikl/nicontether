@@ -152,6 +152,7 @@ void RetouchTab::setupCanvasAndWiring() {
     connect(m_canvas, &ImageCanvas::cropSelected, this, &RetouchTab::onCanvasCrop);
     connect(m_canvas, &ImageCanvas::commitCropRequested, this, &RetouchTab::applyCrop);
     connect(m_canvas, &ImageCanvas::colorPicked, this, &RetouchTab::onColorPicked);
+    connect(m_canvas, &ImageCanvas::quickColorPicked, this, &RetouchTab::onQuickColorPicked);
     connect(m_canvas, &ImageCanvas::colorRangePickStarted, this,
             &RetouchTab::onColorRangePickStarted);
     connect(m_canvas, &ImageCanvas::colorRangeDragged, this,
@@ -2741,6 +2742,15 @@ void RetouchTab::onColorPicked(const QColor &c) {
     retone();
     markEdited();
     emit wbPicked();
+}
+
+void RetouchTab::onQuickColorPicked(const QColor &c) {
+    // Just bubble it up — RetouchWindow owns the "update swatch + apply as
+    // paint color" sequencing already (see ColorSwatchWidget::
+    // foregroundColorChanged -> setPaintColor), same as a manual swatch
+    // click, so this doesn't call setPaintColor itself to avoid a redundant
+    // double-apply.
+    emit quickColorPicked(c);
 }
 
 void RetouchTab::onCanvasCrop(const QRect &r, double angleDegrees) {

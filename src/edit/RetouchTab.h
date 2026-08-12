@@ -248,6 +248,7 @@ signals:
     void cropPending(bool hasSelection);
     void cropModeExited(); // crop applied internally (e.g. via Enter)
     void wbPicked();       // white balance was set from the eyedropper
+    void quickColorPicked(const QColor &color); // right-click-hold wheel committed a paint color
     // Emitted when the save/edit state changes (for the thumbnail badge).
     void editStateChanged(bool dirty, bool hasEdits);
     void zoomChanged(double percent);
@@ -318,6 +319,7 @@ private slots:
     void onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke, double pressure = 1.0);
     void onBucketFillRequested(const QPointF &ptNorm);
     void onMaskEditFinished();
+    void onQuickColorPicked(const QColor &c);
 
 private:
     void rebuildGeom();  // recompute oriented(+crop) full image + display base

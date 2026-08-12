@@ -18,6 +18,7 @@ public:
 public slots:
     void swapColors();
     void resetColors();
+    void setForegroundColor(const QColor &color);
 
 signals:
     void foregroundColorChanged(const QColor &color);

@@ -76,6 +76,13 @@ void ColorSwatchWidget::mousePressEvent(QMouseEvent *ev) {
     }
 }
 
+void ColorSwatchWidget::setForegroundColor(const QColor &color) {
+    if (!color.isValid() || color == m_fg) return;
+    m_fg = color;
+    update();
+    emit foregroundColorChanged(m_fg);
+}
+
 void ColorSwatchWidget::swapColors() {
     std::swap(m_fg, m_bg);
     update();

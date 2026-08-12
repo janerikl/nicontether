@@ -717,6 +717,19 @@ QPointF ImageCanvas::normPointAt(const QPoint &pos) const {
     return QPointF(ix / W, iy / W); // both axes normalized to width
 }
 
+// Quick color-wheel picker geometry: angle around m_quickColorCenter -> hue,
+// distance -> saturation (clamped to 1.0 past the wheel's edge, so dragging
+// outside it while held still tracks a live, fully-saturated color at that
+// angle rather than going stale), value fixed at 1.0.
+QColor ImageCanvas::quickColorAt(const QPoint &pos) const {
+    QPointF d = pos - m_quickColorCenter;
+    double dist = std::hypot(d.x(), d.y());
+    double sat = std::clamp(dist / kQuickColorWheelRadius, 0.0, 1.0);
+    double hue = std::atan2(d.y(), d.x()); // -pi..pi
+    if (hue < 0) hue += 2 * M_PI;
+    return QColor::fromHsvF(hue / (2 * M_PI), sat, 1.0);
+}
+
 void ImageCanvas::setBrushRadius(int displayPx) {
     m_brushRadius = displayPx;
     if (m_healMode) update();
@@ -1301,6 +1314,43 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         p.drawLine(cx, bar.top() - 1, cx, bar.bottom() + 1);
     }
 
+    // Quick color-wheel picker: cached HSV wheel bitmap centered at the
+    // press point, a ring indicator at the live-preview position, and a
+    // flat swatch readout next to it.
+    if (m_quickColorPicking) {
+        const QRect wheelRect(m_quickColorCenter.x() - kQuickColorWheelRadius,
+                              m_quickColorCenter.y() - kQuickColorWheelRadius,
+                              2 * kQuickColorWheelRadius, 2 * kQuickColorWheelRadius);
+        p.drawImage(wheelRect, m_quickColorWheelImg);
+        p.setPen(QPen(Qt::black, 1));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(wheelRect);
+
+        // Indicator dot at the (possibly clamped-to-edge) cursor position.
+        float h, s, v;
+        m_quickColorPreview.getHsvF(&h, &s, &v);
+        const double angle = h * 2 * M_PI;
+        const double dist = s * kQuickColorWheelRadius;
+        const QPointF dot = QPointF(m_quickColorCenter) +
+                            QPointF(std::cos(angle) * dist, std::sin(angle) * dist);
+        p.setPen(QPen(Qt::white, 2));
+        p.setBrush(m_quickColorPreview);
+        p.drawEllipse(dot, 6, 6);
+        p.setPen(QPen(Qt::black, 1));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(dot, 6, 6);
+
+        // Flat preview swatch, reusing the Color Range swatch's styling.
+        const int sw = 22;
+        QPoint tl = m_quickColorCenter + QPoint(kQuickColorWheelRadius + 10, -sw / 2);
+        tl.setX(std::clamp(tl.x(), 2, width() - sw - 2));
+        tl.setY(std::clamp(tl.y(), 2, height() - sw - 2));
+        const QRect swatch(tl, QSize(sw, sw));
+        p.setPen(QPen(QColor(0, 0, 0, 180), 1));
+        p.setBrush(m_quickColorPreview);
+        p.drawRoundedRect(swatch, 4, 4);
+    }
+
     if (m_hasActiveImageLayer) {
         QRectF frImg = imageLayerFrameRect();
         if (!frImg.isEmpty()) {
@@ -1536,6 +1586,33 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         return QPoint(std::clamp(int((pos.x() - tr.x()) * sx), 0, m_img.width() - 1),
                       std::clamp(int((pos.y() - tr.y()) * sy), 0, m_img.height() - 1));
     };
+
+    // Quick color-wheel picker: right-click-and-hold while a paint tool
+    // (Brush/Pen, both MaskType::Paint, or the Paint bucket) is active.
+    if (ev->button() == Qt::RightButton &&
+        ((m_maskMode && (m_maskKind == MaskType::Brush || m_maskKind == MaskType::Paint)) ||
+         m_bucketMode) &&
+        targetRect().contains(ev->pos())) {
+        m_quickColorPicking = true;
+        m_quickColorCenter = ev->pos();
+        m_quickColorWheelImg = QImage(2 * kQuickColorWheelRadius, 2 * kQuickColorWheelRadius,
+                                      QImage::Format_ARGB32);
+        m_quickColorWheelImg.fill(Qt::transparent);
+        for (int y = 0; y < m_quickColorWheelImg.height(); ++y) {
+            for (int x = 0; x < m_quickColorWheelImg.width(); ++x) {
+                double dx = x - kQuickColorWheelRadius, dy = y - kQuickColorWheelRadius;
+                double dist = std::hypot(dx, dy);
+                if (dist > kQuickColorWheelRadius) continue;
+                double sat = std::clamp(dist / kQuickColorWheelRadius, 0.0, 1.0);
+                double hue = std::atan2(dy, dx);
+                if (hue < 0) hue += 2 * M_PI;
+                m_quickColorWheelImg.setPixelColor(x, y, QColor::fromHsvF(hue / (2 * M_PI), sat, 1.0));
+            }
+        }
+        m_quickColorPreview = quickColorAt(ev->pos());
+        update();
+        return;
+    }
 
     // White-balance eyedropper.
     if (m_pickMode && ev->button() == Qt::LeftButton) {
@@ -1858,6 +1935,11 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
 }
 
 void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
+    if (m_quickColorPicking) {
+        m_quickColorPreview = quickColorAt(ev->pos());
+        update();
+        return;
+    }
     if (m_guideDrag != GuideDrag::None) {
         m_mousePos = ev->pos();
         if (m_guideDrag == GuideDrag::MoveH && m_img.height() > 0) {
@@ -2391,6 +2473,13 @@ void ImageCanvas::tabletEvent(QTabletEvent *ev) {
 }
 
 void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
+    if (m_quickColorPicking && ev->button() == Qt::RightButton) {
+        m_quickColorPicking = false;
+        m_suppressNextContextMenu = true; // swallow the native RMB-release context menu
+        emit quickColorPicked(quickColorAt(ev->pos()));
+        update();
+        return;
+    }
     if (m_guideDrag != GuideDrag::None && ev->button() == Qt::LeftButton) {
         const int kThickness = 20;
         switch (m_guideDrag) {
@@ -2738,6 +2827,15 @@ void ImageCanvas::setShowRulers(bool on) {
 }
 
 void ImageCanvas::contextMenuEvent(QContextMenuEvent *ev) {
+    // Qt synthesizes this after every right-button release regardless of
+    // what mouseReleaseEvent did with it, so swallow the one that follows a
+    // quick-color-pick release (see mouseReleaseEvent) before any of the
+    // existing guide/background-color menu logic below runs.
+    if (m_suppressNextContextMenu) {
+        m_suppressNextContextMenu = false;
+        ev->ignore();
+        return;
+    }
     if (m_showRulers && !m_img.isNull()) {
         int hh = guideHAt(ev->pos());
         int hv = hh < 0 ? guideVAt(ev->pos()) : -1;
