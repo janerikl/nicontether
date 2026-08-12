@@ -829,24 +829,24 @@ void RetouchWindow::buildViewMenu() {
             if (d) sectionsMenu->addAction(d->toggleViewAction());
     }
 
-    auto *filmstripAction = new QAction("Filmstrip", this);
-    filmstripAction->setCheckable(true);
-    filmstripAction->setChecked(true);
-    connect(filmstripAction, &QAction::toggled, this, [this](bool on) {
+    m_filmstripAction = new QAction("Filmstrip", this);
+    m_filmstripAction->setCheckable(true);
+    m_filmstripAction->setChecked(true);
+    connect(m_filmstripAction, &QAction::toggled, this, [this](bool on) {
         if (m_filmstrip) m_filmstrip->setVisible(on);
         if (m_beforeAfter) m_beforeAfter->setVisible(on);
     });
-    viewMenu->addAction(filmstripAction);
+    viewMenu->addAction(m_filmstripAction);
 
-    auto *rulersAction = new QAction("Rulers", this);
-    rulersAction->setCheckable(true);
-    rulersAction->setChecked(QSettings().value("canvas/showRulers", false).toBool());
-    connect(rulersAction, &QAction::toggled, this, [this](bool on) {
+    m_rulersAction = new QAction("Rulers", this);
+    m_rulersAction->setCheckable(true);
+    m_rulersAction->setChecked(QSettings().value("canvas/showRulers", false).toBool());
+    connect(m_rulersAction, &QAction::toggled, this, [this](bool on) {
         QSettings().setValue("canvas/showRulers", on);
         for (RetouchTab *tab : m_openTabs)
             if (tab->canvas()) tab->canvas()->setShowRulers(on);
     });
-    viewMenu->addAction(rulersAction);
+    viewMenu->addAction(m_rulersAction);
 
     viewMenu->addSeparator();
     auto *resetPanelsAction = new QAction("Reset Panels", this);
@@ -858,6 +858,118 @@ void RetouchWindow::buildViewMenu() {
         if (m_layersPanel) m_layersPanel->resetSections();
     });
     viewMenu->addAction(resetPanelsAction);
+
+    viewMenu->addSeparator();
+    m_layoutsMenu = viewMenu->addMenu("Layouts");
+    rebuildLayoutsMenu();
+}
+
+// Rebuild the Layouts submenu: built-in presets (Painting, Photo Editing),
+// then any user-saved templates, then Save/Delete actions. Called at startup
+// and whenever a template is saved or deleted.
+void RetouchWindow::rebuildLayoutsMenu() {
+    if (!m_layoutsMenu) return;
+    m_layoutsMenu->clear();
+
+    auto *paintingAct = m_layoutsMenu->addAction("Painting");
+    connect(paintingAct, &QAction::triggered, this, &RetouchWindow::applyBuiltInPaintingLayout);
+    auto *photoAct = m_layoutsMenu->addAction("Photo Editing");
+    connect(photoAct, &QAction::triggered, this, &RetouchWindow::applyBuiltInPhotoEditingLayout);
+
+    const QList<ViewTemplate> &custom = m_viewTemplateStore.custom();
+    if (!custom.isEmpty()) {
+        m_layoutsMenu->addSeparator();
+        for (const ViewTemplate &t : custom) {
+            auto *act = m_layoutsMenu->addAction(t.name);
+            connect(act, &QAction::triggered, this, [this, t] { applyViewTemplate(t); });
+        }
+    }
+
+    m_layoutsMenu->addSeparator();
+    auto *saveAct = m_layoutsMenu->addAction("Save Current as Template…");
+    connect(saveAct, &QAction::triggered, this, &RetouchWindow::onSaveViewTemplate);
+    if (!custom.isEmpty()) {
+        auto *deleteAct = m_layoutsMenu->addAction("Delete Template…");
+        connect(deleteAct, &QAction::triggered, this, &RetouchWindow::onDeleteViewTemplate);
+    }
+}
+
+// Apply a saved (custom) template: the dock/toolbar state blob, plus the
+// filmstrip and rulers toggles that live outside QMainWindow::saveState()
+// (filmstrip is a plain central-layout widget, not a dock; rulers are a
+// per-tab canvas setting). Re-asserts the same app-controlled exceptions
+// restoreWindowState() enforces: Controls dock and Tether toolbar are
+// mode-driven, never left visible by a stored layout.
+void RetouchWindow::applyViewTemplate(const ViewTemplate &t) {
+    restoreState(t.state);
+    if (m_controlsDock)  m_controlsDock->hide();
+    if (m_tetherToolBar) m_tetherToolBar->hide();
+    if (m_filmstripAction) m_filmstripAction->setChecked(t.filmstripVisible);
+    if (m_rulersAction) m_rulersAction->setChecked(t.rulersVisible);
+    m_statusLabel->setText(QString("Layout applied: \"%1\"").arg(t.name));
+}
+
+// Built-in "Painting" preset: tool + tool-options bars and the Adjustments
+// dock front-and-centre; History/Levels/Layers docks hidden to keep focus on
+// brush/tool controls. Filmstrip hidden, rulers off.
+void RetouchWindow::applyBuiltInPaintingLayout() {
+    applyDefaultDockLayout();
+    if (m_toolsBar) m_toolsBar->show();
+    if (m_toolOptionsBar) m_toolOptionsBar->show();
+    if (m_adjustmentsDock) m_adjustmentsDock->show();
+    if (m_historyDock) m_historyDock->hide();
+    if (m_levelsDock) m_levelsDock->hide();
+    if (m_layersDock) m_layersDock->show();
+    if (m_adjustmentsDock) m_adjustmentsDock->raise();
+    if (m_filmstripAction) m_filmstripAction->setChecked(false);
+    if (m_rulersAction) m_rulersAction->setChecked(false);
+    m_statusLabel->setText("Layout: Painting");
+}
+
+// Built-in "Photo Editing" preset: full dock stack (Adjustments/History/
+// Levels/Layers) visible, filmstrip visible, rulers on, tool options hidden
+// since photo-editing workflows lean on the docks rather than paint tools.
+void RetouchWindow::applyBuiltInPhotoEditingLayout() {
+    applyDefaultDockLayout();
+    if (m_toolsBar) m_toolsBar->show();
+    if (m_toolOptionsBar) m_toolOptionsBar->hide();
+    if (m_adjustmentsDock) m_adjustmentsDock->show();
+    if (m_historyDock) m_historyDock->show();
+    if (m_levelsDock) m_levelsDock->show();
+    if (m_layersDock) m_layersDock->show();
+    if (m_filmstripAction) m_filmstripAction->setChecked(true);
+    if (m_rulersAction) m_rulersAction->setChecked(true);
+    m_statusLabel->setText("Layout: Photo Editing");
+}
+
+void RetouchWindow::onSaveViewTemplate() {
+    bool ok = false;
+    const QString name = QInputDialog::getText(this, "Save Layout Template", "Template name:",
+                                                QLineEdit::Normal, QString(), &ok);
+    if (!ok || name.trimmed().isEmpty()) return;
+
+    ViewTemplate t;
+    t.name = name.trimmed();
+    t.state = saveState();
+    t.filmstripVisible = m_filmstripAction ? m_filmstripAction->isChecked() : true;
+    t.rulersVisible = m_rulersAction ? m_rulersAction->isChecked() : false;
+    m_viewTemplateStore.addOrUpdate(t);
+    rebuildLayoutsMenu();
+    m_statusLabel->setText(QString("Saved layout template \"%1\"").arg(t.name));
+}
+
+void RetouchWindow::onDeleteViewTemplate() {
+    const QList<ViewTemplate> &custom = m_viewTemplateStore.custom();
+    if (custom.isEmpty()) return;
+    QStringList names;
+    for (const ViewTemplate &t : custom) names << t.name;
+    bool ok = false;
+    const QString name = QInputDialog::getItem(this, "Delete Layout Template", "Template:",
+                                                names, 0, false, &ok);
+    if (!ok || name.isEmpty()) return;
+    m_viewTemplateStore.remove(name);
+    rebuildLayoutsMenu();
+    m_statusLabel->setText(QString("Deleted layout template \"%1\"").arg(name));
 }
 
 // Re-apply the default dock arrangement to the (already-created) docks: all

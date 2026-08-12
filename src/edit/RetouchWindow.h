@@ -8,6 +8,7 @@
 
 #include "edit/Adjustments.h"
 #include "edit/AdjustmentPreset.h"
+#include "edit/ViewTemplate.h"
 #include "edit/ExportPreset.h"
 #include "ui/ColorSwatchWidget.h"
 
@@ -136,6 +137,20 @@ private:
     LevelsPanel *m_levelsPanel = nullptr;
     void buildViewMenu();
     void applyDefaultDockLayout(); // re-apply the default dock arrangement (used on first launch + Reset Panels)
+    class QAction *m_filmstripAction = nullptr; // View menu: promoted so templates can save/restore its checked state
+    class QAction *m_rulersAction = nullptr;    // View menu: promoted so templates can save/restore its checked state
+
+    // Named view templates (dock/toolbar visibility snapshots), reachable from
+    // View > Layouts. Two built-in presets (Painting, Photo Editing) are
+    // synthesized on demand; user templates persist via m_viewTemplateStore.
+    ViewTemplateStore m_viewTemplateStore;
+    class QMenu *m_layoutsMenu = nullptr;
+    void rebuildLayoutsMenu();
+    void applyViewTemplate(const ViewTemplate &t); // restoreState() + filmstrip/rulers + re-assert app-controlled visibility
+    void applyBuiltInPaintingLayout();
+    void applyBuiltInPhotoEditingLayout();
+    void onSaveViewTemplate();
+    void onDeleteViewTemplate();
     void restoreWindowState(); // deferred restoreGeometry()/restoreState(), run after the window is shown
     void buildHistoryDock();
     void buildLevelsDock();

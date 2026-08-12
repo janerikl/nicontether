@@ -48,6 +48,7 @@ add_executable(photonloom
     src/edit/RetouchWindow.cpp
     src/edit/ExportPreset.cpp
     src/edit/AdjustmentPreset.cpp
+    src/edit/ViewTemplate.cpp
     src/edit/BrushPreset.cpp
     src/edit/RecentSessions.cpp
     src/edit/RecentFiles.cpp
