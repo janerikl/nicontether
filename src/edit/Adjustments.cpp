@@ -5,6 +5,7 @@
 
 #include <QPainter>
 #include <QPainterPath>
+#include <QHash>
 #include <QRectF>
 #include <QTransform>
 #include <QFont>
@@ -911,7 +912,24 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                // (instead of the caller's `img`) at `resumeFromIndex` (instead
                // of the top of the stack) — i.e. resumes a previous call that
                // captured a belowSnapshot at the same index.
-               int resumeFromIndex = -1, const QImage *resumeImg = nullptr) {
+               int resumeFromIndex = -1, const QImage *resumeImg = nullptr,
+               // Opt-in layer-group compositing: when non-null, a contiguous
+               // run of masks sharing a non-empty groupId with a matching
+               // MaskGroup entry is composited as one virtual layer — its
+               // members blend amongst themselves first (recursing into this
+               // same function over just that index range), then the whole
+               // result is blended into the backdrop using the *group's own*
+               // opacity/blend/visibility, instead of each member blending
+               // into the backdrop independently. Left null (the default) by
+               // every call site except the top-level settled/full render —
+               // interactive drag-preview fast paths intentionally keep the
+               // legacy flat behavior (see applyAdjustments) rather than
+               // paying for group-span detection on every live redraw.
+               const QVector<MaskGroup> *groups = nullptr,
+               // Inclusive lower bound for the loop, used internally when
+               // recursing into just a group's own member span; leave at the
+               // default (0) to composite the whole stack, as before.
+               int stopAtIndex = 0) {
     if (resumeImg) img = *resumeImg;
     const int w = img.width(), h = img.height();
     if (w == 0 || h == 0) return;
@@ -922,7 +940,73 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
     const int startMi = (resumeFromIndex >= 0)
                             ? std::min(resumeFromIndex, int(masks.size()) - 1)
                             : masks.size() - 1;
-    for (int mi = startMi; mi >= 0; --mi) {
+    // Precompute contiguous group spans (hiIdx -> loIdx), keyed by the
+    // highest index in each span, since the loop below counts mi DOWN from
+    // startMi to 0 (index 0 is the topmost layer) — the highest index in a
+    // group's contiguous range is the first member this loop reaches.
+    QHash<int, int> groupSpanLoByHi;
+    QHash<int, const MaskGroup *> groupByHi;
+    if (groups) {
+        for (int i = 0; i < masks.size();) {
+            const QString &gid = masks[i].groupId;
+            if (gid.isEmpty()) { ++i; continue; }
+            int hi = i;
+            while (hi + 1 < masks.size() && masks[hi + 1].groupId == gid) ++hi;
+            const MaskGroup *grp = nullptr;
+            for (const MaskGroup &g : *groups)
+                if (g.id == gid) { grp = &g; break; }
+            if (grp) {
+                groupSpanLoByHi[hi] = i;
+                groupByHi[hi] = grp;
+            }
+            i = hi + 1;
+        }
+    }
+    for (int mi = startMi; mi >= stopAtIndex; --mi) {
+        if (groupByHi.contains(mi)) {
+            const MaskGroup &grp = *groupByHi[mi];
+            const int loIdx = groupSpanLoByHi[mi];
+            if (grp.visible && grp.opacity > 0.0) {
+                QImage before = img;
+                QImage groupImg = img;
+                applyMasks(groupImg, masks, brushCache, -1, nullptr, pass,
+                          orientedToGeom, geomRotationDeg, scale, -1, nullptr,
+                          /*resumeFromIndex=*/mi, /*resumeImg=*/nullptr,
+                          /*groups=*/nullptr, /*stopAtIndex=*/loIdx);
+                const double gwgt = clampd(grp.opacity, 0.0, 1.0);
+                const bool isHSL = grp.blend == BlendMode::Hue || grp.blend == BlendMode::Saturation ||
+                                   grp.blend == BlendMode::Color || grp.blend == BlendMode::Luminosity;
+                for (int y = 0; y < h; ++y) {
+                    QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
+                    const QRgba64 *beforeLine = reinterpret_cast<const QRgba64 *>(before.scanLine(y));
+                    const QRgba64 *groupLine = reinterpret_cast<const QRgba64 *>(groupImg.scanLine(y));
+                    for (int x = 0; x < w; ++x) {
+                        QRgba64 b = beforeLine[x], g = groupLine[x];
+                        double br, bg, bb;
+                        if (isHSL) {
+                            QRgba64 blended = blendHSLTriple(grp.blend, b, g);
+                            br = blended.red(); bg = blended.green(); bb = blended.blue();
+                        } else {
+                            br = blendChannel(grp.blend, b.red(), g.red());
+                            bg = blendChannel(grp.blend, b.green(), g.green());
+                            bb = blendChannel(grp.blend, b.blue(), g.blue());
+                        }
+                        const double inv = 1.0 - gwgt;
+                        line[x] = qRgba64(
+                            clamp16(int(std::lround(b.red() * inv + br * gwgt))),
+                            clamp16(int(std::lround(b.green() * inv + bg * gwgt))),
+                            clamp16(int(std::lround(b.blue() * inv + bb * gwgt))),
+                            clamp16(int(std::lround(b.alpha() * inv + g.alpha() * gwgt))));
+                    }
+                }
+            }
+            // else: group hidden/fully-transparent — img already holds the
+            // correct result (its state entering the group), so just skip
+            // every member without compositing them.
+            if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
+            mi = loIdx; // loop's own --mi lands on loIdx-1 next iteration
+            continue;
+        }
         if (mi == belowSnapshotIndex && belowSnapshotOut) *belowSnapshotOut = img;
         const Mask &m = masks[mi];
         const bool interactiveType = m.type == MaskType::Paint ||
@@ -1804,6 +1888,18 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
         bool hasBackgroundMask = false;
         for (const Mask &m : adj.masks)
             if (m.type == MaskType::Background) { hasBackgroundMask = true; break; }
+        // Group-aware compositing (a group's own opacity/blend wrapping its
+        // members, see applyMasks) only kicks in when no snapshot/resume is
+        // being requested at this call — those are the interactive-drag
+        // caching fast paths, and reconciling a snapshot index that falls
+        // *inside* a group's span with the group short-circuit isn't worth
+        // the complexity/risk here. A live drag on a layer inside a group
+        // briefly renders that group flat (members blending straight into
+        // the backdrop, ignoring the group's own opacity/blend) until the
+        // drag settles and a plain full render — which always requests no
+        // snapshot — corrects it.
+        const QVector<MaskGroup> *groupsForThisRender =
+            (maskSnapshotIndex < 0 && belowSnapshotIndex < 0) ? &adj.groups : nullptr;
         if (hasBackgroundMask) {
             QVector<Mask> stack = adj.masks;
             for (Mask &m : stack)
@@ -1812,12 +1908,14 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
             composite.fill(Qt::transparent);
             applyMasks(composite, stack, brushCache, maskSnapshotIndex, maskSnapshotOut,
                       MaskPass::All, orientedToGeom, geomRotationDeg, scale,
-                      belowSnapshotIndex, belowSnapshotOut);
+                      belowSnapshotIndex, belowSnapshotOut, -1, nullptr,
+                      groupsForThisRender);
             img = composite;
         } else {
             applyMasks(img, adj.masks, brushCache, maskSnapshotIndex, maskSnapshotOut,
                       MaskPass::All, orientedToGeom, geomRotationDeg, scale,
-                      belowSnapshotIndex, belowSnapshotOut);
+                      belowSnapshotIndex, belowSnapshotOut, -1, nullptr,
+                      groupsForThisRender);
         }
     }
 

@@ -2597,6 +2597,10 @@ void RetouchTab::groupMasks(const QVector<int> &indices) {
     const QString groupId = QUuid::createUuid().toString();
     for (Mask &m : members) { m.groupId = groupId; m.groupName = groupName; }
     for (int i = 0; i < members.size(); ++i) m_adj.masks.insert(insertAt + i, members[i]);
+    MaskGroup grp;
+    grp.id = groupId;
+    grp.name = groupName;
+    m_adj.groups.append(grp);
 
     m_activeMask = insertAt + members.size() - 1;
     retone();
@@ -2615,6 +2619,8 @@ void RetouchTab::renameGroup(const QString &groupId, const QString &name) {
             changed = true;
         }
     }
+    for (MaskGroup &g : m_adj.groups)
+        if (g.id == groupId && g.name != name) { g.name = name; changed = true; }
     if (!changed) return;
     markEdited();
     emit masksChanged();
@@ -2622,7 +2628,8 @@ void RetouchTab::renameGroup(const QString &groupId, const QString &name) {
 
 // Clears the group tag of every layer sharing a group with the given
 // indices — the layers stay exactly where they are, they just stop acting
-// as one unit.
+// as one unit. Their MaskGroup entry (opacity/visibility/blend) is dropped
+// along with them, since nothing references that groupId anymore.
 void RetouchTab::ungroupMasks(const QVector<int> &indices) {
     QSet<QString> groupIds;
     for (int idx : indices)
@@ -2631,8 +2638,33 @@ void RetouchTab::ungroupMasks(const QVector<int> &indices) {
     if (groupIds.isEmpty()) return;
     for (Mask &m : m_adj.masks)
         if (groupIds.contains(m.groupId)) { m.groupId.clear(); m.groupName.clear(); }
+    for (int i = m_adj.groups.size() - 1; i >= 0; --i)
+        if (groupIds.contains(m_adj.groups[i].id)) m_adj.groups.removeAt(i);
     markEdited();
     emit masksChanged();
+}
+
+void RetouchTab::setGroupProperties(const QString &groupId, double opacity, bool visible,
+                                    BlendMode blend) {
+    if (groupId.isEmpty()) return;
+    MaskGroup *grp = nullptr;
+    for (MaskGroup &g : m_adj.groups)
+        if (g.id == groupId) { grp = &g; break; }
+    if (!grp) {
+        // A group created before this field existed (or one whose entry was
+        // otherwise lost) — synthesize one now rather than silently no-oping.
+        MaskGroup g;
+        g.id = groupId;
+        for (const Mask &m : m_adj.masks)
+            if (m.groupId == groupId) { g.name = m.groupName; break; }
+        m_adj.groups.append(g);
+        grp = &m_adj.groups.last();
+    }
+    grp->opacity = std::clamp(opacity, 0.0, 1.0);
+    grp->visible = visible;
+    grp->blend = blend;
+    retone();
+    markEdited();
 }
 
 void RetouchTab::setActiveMaskShape(bool inverted, double feather,

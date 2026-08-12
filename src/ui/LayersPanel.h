@@ -46,6 +46,11 @@ public:
     // MaskType::Background entry in `masks` now — no separate pinned row or
     // extra parameters, same as every other layer.
     void setMasks(const QVector<Mask> &masks, int activeIndex);
+    // Persisted per-group state (opacity/visibility/blend/collapsed), keyed
+    // by Mask::groupId — see MaskGroup in Adjustments.h. Independent of
+    // setMasks() so a group-properties-only change doesn't need to touch the
+    // (much larger, order-sensitive) mask list diffing.
+    void setGroups(const QVector<MaskGroup> &groups);
     // Remove Object section: a flat list of Adjustments::removals, one row
     // per content-aware fill (visibility checkbox + Delete button), mirroring
     // the Shapes section's per-row eye toggle. Top of the list = most
@@ -120,6 +125,10 @@ signals:
     void maskTextChanged(const QString &text, const QString &family, double pixelSize,
                          bool bold, bool italic);
     void gradientFillChanged(bool enabled, const QColor &colorA, const QColor &colorB);
+    // Edited via the same Opacity/Blend controls as a mask, retargeted while
+    // a group header is the current tree selection (see m_selectedGroupId).
+    void groupPropertiesChanged(const QString &groupId, double opacity, bool visible,
+                                BlendMode blend);
 
     void selectRemovalRequested(int index);
     void removalVisibleChanged(int index, bool visible);
@@ -141,6 +150,11 @@ private:
     QIcon groupThumbnail() const;
 
     QVector<Mask> m_masks;
+    QVector<MaskGroup> m_groups;
+    // Non-empty when the current tree selection is a group header (not a
+    // member mask) — set in currentItemChanged, read by loadActive() to
+    // retarget the Opacity/Blend controls at the group instead of a mask.
+    QString m_selectedGroupId;
     int m_active = -1;
     QVector<RemoveObjectOp> m_removals;
     int m_activeRemoval = -1;

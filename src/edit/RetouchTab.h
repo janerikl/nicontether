@@ -208,7 +208,12 @@ public:
     void groupMasks(const QVector<int> &indices);     // tag layers as one group; kept contiguous
     void ungroupMasks(const QVector<int> &indices);   // clear the group tag of the given layers' groups
     void renameGroup(const QString &groupId, const QString &name); // rename every layer's group
+    // Sets a group's own opacity/visibility/blend (see MaskGroup in
+    // Adjustments.h), creating its MaskGroup entry on first use (a group
+    // with no entry yet behaves as fully-visible/opacity-1.0/Normal-blend).
+    void setGroupProperties(const QString &groupId, double opacity, bool visible, BlendMode blend);
     const QVector<Mask> &masks() const { return m_adj.masks; }
+    const QVector<MaskGroup> &groups() const { return m_adj.groups; }
     int activeMaskIndex() const { return m_activeMask; }
 
     // True when there is a currently-selected layer and its mask type matches

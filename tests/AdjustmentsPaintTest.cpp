@@ -877,6 +877,65 @@ int main(int argc, char **argv) {
         assert(qRed(center) < 100 && qGreen(center) < 100 && qBlue(center) < 100);
     }
 
+    // Real-groups compositing: a group's own opacity/blend wraps its members
+    // like one virtual layer, rather than each member blending into the
+    // backdrop independently (see applyMasks in Adjustments.cpp). Two fully-
+    // opaque, Normal-blend, full-frame members (red on top of green) grouped
+    // together with a 50% GROUP opacity over a black base must show ~50% red
+    // (the group's own flattened-then-blended result), not ~50% red blended
+    // with ~50% green independently (which a naive per-member opacity halving
+    // would produce instead).
+    {
+        QImage base(8, 8, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        QImage redSrc(8, 8, QImage::Format_ARGB32);
+        redSrc.fill(QColor(255, 0, 0));
+        QImage greenSrc(8, 8, QImage::Format_ARGB32);
+        greenSrc.fill(QColor(0, 255, 0));
+
+        Mask red;
+        red.type = MaskType::None;
+        red.sourceImagePath = "red.png";
+        red.sourceImageCache = redSrc;
+        red.opacity = 1.0;
+        red.groupId = "g1";
+        red.groupName = "Group";
+
+        Mask green;
+        green.type = MaskType::None;
+        green.sourceImagePath = "green.png";
+        green.sourceImageCache = greenSrc;
+        green.opacity = 1.0;
+        green.groupId = "g1";
+        green.groupName = "Group";
+
+        Adjustments adj;
+        adj.masks.append(red);   // index 0: topmost
+        adj.masks.append(green); // index 1: bottom
+        MaskGroup grp;
+        grp.id = "g1";
+        grp.opacity = 0.5;
+        grp.visible = true;
+        grp.blend = BlendMode::Normal;
+        adj.groups.append(grp);
+
+        QImage out = applyAdjustments(base, adj);
+        QRgb center = out.pixel(4, 4);
+        // ~50% red (127ish), green fully hidden underneath red within the
+        // group, not independently blended in.
+        assert(qRed(center) > 100 && qRed(center) < 155);
+        assert(qGreen(center) < 20);
+        assert(qBlue(center) < 20);
+
+        // An invisible group must leave the backdrop completely untouched —
+        // members skipped entirely, not composited-then-hidden.
+        adj.groups[0].visible = false;
+        QImage outHidden = applyAdjustments(base, adj);
+        QRgb centerHidden = outHidden.pixel(4, 4);
+        assert(qRed(centerHidden) < 5 && qGreen(centerHidden) < 5 && qBlue(centerHidden) < 5);
+    }
+
     std::printf("AdjustmentsPaintTest: all assertions passed\n");
     return 0;
 }

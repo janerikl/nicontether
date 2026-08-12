@@ -2448,6 +2448,11 @@ void RetouchWindow::buildLayersDock() {
                 RetouchTab *tab = currentTab();
                 if (tab) tab->setActiveMaskBlend(mode);
             });
+    connect(m_layersPanel, &LayersPanel::groupPropertiesChanged, this,
+            [this](const QString &groupId, double opacity, bool visible, BlendMode blend) {
+                RetouchTab *tab = currentTab();
+                if (tab) { tab->setGroupProperties(groupId, opacity, visible, blend); refreshMaskPanel(); }
+            });
     connect(m_layersPanel, &LayersPanel::maskVisibleChanged, this,
             [this](int index, bool visible) {
                 RetouchTab *tab = currentTab();
@@ -2572,6 +2577,7 @@ void RetouchWindow::refreshMaskPanel() {
     if (m_layersPanel) {
         if (ready) {
             m_layersPanel->setMasks(tab->masks(), tab->activeMaskIndex());
+            m_layersPanel->setGroups(tab->groups());
             m_layersPanel->setRemovals(tab->removals(), tab->activeRemovalIndex());
             m_layersPanel->setImageWidth(tab->imageWidth());
         } else {

@@ -7,6 +7,7 @@
 
 #include <QApplication>
 #include <cassert>
+#include <cmath>
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
@@ -264,6 +265,40 @@ int main(int argc, char **argv) {
 
         tab6.reorderMasks({1, 0, 2}); // moves Background to index 0 (top)
         assert(tab6.masks()[0].type == MaskType::Background); // unpinned by this call
+    }
+
+    // Real-groups regression: groupMasks() must create a matching MaskGroup
+    // entry (opacity/visible/blend state), not just tag the members'
+    // groupId — otherwise Layers-panel group opacity/blend controls would
+    // have nothing to read/write for a freshly created group.
+    {
+        RetouchTab tab7(QSize(8, 8));
+        tab7.addMask(MaskType::Radial);
+        tab7.addMask(MaskType::Radial);
+        assert(tab7.groups().isEmpty());
+        tab7.groupMasks({0, 1});
+        QString groupId = tab7.masks()[0].groupId;
+        assert(!groupId.isEmpty());
+        assert(tab7.groups().size() == 1);
+        assert(tab7.groups()[0].id == groupId);
+        assert(tab7.groups()[0].visible == true);
+        assert(std::abs(tab7.groups()[0].opacity - 1.0) < 1e-9);
+        assert(tab7.groups()[0].blend == BlendMode::Normal);
+
+        // setGroupProperties mutates that same entry in place (no duplicate
+        // entries for the same groupId).
+        tab7.setGroupProperties(groupId, 0.4, false, BlendMode::Multiply);
+        assert(tab7.groups().size() == 1);
+        assert(std::abs(tab7.groups()[0].opacity - 0.4) < 1e-9);
+        assert(tab7.groups()[0].visible == false);
+        assert(tab7.groups()[0].blend == BlendMode::Multiply);
+
+        // ungroupMasks() drops the now-orphaned MaskGroup entry along with
+        // clearing the members' groupId, so no stale group state lingers.
+        tab7.ungroupMasks({0, 1});
+        assert(tab7.masks()[0].groupId.isEmpty());
+        assert(tab7.masks()[1].groupId.isEmpty());
+        assert(tab7.groups().isEmpty());
     }
 
     printf("LayerReorderTest passed\n");

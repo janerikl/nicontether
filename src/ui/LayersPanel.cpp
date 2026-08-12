@@ -690,18 +690,43 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 if (m_syncing || !item) return;
                 int idx = item->data(0, Qt::UserRole).toInt();
                 // A group's parent row has no mask of its own; select its
-                // first child instead.
+                // first child instead so every other mask-indexed panel/tool
+                // still has a concrete active mask to work with, but track
+                // the group id separately so loadActive() can show *its*
+                // opacity/blend instead of the child's (see m_selectedGroupId).
+                m_selectedGroupId = (idx == -1) ? item->data(0, Qt::UserRole + 1).toString()
+                                                : QString();
                 if (idx == -1 && item->childCount() > 0)
                     idx = item->child(0)->data(0, Qt::UserRole).toInt();
                 emit selectMaskRequested(idx);
+                if (!m_selectedGroupId.isEmpty()) loadActive();
             });
     connect(m_maskList, &QTreeWidget::itemChanged, this,
             [this](QTreeWidgetItem *item, int) {
                 if (m_syncing) return;
                 int idx = item->data(0, Qt::UserRole).toInt();
-                if (idx == -1) { // group parent row: renaming is its only editable field
+                if (idx == -1) { // group parent row
                     const QString groupId = item->data(0, Qt::UserRole + 1).toString();
-                    if (!groupId.isEmpty()) emit groupRenamed(groupId, item->text(0));
+                    if (groupId.isEmpty()) return;
+                    const bool checked = item->checkState(0) == Qt::Checked;
+                    const bool wasChecked = item->data(0, Qt::UserRole + 2).toBool();
+                    if (checked != wasChecked) {
+                        item->setData(0, Qt::UserRole + 2, checked);
+                        const MaskGroup *grp = nullptr;
+                        for (const MaskGroup &g : m_groups)
+                            if (g.id == groupId) { grp = &g; break; }
+                        const double opacity = grp ? grp->opacity : 1.0;
+                        const BlendMode blend = grp ? grp->blend : BlendMode::Normal;
+                        QPointer<LayersPanel> self(this);
+                        QMetaObject::invokeMethod(
+                            this,
+                            [self, groupId, opacity, checked, blend] {
+                                if (self) emit self->groupPropertiesChanged(groupId, opacity, checked, blend);
+                            },
+                            Qt::QueuedConnection);
+                        return;
+                    }
+                    emit groupRenamed(groupId, item->text(0));
                     return;
                 }
                 const bool checked = item->checkState(0) == Qt::Checked;
@@ -834,13 +859,30 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     });
     connect(m_name, &QLineEdit::editingFinished, this,
             [this] { if (!m_syncing) emit maskNameChanged(m_name->text()); });
-    connect(m_opacity, &QSlider::valueChanged, this, [this](int v) {
-        if (!m_syncing) emit maskOpacityChanged(v / 100.0);
+    auto currentGroupVisible = [this] {
+        for (const MaskGroup &g : m_groups)
+            if (g.id == m_selectedGroupId) return g.visible;
+        return true;
+    };
+    connect(m_opacity, &QSlider::valueChanged, this, [this, currentGroupVisible](int v) {
+        if (m_syncing) return;
+        if (!m_selectedGroupId.isEmpty()) {
+            emit groupPropertiesChanged(m_selectedGroupId, v / 100.0, currentGroupVisible(),
+                                        BlendMode(m_blend->currentData().toInt()));
+            return;
+        }
+        emit maskOpacityChanged(v / 100.0);
     });
     connect(m_blend, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this](int) {
+            [this, currentGroupVisible](int) {
                 if (m_syncing) return;
-                emit maskBlendChanged(BlendMode(m_blend->currentData().toInt()));
+                const BlendMode blend = BlendMode(m_blend->currentData().toInt());
+                if (!m_selectedGroupId.isEmpty()) {
+                    emit groupPropertiesChanged(m_selectedGroupId, m_opacity->value() / 100.0,
+                                                currentGroupVisible(), blend);
+                    return;
+                }
+                emit maskBlendChanged(blend);
             });
 
     connect(m_tonePanel, &TonePanel::adjustChanged, this,
@@ -934,6 +976,13 @@ void LayersPanel::clear() {
     m_imageSection->setVisible(false);
     m_syncing = false;
     setEnabled(false);
+}
+
+void LayersPanel::setGroups(const QVector<MaskGroup> &groups) {
+    if (m_groups == groups) return;
+    m_groups = groups;
+    rebuildList(); // header checkboxes reflect group.visible; coalesced like any other structural change
+    if (!m_selectedGroupId.isEmpty()) loadActive();
 }
 
 void LayersPanel::setMasks(const QVector<Mask> &masks, int activeIndex) {
@@ -1215,9 +1264,14 @@ void LayersPanel::doRebuildList() {
                 auto *g = new QTreeWidgetItem(
                     m_maskList, {m.groupName.isEmpty() ? QStringLiteral("Group") : m.groupName});
                 g->setIcon(0, groupThumbnail());
-                g->setFlags(g->flags() | Qt::ItemIsEditable);
+                g->setFlags(g->flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
                 g->setData(0, Qt::UserRole, -1);
                 g->setData(0, Qt::UserRole + 1, m.groupId);
+                bool groupVisible = true;
+                for (const MaskGroup &grp : m_groups)
+                    if (grp.id == m.groupId) { groupVisible = grp.visible; break; }
+                g->setCheckState(0, groupVisible ? Qt::Checked : Qt::Unchecked);
+                g->setData(0, Qt::UserRole + 2, groupVisible);
                 groupItems.insert(m.groupId, g);
                 parent = g;
             } else {
@@ -1293,6 +1347,26 @@ void LayersPanel::rebuildRemovalList() {
 void LayersPanel::loadActive() {
     const bool has = m_active >= 0 && m_active < m_masks.size();
     m_syncing = true;
+    // A group header selection shows *its own* opacity/blend (not the first
+    // child's, even though m_active still points there for every other
+    // panel/tool that needs a concrete active mask — see currentItemChanged).
+    if (!m_selectedGroupId.isEmpty()) {
+        m_name->setEnabled(false);
+        m_opacity->setEnabled(true);
+        m_blend->setEnabled(true);
+        m_levelsPanel->setEnabled(false);
+        m_duplicate->setEnabled(false);
+        m_delete->setEnabled(false);
+        const MaskGroup *grp = nullptr;
+        for (const MaskGroup &g : m_groups)
+            if (g.id == m_selectedGroupId) { grp = &g; break; }
+        m_opacity->setValue(int(std::lround((grp ? grp->opacity : 1.0) * 100)));
+        int blendIdx = m_blend->findData(int(grp ? grp->blend : BlendMode::Normal));
+        m_blend->setCurrentIndex(blendIdx >= 0 ? blendIdx : 0);
+        m_maskPanel->clear();
+        m_syncing = false;
+        return;
+    }
     for (QWidget *w : std::initializer_list<QWidget *>{
              m_name, m_opacity, m_blend, m_levelsPanel})
         w->setEnabled(has);
