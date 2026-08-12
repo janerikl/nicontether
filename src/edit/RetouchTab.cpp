@@ -222,6 +222,7 @@ void RetouchTab::setupCanvasAndWiring() {
     connect(m_canvas, &ImageCanvas::bucketFillRequested, this, &RetouchTab::onBucketFillRequested);
     connect(m_canvas, &ImageCanvas::maskEditFinished, this, &RetouchTab::onMaskEditFinished);
     connect(m_canvas, &ImageCanvas::selectionPathChanged, this, &RetouchTab::onSelectionPathChanged);
+    connect(m_canvas, &ImageCanvas::selectionFeatherChanged, this, &RetouchTab::onSelectionFeatherChanged);
     connect(m_canvas, &ImageCanvas::cloneStrokePoint, this, &RetouchTab::onCloneStrokePoint);
     connect(m_canvas, &ImageCanvas::cloneFinished, this, &RetouchTab::onCloneFinished);
     connect(m_canvas, &ImageCanvas::imageLayerDropped, this, &RetouchTab::addImageLayer);
@@ -980,6 +981,14 @@ void RetouchTab::setCloneMode(bool on) {
 void RetouchTab::onSelectionPathChanged(const QPainterPath &pathNorm, bool hasSelection) {
     m_selectionPath = pathNorm;
     m_hasSelection = hasSelection;
+}
+
+void RetouchTab::onSelectionFeatherChanged(double normRadius) {
+    m_selectionFeatherNorm = normRadius;
+}
+
+void RetouchTab::setSelectionFeather(double normRadius) {
+    m_canvas->setSelectionFeather(normRadius);
 }
 
 void RetouchTab::setEraseBrush(int radiusDisplayPx) {
@@ -1944,6 +1953,7 @@ void RetouchTab::onEraseAt(const QPointF &ptNorm) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
     Mask &m = m_adj.masks[m_activeMask];
     m.selectionClipNorm = m_hasSelection ? m_selectionPath : QPainterPath();
+    m.selectionFeatherNorm = m_hasSelection ? m_selectionFeatherNorm : 0.0;
     double radiusNorm = (m_scaled.isNull() || m_scaled.width() <= 0)
                              ? 0.06
                              : m_eraseRadiusDisplay / double(m_scaled.width());
@@ -1978,6 +1988,7 @@ void RetouchTab::onCloneStrokePoint(const QPointF &ptNorm, const QPointF &source
         m_cloneStrokeBroken = false;
     }
     m.selectionClipNorm = m_hasSelection ? m_selectionPath : QPainterPath();
+    m.selectionFeatherNorm = m_hasSelection ? m_selectionFeatherNorm : 0.0;
     BrushStrokePoint sp{ptNorm, false, m.brushRadius, m.hardness, m.paintColor.rgb(), newStroke};
     sp.pressure = pressure;
     sp.isPen = false;
@@ -2766,6 +2777,7 @@ void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStr
     }
     Mask &m = m_adj.masks[m_activeMask];
     m.selectionClipNorm = m_hasSelection ? m_selectionPath : QPainterPath();
+    m.selectionFeatherNorm = m_hasSelection ? m_selectionFeatherNorm : 0.0;
     // Bake in the brush size/hardness/(paint) color at paint time so later
     // changes only affect new dabs, not ones already committed to the stroke.
     // `pressure` (stylus pressure, 1.0 for mouse input) is likewise captured
@@ -2801,6 +2813,7 @@ void RetouchTab::onBucketFillRequested(const QPointF &ptNorm) {
     // the click point, via Mask::selectionClipNorm (see matchesRegion in
     // bucketFillPaintMask, Adjustments.cpp).
     m.selectionClipNorm = m_hasSelection ? m_selectionPath : QPainterPath();
+    m.selectionFeatherNorm = m_hasSelection ? m_selectionFeatherNorm : 0.0;
     // Flood-fill at a capped working resolution (full geom resolution can be
     // tens of megapixels; the result is stored in `fillMask` and resampled to
     // whatever the render buffer needs, so this only trades off fill edge

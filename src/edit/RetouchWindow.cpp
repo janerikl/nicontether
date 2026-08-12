@@ -710,6 +710,8 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     m_deselectAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
     m_invertSelectionAction = editMenu->addAction("Invert Selection");
     m_invertSelectionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I));
+    m_featherSelectionAction = editMenu->addAction("Feather Selection...");
+    m_featherSelectionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_D));
     m_copySelectionAction = editMenu->addAction("Copy");
     m_copySelectionAction->setShortcut(QKeySequence::Copy);
     m_pasteSelectionAction = editMenu->addAction("Paste");
@@ -717,6 +719,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     m_pasteSelectionAction->setEnabled(false);
     connect(m_deselectAction, &QAction::triggered, this, &RetouchWindow::onDeselect);
     connect(m_invertSelectionAction, &QAction::triggered, this, &RetouchWindow::onInvertSelection);
+    connect(m_featherSelectionAction, &QAction::triggered, this, &RetouchWindow::onFeatherSelection);
     connect(m_copySelectionAction, &QAction::triggered, this, &RetouchWindow::onCopySelection);
     connect(m_pasteSelectionAction, &QAction::triggered, this, &RetouchWindow::onPasteSelection);
 
@@ -2869,6 +2872,23 @@ void RetouchWindow::onInvertSelection() {
     RetouchTab *tab = currentTab();
     if (!tab || !tab->isReady()) return;
     tab->canvas()->invertSelection();
+}
+
+// Photoshop's Select > Feather: softens the selection's edge over a radius
+// in pixels, converted to the width-normalized fraction ImageCanvas/Mask
+// selection fields use internally.
+void RetouchWindow::onFeatherSelection() {
+    RetouchTab *tab = currentTab();
+    if (!tab || !tab->isReady()) return;
+    const int w = tab->imageWidth();
+    if (w <= 0) return;
+    bool ok = false;
+    int px = QInputDialog::getInt(this, "Feather Selection", "Feather Radius (px):",
+                                  m_lastFeatherPx, 0, w / 4, 1, &ok);
+    if (!ok) return;
+    m_lastFeatherPx = px;
+    tab->setSelectionFeather(px / double(w));
+    m_statusLabel->setText(px > 0 ? QString("Feather set to %1px").arg(px) : "Feather cleared");
 }
 
 // Extracts the pixels currently under the active selection from the tab's

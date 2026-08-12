@@ -130,6 +130,14 @@ public:
     // maskBrushPoint/maskRadialDragged etc: both axes divided by image width).
     QPainterPath selectionPathNorm() const { return m_selectionPath; }
 
+    // Feather (Photoshop's Select > Feather): softens the selection edge over
+    // this many width-normalized units instead of clipping with a hard edge.
+    // Applied when the selection is baked into a layer (see Mask::
+    // selectionFeatherNorm in RetouchTab), not to the selection outline shown
+    // on canvas, which stays a crisp marching-ants path either way.
+    void setSelectionFeather(double normRadius);
+    double selectionFeatherNorm() const { return m_selectionFeatherNorm; }
+
     // Clone stamp: Alt+click sets the source point; subsequent drag strokes
     // sample from source + (current - firstDragPoint), same convention as
     // Photoshop. Respects the active selection as a clip (enforced by
@@ -289,6 +297,7 @@ signals:
     // magic-wand click, or Deselect/Esc). `pathNorm` uses the same
     // width-normalized convention as maskBrushPoint/maskRadialDragged.
     void selectionPathChanged(const QPainterPath &pathNorm, bool hasSelection);
+    void selectionFeatherChanged(double normRadius);
 
     // Clone stamp. `ptNorm`/`sourceNorm` are width-normalized, same
     // convention as maskBrushPoint. `sourceSet` fires on Alt+click.
@@ -470,6 +479,7 @@ private:
     int m_magicWandTolerance = 32; // 0..255 per-channel color distance
     QPainterPath m_selectionPath; // width-normalized, see selectionPathNorm()
     bool m_hasSelection = false;
+    double m_selectionFeatherNorm = 0.0; // width-normalized, see selectionFeatherNorm()
     enum class SelectDrag { None, Marquee, Lasso, Brush };
     SelectDrag m_selectDrag = SelectDrag::None;
     QPoint m_selectDragStartWidget, m_selectDragCurrentWidget; // marquee, widget px

@@ -392,6 +392,10 @@ struct Mask {
     // Adjustments.cpp), not just gated at each dab's center point. Transient
     // UI state like sourceImageCache above: never serialized, never compared.
     QPainterPath selectionClipNorm;
+    // Feather (Photoshop's Select > Feather): softens selectionClipNorm's
+    // edge over this many width-normalized units instead of a hard cutoff.
+    // Transient like selectionClipNorm above: never serialized, never compared.
+    double selectionFeatherNorm = 0.0;
 
     bool operator==(const Mask &o) const {
         return name == o.name && visible == o.visible && groupId == o.groupId &&

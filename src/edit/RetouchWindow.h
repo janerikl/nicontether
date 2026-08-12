@@ -285,12 +285,15 @@ private:
     // marquee/lasso/magic-wand selection, distinct from Copy/Paste Edits above.
     class QAction *m_deselectAction = nullptr;
     class QAction *m_invertSelectionAction = nullptr;
+    class QAction *m_featherSelectionAction = nullptr;
     class QAction *m_copySelectionAction = nullptr;
     class QAction *m_pasteSelectionAction = nullptr;
     QImage m_selectionClipboard;         // extracted pixels, transparent outside the copied region
     QPoint m_selectionClipboardOffsetPx; // top-left of m_selectionClipboard within the full image
+    int m_lastFeatherPx = 0; // remembered across invocations, like Photoshop's Feather dialog
     void onDeselect();
     void onInvertSelection();
+    void onFeatherSelection();
     void onCopySelection();
     void onPasteSelection();
 

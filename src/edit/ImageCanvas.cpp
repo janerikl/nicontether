@@ -725,6 +725,11 @@ void ImageCanvas::clearActiveSelection() {
     update();
 }
 
+void ImageCanvas::setSelectionFeather(double normRadius) {
+    m_selectionFeatherNorm = std::clamp(normRadius, 0.0, 0.1);
+    emit selectionFeatherChanged(m_selectionFeatherNorm);
+}
+
 // Replaces the selection with everything currently NOT selected, within the
 // full image bounds (width-normalized, same convention as m_selectionPath —
 // height is imgH/imgW since both axes share the width divisor). An empty

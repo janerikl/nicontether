@@ -382,6 +382,61 @@ inline double colorDist(QRgb a, QRgb b) {
 // the seed colour under a dab are excluded, so the stroke stops at edges.
 constexpr double kAutoMaskTolerance = 45.0;
 
+// Separable box blur over a single-channel 0..255 buffer, in place. Same
+// moving-average approach as boxBlur (below) but without the RGB packing,
+// used to soften Mask::selectionClipNorm's hard edge into a feathered one.
+void boxBlurAlpha(std::vector<uchar> &buf, int w, int h, int radius) {
+    if (radius < 1 || w <= 0 || h <= 0) return;
+    std::vector<int> tmp(size_t(w) * h);
+    const int win = radius * 2 + 1;
+    for (int y = 0; y < h; ++y) {
+        const uchar *row = &buf[size_t(y) * w];
+        long sum = 0;
+        for (int x = -radius; x <= radius; ++x) sum += row[std::clamp(x, 0, w - 1)];
+        for (int x = 0; x < w; ++x) {
+            tmp[size_t(y) * w + x] = int(sum / win);
+            sum += row[std::clamp(x + radius + 1, 0, w - 1)] - row[std::clamp(x - radius, 0, w - 1)];
+        }
+    }
+    for (int x = 0; x < w; ++x) {
+        long sum = 0;
+        for (int y = -radius; y <= radius; ++y) sum += tmp[size_t(std::clamp(y, 0, h - 1)) * w + x];
+        for (int y = 0; y < h; ++y) {
+            buf[size_t(y) * w + x] = uchar(std::clamp(int(sum / win), 0, 255));
+            sum += tmp[size_t(std::clamp(y + radius + 1, 0, h - 1)) * w + x] -
+                   tmp[size_t(std::clamp(y - radius, 0, h - 1)) * w + x];
+        }
+    }
+}
+
+// Builds a soft 0..255 alpha buffer for m.selectionClipNorm at (w,h): a hard
+// rasterization of the path, blurred by m.selectionFeatherNorm (Photoshop's
+// Select > Feather). Returns an empty vector when there's no clip or no
+// feather, so callers can cheaply fall back to a plain QPainterPath::contains
+// test instead of an alpha lookup.
+std::vector<uchar> selectionFeatherAlpha(const Mask &m, int w, int h) {
+    if (m.selectionClipNorm.isEmpty() || m.selectionFeatherNorm <= 0.0 || w <= 0 || h <= 0)
+        return {};
+    QImage hardMask(w, h, QImage::Format_Grayscale8);
+    hardMask.fill(0);
+    {
+        QPainter mp(&hardMask);
+        mp.setRenderHint(QPainter::Antialiasing, true);
+        QTransform t;
+        t.scale(w, w); // width-normalized -> pixel space, same convention as elsewhere
+        mp.setPen(Qt::NoPen);
+        mp.setBrush(Qt::white);
+        mp.drawPath(t.map(m.selectionClipNorm));
+    }
+    std::vector<uchar> alpha(size_t(w) * h);
+    for (int y = 0; y < h; ++y) {
+        const uchar *row = hardMask.constScanLine(y);
+        std::copy(row, row + w, alpha.begin() + size_t(y) * w);
+    }
+    boxBlurAlpha(alpha, w, h, std::max(1, int(std::lround(m.selectionFeatherNorm * w))));
+    return alpha;
+}
+
 // Rasterize a brush mask into a coverage buffer (0..255) at image resolution.
 // Dabs are applied in stroke order: normal dabs union (max) into the coverage,
 // Alt-painted (erase) dabs subtract from it, so painting after erasing (or
@@ -430,6 +485,10 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
 
     const double W = w;
     const bool autoMask = m.autoMask && ref && ref->width() == w && ref->height() == h;
+    const bool hasClip = !m.selectionClipNorm.isEmpty();
+    // Computed once per call (not per dab): empty when there's no clip or no
+    // feather, in which case stampDab falls back to a plain contains() test.
+    const std::vector<uchar> featherAlpha = selectionFeatherAlpha(m, w, h);
 
     // Cheap deterministic per-pixel hash -> [0,1), used by the `grain` term
     // below. No RNG state, so identical inputs always render identically.
@@ -464,7 +523,6 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                               std::clamp(int(std::lround(py)), 0, h - 1));
         const bool canClone = isClone && ref && ref->width() > 0 && ref->height() > 0;
         const double cloneScale = canClone ? double(ref->width()) / W : 1.0;
-        const bool hasClip = !m.selectionClipNorm.isEmpty();
         for (int y = y0; y <= y1; ++y) {
             for (int x = x0; x <= x1; ++x) {
                 double dx = x - px, dy = y - py;
@@ -475,9 +533,17 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                 if (v <= 0.0) continue;
                 // Clip each covered pixel to the selection active when this
                 // dab was painted, not just the dab's center point — a large
-                // brush near a selection edge must not bleed past it.
-                if (hasClip && !m.selectionClipNorm.contains(QPointF(x / W, y / W)))
-                    continue;
+                // brush near a selection edge must not bleed past it. Soft
+                // (feathered) when featherAlpha is populated, hard otherwise.
+                if (hasClip) {
+                    if (!featherAlpha.empty()) {
+                        double fa = featherAlpha[size_t(y) * w + x] / 255.0;
+                        if (fa <= 0.0) continue;
+                        v *= fa;
+                    } else if (!m.selectionClipNorm.contains(QPointF(x / W, y / W))) {
+                        continue;
+                    }
+                }
                 if (autoMask) {
                     double cd = colorDist(ref->pixel(x, y), seed);
                     v *= 1.0 - smoothstep01(cd / kAutoMaskTolerance);
@@ -661,9 +727,20 @@ QImage bucketFillPaintMask(const Mask &m, const QPointF &clickNorm,
 
     const bool hasClip = !m.selectionClipNorm.isEmpty();
     const double W = w;
+    const std::vector<uchar> featherAlpha = selectionFeatherAlpha(m, w, h);
+    // The flood-fill's membership test itself stays a hard boundary (a fill
+    // either grows into a pixel or it doesn't); feathering only softens the
+    // final written alpha near the selection edge, applied below where each
+    // pixel is stamped with fillRgb.
     auto matchesRegion = [&](int x, int y) -> bool {
         if (covBlocked(x, y)) return false;
-        if (hasClip && !m.selectionClipNorm.contains(QPointF(x / W, y / W))) return false;
+        if (hasClip) {
+            if (!featherAlpha.empty()) {
+                if (featherAlpha[size_t(y) * w + x] == 0) return false;
+            } else if (!m.selectionClipNorm.contains(QPointF(x / W, y / W))) {
+                return false;
+            }
+        }
         const QRgb p = fillPixel(x, y);
         const bool filled = qAlpha(p) > 16;
         if (startFilled) return filled && closeColor(p, clickFill);
@@ -684,7 +761,13 @@ QImage bucketFillPaintMask(const Mask &m, const QPointF &clickNorm,
     while (!stack.empty()) {
         const QPoint p = stack.back();
         stack.pop_back();
-        reinterpret_cast<QRgb *>(regionImg.scanLine(p.y()))[p.x()] = fillRgb;
+        QRgb stamp = fillRgb;
+        if (!featherAlpha.empty()) {
+            double fa = featherAlpha[size_t(p.y()) * w + p.x()] / 255.0;
+            stamp = qRgba(qRed(fillRgb), qGreen(fillRgb), qBlue(fillRgb),
+                         int(std::lround(qAlpha(fillRgb) * fa)));
+        }
+        reinterpret_cast<QRgb *>(regionImg.scanLine(p.y()))[p.x()] = stamp;
         for (int k = 0; k < 4; ++k) {
             const int nx = p.x() + dx[k], ny = p.y() + dy[k];
             if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
@@ -1072,6 +1155,8 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         std::vector<double> eraseCov;
         if (!m.eraseStrokes.isEmpty()) {
             eraseCov.assign(size_t(w) * h, 0.0);
+            const bool hasClip = !m.selectionClipNorm.isEmpty();
+            const std::vector<uchar> featherAlpha = selectionFeatherAlpha(m, w, h);
             for (const ErasePoint &ep : m.eraseStrokes) {
                 const double px = ep.pt.x() * W, py = ep.pt.y() * W;
                 const double rad = std::max(1.0, ep.radius * W);
@@ -1085,9 +1170,12 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                         double dist = std::sqrt(dx * dx + dy * dy);
                         double v = dist >= rad ? 0.0
                                                 : smoothstep01((rad - dist) / rad);
-                        if (v > 0.0 && !m.selectionClipNorm.isEmpty() &&
-                            !m.selectionClipNorm.contains(QPointF(x / W, y / W)))
-                            v = 0.0;
+                        if (v > 0.0 && hasClip) {
+                            if (!featherAlpha.empty())
+                                v *= featherAlpha[size_t(y) * w + x] / 255.0;
+                            else if (!m.selectionClipNorm.contains(QPointF(x / W, y / W)))
+                                v = 0.0;
+                        }
                         double &c = eraseCov[size_t(y) * w + x];
                         if (v > c) c = v;
                     }

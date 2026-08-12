@@ -93,6 +93,8 @@ public:
     void setMagicWandTolerance(int tolerance);
     void setSelectBrushMode(bool on);
     void setSelectBrushRadius(double normRadius);
+    void setSelectionFeather(double normRadius);
+    double selectionFeatherNorm() const { return m_selectionFeatherNorm; }
     void clearActiveSelection();
     bool hasActiveSelection() const { return m_hasSelection; }
 
@@ -347,6 +349,7 @@ private slots:
     void onMaskEditFinished();
     void onQuickColorPicked(const QColor &c);
     void onSelectionPathChanged(const QPainterPath &pathNorm, bool hasSelection);
+    void onSelectionFeatherChanged(double normRadius);
     void onCloneStrokePoint(const QPointF &ptNorm, const QPointF &sourceNorm, bool newStroke,
                             double pressure);
     void onCloneFinished();
@@ -454,6 +457,7 @@ private:
     // width-normalized. Paint/erase/bucket handlers clip to this when set.
     QPainterPath m_selectionPath;
     bool m_hasSelection = false;
+    double m_selectionFeatherNorm = 0.0; // mirrors ImageCanvas::selectionFeatherNorm()
     bool m_selectionStrokeBroken = false; // a brush/pen dab was just skipped for being outside the selection
     bool m_cloneStrokeBroken = false; // same idea as m_selectionStrokeBroken, for Clone dabs
     bool m_removeObjectDragging = false;

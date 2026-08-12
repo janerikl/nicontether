@@ -965,6 +965,37 @@ int main(int argc, char **argv) {
         assert(qRed(outside) < 5 && qGreen(outside) < 5 && qBlue(outside) < 5);
     }
 
+    // Feathering (Mask::selectionFeatherNorm) should soften the clip edge
+    // instead of cutting it off hard: a pixel a few px inside the clip edge
+    // should be partially painted, not fully opaque or fully untouched.
+    {
+        QImage base(32, 32, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask paint;
+        paint.type = MaskType::Paint;
+        paint.paintColor = QColor(255, 0, 0);
+        paint.brushRadius = 2.0; // covers the whole frame unclipped
+        paint.hardness = 1.0;
+        paint.opacity = 1.0;
+        paint.blend = BlendMode::Normal;
+        paint.selectionClipNorm.addRect(QRectF(0.0, 0.0, 0.5, 1.0)); // left half
+        paint.selectionFeatherNorm = 0.09; // ~3px feather on a 32px-wide frame
+        paint.stroke.append(BrushStrokePoint{QPointF(0.5, 0.5), false, paint.brushRadius,
+                                             paint.hardness, paint.paintColor.rgb()});
+
+        Adjustments adj;
+        adj.masks.append(paint);
+
+        QImage out = applyAdjustments(base, adj);
+        QRgb deepInside = out.pixel(2, 16);   // far from the edge: fully painted
+        QRgb rightAtEdge = out.pixel(16, 16); // exactly at the clip boundary: partially painted
+        QRgb farOutside = out.pixel(30, 16);  // far outside: untouched
+        assert(qRed(deepInside) > 250);
+        assert(qRed(rightAtEdge) > 10 && qRed(rightAtEdge) < 245); // neither fully on nor fully off
+        assert(qRed(farOutside) < 5);
+    }
+
     std::printf("AdjustmentsPaintTest: all assertions passed\n");
     return 0;
 }
