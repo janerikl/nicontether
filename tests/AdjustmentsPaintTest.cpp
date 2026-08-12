@@ -821,6 +821,62 @@ int main(int argc, char **argv) {
                 assert(resumed.pixel(x, y) == fullRender.pixel(x, y));
     }
 
+    // A stroke painted after a full-canvas flat fill (Ctrl+Backspace, see
+    // RetouchTab::fillActiveMask) must render on top of it, since fillMask
+    // is alpha-blended underneath the stroke coverage rather than sharing
+    // its max-coverage buffer (see applyMasks).
+    {
+        QImage base(20, 20, QImage::Format_ARGB32);
+        base.fill(Qt::black);
+
+        Mask paint;
+        paint.type = MaskType::Paint;
+        paint.opacity = 1.0;
+        QImage fill(20, 20, QImage::Format_ARGB32);
+        fill.fill(QColor(0, 255, 0)); // green fill
+        paint.fillMask = fill;
+        paint.stroke.append(BrushStrokePoint{QPointF(0.5, 0.5), false, 0.15, 1.0,
+                                             QColor(255, 0, 0).rgb(), true});
+
+        Adjustments adj;
+        adj.masks.append(paint);
+
+        QImage out = applyAdjustments(base, adj);
+        QRgb center = out.pixel(10, 10);
+        QRgb corner = out.pixel(1, 1);
+        assert(qRed(center) > 200 && qGreen(center) < 20); // stroke wins at its dab
+        assert(qGreen(corner) > 200 && qRed(corner) < 20); // fill still shows elsewhere
+    }
+
+    // A Pen-tagged dab at realistic thin size (0.003 width-normalized radius,
+    // ~1.2px on a 400px-wide doc — matches the toolbar's default pen width)
+    // must still render visibly on top of a fillMask, not vanish.
+    {
+        QImage base(400, 300, QImage::Format_ARGB32);
+        base.fill(Qt::white);
+
+        Mask paint;
+        paint.type = MaskType::Paint;
+        paint.opacity = 1.0;
+        QImage fill(400, 300, QImage::Format_ARGB32);
+        fill.fill(Qt::white);
+        paint.fillMask = fill;
+        // BrushStrokePoint coords are normalized by image WIDTH for both x
+        // and y (see the doc comment above), so (0.5, 0.5) on a 400x300 doc
+        // lands at pixel (200, 200), not the visual center (200, 150).
+        BrushStrokePoint sp{QPointF(0.5, 0.5), false, 0.003, 0.5, QColor(0, 0, 0).rgb(), true};
+        sp.isPen = true;
+        sp.penGrade = 0.0;
+        paint.stroke.append(sp);
+
+        Adjustments adj;
+        adj.masks.append(paint);
+
+        QImage out = applyAdjustments(base, adj);
+        QRgb center = out.pixel(200, 200);
+        assert(qRed(center) < 100 && qGreen(center) < 100 && qBlue(center) < 100);
+    }
+
     std::printf("AdjustmentsPaintTest: all assertions passed\n");
     return 0;
 }

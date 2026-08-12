@@ -163,6 +163,15 @@ public:
     void setActiveMaskShape(bool inverted, double feather, double hardness,
                             double brushRadius, bool autoMask);
     void setPaintColor(const QColor &color); // no-op unless the active layer is MaskType::Paint
+    // Sets the pencil-grade to bake into new Pen-tool dabs on this Paint
+    // layer (see BrushStrokePoint::penGrade); no-op unless the active layer
+    // is MaskType::Paint. -6.0(6B)..5.0(5H).
+    void setActivePenGrade(double grade);
+    // Whether the next painted dabs on the active Paint layer are tagged as
+    // Pen (grade-driven hardness/opacity/grain) vs. plain Brush dabs — set by
+    // RetouchWindow when the Pen/Brush toolbar toggle changes so both tools
+    // can freely share one Paint-type layer (see onMaskBrushPoint).
+    void setPenToolActive(bool on) { m_penToolActive = on; }
     void setActiveMaskText(const QString &text, const QString &family, double pixelSize,
                            bool bold, bool italic); // no-op unless the active layer is MaskType::Text
     void setActiveMaskOpacity(double opacity);       // 0..1
@@ -306,7 +315,7 @@ private slots:
                       const QImage &belowSnapshot, int belowSnapshotIndex);
     void onMaskRadial(const QPointF &centerNorm, double radiusNorm);
     void onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm);
-    void onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke);
+    void onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke, double pressure = 1.0);
     void onBucketFillRequested(const QPointF &ptNorm);
     void onMaskEditFinished();
 
@@ -371,6 +380,7 @@ private:
 
     bool m_cropMode = false;
     bool m_maskMode = false;
+    bool m_penToolActive = false; // see setPenToolActive
     int m_activeMask = -1; // index into m_adj.masks, or -1
     bool m_textMode = false;
     int m_activeText = -1;   // marker index (position within the TextBox-filtered

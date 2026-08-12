@@ -2618,15 +2618,33 @@ void RetouchTab::onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm) {
     retone();
 }
 
-void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke) {
+void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke, double pressure) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
     Mask &m = m_adj.masks[m_activeMask];
     // Bake in the brush size/hardness/(paint) color at paint time so later
     // changes only affect new dabs, not ones already committed to the stroke.
-    m.stroke.append(BrushStrokePoint{ptNorm, erase, m.brushRadius, m.hardness,
-                                     m.paintColor.rgb(), newStroke});
+    // `pressure` (stylus pressure, 1.0 for mouse input) is likewise captured
+    // per-dab so Pen dabs can modulate radius/hardness from it later. Pen and
+    // Brush share the same Paint-type layer/stroke — `isPen`/`penGrade` tag
+    // each dab with which tool painted it (see setPenToolActive), so a user
+    // can switch tools mid-layer without needing a separate layer per tool.
+    BrushStrokePoint sp{ptNorm, erase, m.brushRadius, m.hardness,
+                        m.paintColor.rgb(), newStroke};
+    sp.pressure = pressure;
+    sp.isPen = m_penToolActive;
+    sp.penGrade = m.penGrade;
+    m.stroke.append(sp);
     pushMaskGizmo(); // show the painted coverage right away
     retoneDrag(newStroke);
+}
+
+void RetouchTab::setActivePenGrade(double grade) {
+    if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_activeMask];
+    if (m.type != MaskType::Paint) return;
+    m.penGrade = std::clamp(grade, -6.0, 5.0);
+    retone();
+    markEdited();
 }
 
 void RetouchTab::onBucketFillRequested(const QPointF &ptNorm) {
@@ -2651,15 +2669,38 @@ void RetouchTab::onBucketFillRequested(const QPointF &ptNorm) {
 
 void RetouchTab::fillActiveMask(const QColor &color) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
-    // Full-canvas coverage regardless of aspect ratio: radius is normalized
-    // to image width (see BrushStrokePoint), so 3.0 comfortably covers the
-    // diagonal of any canvas up to ~3x taller than it is wide.
-    const BrushStrokePoint fillDab{QPointF(0.5, 0.5), false, 3.0, 1.0,
-                                   color.rgb()};
-
-    const MaskType type = m_adj.masks[m_activeMask].type;
-    if (type == MaskType::Background || type == MaskType::Paint) {
-        Mask &m = m_adj.masks[m_activeMask];
+    Mask &m = m_adj.masks[m_activeMask];
+    const MaskType type = m.type;
+    if (type == MaskType::Paint) {
+        // Route through `fillMask` — the same mechanism the paint bucket
+        // uses — instead of appending a giant fully-opaque dab into
+        // `m.stroke`. Stroke compositing is max-coverage/last-writer (see
+        // rasterizeBrush): once a dab has driven a pixel's coverage to 255,
+        // any later dab whose own coverage at that pixel is lower (e.g. the
+        // antialiased edge of a soft brush, or most of a Pen stroke, whose
+        // grade-driven hardness/opacity are often well under 1.0) can never
+        // win that pixel back, so brush/pen strokes on top of a fully-filled
+        // layer barely showed. `fillMask` instead composites *underneath*
+        // the stroke coverage/color (see applyMasks), so strokes painted
+        // after the fill are always visible on top of it regardless of
+        // their own hardness/opacity.
+        m.paintColor = color;
+        if (!m_geomImg.isNull()) {
+            const int fullW = m_geomImg.width(), fullH = m_geomImg.height();
+            const double s = fullW > 1600 ? 1600.0 / fullW : 1.0;
+            const int w = std::max(1, int(std::lround(fullW * s)));
+            const int h = std::max(1, int(std::lround(fullH * s)));
+            QImage fill(w, h, QImage::Format_ARGB32);
+            fill.fill(color);
+            m.fillMask = fill;
+        }
+    } else if (type == MaskType::Background) {
+        // Full-canvas coverage regardless of aspect ratio: radius is
+        // normalized to image width (see BrushStrokePoint), so 3.0
+        // comfortably covers the diagonal of any canvas up to ~3x taller
+        // than it is wide.
+        const BrushStrokePoint fillDab{QPointF(0.5, 0.5), false, 3.0, 1.0,
+                                       color.rgb()};
         m.paintColor = color;
         m.stroke.append(fillDab);
     } else {

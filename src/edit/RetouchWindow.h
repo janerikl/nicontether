@@ -191,6 +191,12 @@ private:
     QSlider *m_eraseBrush = nullptr;
     QToolButton *m_removeObjectToggle = nullptr; // left icon bar: remove-object tool
     QSlider *m_removeObjectBrush = nullptr;
+    QToolButton *m_penToggle = nullptr; // left icon bar: pen/pencil tool (requires a Pen layer already selected)
+    QSlider *m_penSize = nullptr;
+    bool m_penSizeCustomized = false; // once the user drags m_penSize, stop auto-defaulting it
+    QSlider *m_penGrade = nullptr; // -6(6B)..5(5H), drives hardness/opacity/grain (see rasterizeBrush)
+    QLabel *m_penGradeLabel = nullptr; // live grade readout ("HB", "2B", "3H", ...) next to m_penGrade
+    void updatePenGradeLabel();
     QToolButton *m_textToggle = nullptr; // left icon bar: text tool
     class QFontComboBox *m_textFont = nullptr;
     class QSpinBox *m_textSize = nullptr;

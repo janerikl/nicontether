@@ -1733,7 +1733,7 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
             emit maskLinearDragged(n, n);
         else {
             m_lastBrushNorm = n;
-            emit maskBrushPoint(n, m_maskErasing, true);
+            emit maskBrushPoint(n, m_maskErasing, true, 1.0);
         }
         update();
         return;
@@ -1891,7 +1891,7 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
                 if (dx * dx + dy * dy > 0.004 * 0.004) { // throttle stroke samples
                     m_lastBrushNorm = n;
                     m_maskErasing = m_maskForceErase || ev->modifiers().testFlag(Qt::AltModifier);
-                    emit maskBrushPoint(n, m_maskErasing, false);
+                    emit maskBrushPoint(n, m_maskErasing, false, 1.0);
                 }
             }
         } else if (m_maskKind == MaskType::Brush) {
@@ -2340,6 +2340,54 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         }
         setCursor(c);
     }
+}
+
+// Stylus input: reuses the exact same local-mask brush-painting path as
+// mousePressEvent/mouseMoveEvent (normPointAt + maskBrushPoint), only
+// swapping in the real QTabletEvent::pressure() instead of the constant 1.0
+// mouse input uses. Only handles the mask-brush drag (Brush/Paint/Pen mask
+// types painting into the active mask's stroke); every other tool keeps
+// working via Qt's synthesized mouse events for tablet input, so this
+// accepts only when it actually consumes the event and otherwise ignores it.
+void ImageCanvas::tabletEvent(QTabletEvent *ev) {
+    if (m_maskMode && m_maskKind != MaskType::Radial && m_maskKind != MaskType::Linear) {
+        const QPointF n = normPointAt(ev->position().toPoint());
+        const double pressure = ev->pressure();
+        if (ev->type() == QEvent::TabletPress) {
+            m_maskDragging = true;
+            m_maskCenterNorm = n;
+            m_mousePos = ev->position().toPoint();
+            m_maskErasing = m_maskForceErase || ev->modifiers().testFlag(Qt::AltModifier);
+            m_lastBrushNorm = n;
+            emit maskBrushPoint(n, m_maskErasing, true, pressure);
+            update();
+            ev->accept();
+            return;
+        }
+        if (ev->type() == QEvent::TabletMove && m_maskDragging) {
+            m_mousePos = ev->position().toPoint();
+            const double dx = n.x() - m_lastBrushNorm.x();
+            const double dy = n.y() - m_lastBrushNorm.y();
+            if (dx * dx + dy * dy > 0.004 * 0.004) { // throttle stroke samples
+                m_lastBrushNorm = n;
+                m_maskErasing = m_maskForceErase || ev->modifiers().testFlag(Qt::AltModifier);
+                emit maskBrushPoint(n, m_maskErasing, false, pressure);
+            }
+            update();
+            ev->accept();
+            return;
+        }
+        if (ev->type() == QEvent::TabletRelease) {
+            if (m_maskDragging) {
+                m_maskDragging = false;
+                emit maskEditFinished();
+                update();
+            }
+            ev->accept();
+            return;
+        }
+    }
+    ev->ignore();
 }
 
 void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {

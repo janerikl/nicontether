@@ -317,10 +317,22 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
     const double W = w;
     const bool autoMask = m.autoMask && ref && ref->width() == w && ref->height() == h;
 
+    // Cheap deterministic per-pixel hash -> [0,1), used by the `grain` term
+    // below. No RNG state, so identical inputs always render identically.
+    auto hash01 = [](int x, int y) -> double {
+        uint32_t h = uint32_t(x) * 374761393u + uint32_t(y) * 668265263u;
+        h = (h ^ (h >> 13)) * 1274126177u;
+        h ^= (h >> 16);
+        return (h & 0xFFFFFFu) / double(0xFFFFFFu);
+    };
+
     // Stamps one soft-edged circular dab, in pixel space, with its own
     // radius/hardness/color/erase — used both for a stroke's recorded
-    // points and for the sub-dabs interpolated between them below.
-    auto stampDab = [&](double px, double py, double rad, double hardness, bool erase, QRgb color) {
+    // points and for the sub-dabs interpolated between them below. `grain`
+    // (0..1, default 0 = no effect) multiplies the computed coverage by a
+    // deterministic per-dab noise term derived from a hash of each pixel's
+    // integer coordinates, giving Pen-type dabs a graphite-like texture.
+    auto stampDab = [&](double px, double py, double rad, double hardness, bool erase, QRgb color, double grain = 0.0) {
         const double inner = clampd(hardness, 0.0, 1.0) * rad;
         const double band = std::max(1e-6, rad - inner);
         const int x0 = std::max(0, int(px - rad));
@@ -344,6 +356,10 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                     v *= 1.0 - smoothstep01(cd / kAutoMaskTolerance);
                     if (v <= 0.0) continue;
                 }
+                if (grain > 0.0) {
+                    v *= 1.0 - grain * hash01(x, y);
+                    if (v <= 0.0) continue;
+                }
                 uchar iv = uchar(std::lround(v * 255.0));
                 size_t idx = size_t(y) * w + x;
                 uchar &dst = (*covBuf)[idx];
@@ -357,10 +373,49 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
         }
     };
 
+    // Pen: derive effective radius/hardness/opacity-multiplier/grain from
+    // (sp.radius, sp.hardness, sp.penGrade, sp.pressure) — all captured
+    // per-dab, since Pen and Brush dabs can be interleaved in the same
+    // stroke/layer (see BrushStrokePoint::isPen).
+    // penGrade in [-6,5] (6B..5H); normalize to t in [0,1] (0=softest,1=hardest).
+    auto penParams = [&](const BrushStrokePoint &sp, double &effRad,
+                         double &effHardness, double &opacityMul, double &grain) {
+        const double t = clampd((sp.penGrade + 6.0) / 11.0, 0.0, 1.0);
+        constexpr double kSoftHardnessFloor = 0.15;
+        constexpr double kHardHardnessCeil = 0.95;
+        effHardness = kSoftHardnessFloor + (kHardHardnessCeil - kSoftHardnessFloor) * t;
+        constexpr double kSoftOpacityMul = 1.0;
+        constexpr double kHardOpacityMul = 0.6;
+        opacityMul = kSoftOpacityMul + (kHardOpacityMul - kSoftOpacityMul) * t;
+        constexpr double kSoftGrain = 0.22;
+        constexpr double kHardGrain = 0.0;
+        grain = kSoftGrain + (kHardGrain - kSoftGrain) * t;
+        // Radius pressure-sensitivity: soft grades vary radius more with
+        // pressure (50%-100% of base radius across pressure 0..1); hard
+        // grades vary less (85%-100%).
+        constexpr double kSoftMinFrac = 0.5;
+        constexpr double kHardMinFrac = 0.85;
+        const double minFrac = kSoftMinFrac + (kHardMinFrac - kSoftMinFrac) * t;
+        const double pressure = clampd(sp.pressure, 0.0, 1.0);
+        const double frac = minFrac + (1.0 - minFrac) * pressure;
+        const double baseRad = std::max(1.0, sp.radius * W);
+        effRad = std::max(1.0, baseRad * frac);
+    };
+
     for (int i = startIdx; i < m.stroke.size(); ++i) {
         const BrushStrokePoint &sp = m.stroke[i];
-        const double rad = std::max(1.0, sp.radius * W);
+        double rad = std::max(1.0, sp.radius * W);
+        double hardness = sp.hardness;
+        double opacityMul = 1.0, grain = 0.0;
+        if (sp.isPen) penParams(sp, rad, hardness, opacityMul, grain);
         const double px = sp.pt.x() * W, py = sp.pt.y() * W;
+        QRgb dabColor = sp.color;
+        if (sp.isPen && opacityMul < 1.0) {
+            // Fold the opacity multiplier into the dab's alpha so lighter
+            // (harder-grade) dabs deposit less coverage.
+            dabColor = qRgba(qRed(dabColor), qGreen(dabColor), qBlue(dabColor),
+                             int(std::lround(qAlpha(dabColor) * opacityMul)));
+        }
 
         // Dab spacing (mouse-move sampling) is independent of brush radius,
         // so consecutive dabs of a soft brush can land far enough apart that
@@ -371,7 +426,10 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
         if (i > 0 && !sp.newStroke) {
             const BrushStrokePoint &pp = m.stroke[i - 1];
             const double ppx = pp.pt.x() * W, ppy = pp.pt.y() * W;
-            const double pprad = std::max(1.0, pp.radius * W);
+            double pprad = std::max(1.0, pp.radius * W);
+            double pphardness = pp.hardness;
+            double ppOpacityMul = 1.0, ppGrain = 0.0;
+            if (pp.isPen) penParams(pp, pprad, pphardness, ppOpacityMul, ppGrain);
             const double dx = px - ppx, dy = py - ppy;
             const double dist = std::sqrt(dx * dx + dy * dy);
             const double spacing = std::max(1.0, std::min(rad, pprad) * 0.2);
@@ -380,12 +438,13 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                 const double t = double(s) / steps;
                 stampDab(ppx + dx * t, ppy + dy * t,
                          pprad + (rad - pprad) * t,
-                         pp.hardness + (sp.hardness - pp.hardness) * t,
-                         sp.erase, sp.color);
+                         pphardness + (hardness - pphardness) * t,
+                         sp.erase, dabColor,
+                         ppGrain + (grain - ppGrain) * t);
             }
         }
 
-        stampDab(px, py, rad, sp.hardness, sp.erase, sp.color);
+        stampDab(px, py, rad, hardness, sp.erase, dabColor, grain);
     }
 
     if (cache) {

@@ -162,12 +162,26 @@ struct BrushStrokePoint {
     // interpolates sub-dabs between this point and its predecessor when this
     // is false, so separate strokes never get an unwanted connecting line.
     bool newStroke = false;
+    // Stylus pressure at the moment this dab was painted (0..1). Defaults to
+    // 1.0 for mouse input; only real QTabletEvent::pressure() varies it.
+    // Used by pen-style dabs to modulate per-dab radius (see rasterizeBrush).
+    qreal pressure = 1.0;
+    // True when this dab was painted with the Pen tool active, rather than
+    // Brush — the two tools share the same Paint-type layer/stroke so a user
+    // can freely switch between them without leaving the layer, and each dab
+    // remembers which rendering treatment it wants. `penGrade` is only
+    // meaningful when `isPen` is true; like radius/hardness it's captured
+    // from the mask's pen-grade setting at the moment the dab was painted.
+    bool isPen = false;
+    double penGrade = 0.0; // -6.0(6B)..5.0(5H), see rasterizeBrush's penParams
 
     bool operator==(const BrushStrokePoint &o) const {
         return pt == o.pt && erase == o.erase && color == o.color &&
-               newStroke == o.newStroke &&
+               newStroke == o.newStroke && isPen == o.isPen &&
                std::abs(radius - o.radius) < 1e-9 &&
-               std::abs(hardness - o.hardness) < 1e-9;
+               std::abs(hardness - o.hardness) < 1e-9 &&
+               std::abs(pressure - o.pressure) < 1e-9 &&
+               std::abs(penGrade - o.penGrade) < 1e-9;
     }
 };
 
@@ -226,6 +240,15 @@ struct Mask {
     // Auto Mask (brush only): constrains each dab to pixels colour-similar to
     // the point under the cursor, so the stroke stops at edges (Lightroom-style).
     bool autoMask = false;
+
+    // Pen tool: current pencil "grade" setting, baked into each new dab's
+    // BrushStrokePoint::penGrade at paint time (same pattern as brushRadius/
+    // hardness above) whenever the Pen tool — not Brush — is active on this
+    // Paint-type layer. Drives per-dab hardness/opacity/grain/pressure-
+    // sensitivity, following real pencil grade convention: -6.0 = "6B"
+    // (softest, smudgy, heavy) .. 0.0 = "HB" .. +5.0 = "5H" (hardest, crisp,
+    // light). See rasterizeBrush's penParams in Adjustments.cpp.
+    double penGrade = 0.0;
 
     // Paint: flat fill color for a MaskType::Paint layer. Composited using
     // the same `stroke`/`brushRadius`/`hardness` coverage as MaskType::Brush,
@@ -348,6 +371,7 @@ struct Mask {
                stroke == o.stroke && eraseStrokes == o.eraseStrokes &&
                std::abs(brushRadius - o.brushRadius) < 1e-9 &&
                std::abs(hardness - o.hardness) < 1e-9 && autoMask == o.autoMask &&
+               std::abs(penGrade - o.penGrade) < 1e-9 &&
                adj == o.adj && paintColor == o.paintColor && fillMask == o.fillMask &&
                text == o.text && textFamily == o.textFamily &&
                std::abs(textPixelSize - o.textPixelSize) < 1e-9 &&

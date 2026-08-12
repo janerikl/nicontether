@@ -19,6 +19,7 @@ class QDropEvent;
 class QContextMenuEvent;
 class QPlainTextEdit;
 class QPainter;
+class QTabletEvent;
 
 // Displays an image with zoom + pan, and supports crop rubber-band selection and
 // a white-balance eyedropper. Zoom: Ctrl+wheel (anchored to the cursor),
@@ -229,7 +230,9 @@ signals:
     // Mask geometry edits (all points width-normalized).
     void maskRadialDragged(const QPointF &centerNorm, double radiusNorm);
     void maskLinearDragged(const QPointF &p0Norm, const QPointF &p1Norm);
-    void maskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke); // one stroke sample
+    // One stroke sample. `pressure` is real QTabletEvent::pressure() (0..1)
+    // when the sample came from a stylus, 1.0 for mouse input.
+    void maskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke, double pressure);
     void maskEditFinished();                    // drag released → commit history
     void imageLayerDropped(const QString &path); // a photo was dropped in as a layer
 
@@ -253,6 +256,7 @@ protected:
     void mouseMoveEvent(QMouseEvent *) override;
     void mouseReleaseEvent(QMouseEvent *) override;
     void mouseDoubleClickEvent(QMouseEvent *) override;
+    void tabletEvent(QTabletEvent *) override;
     void wheelEvent(QWheelEvent *) override;
     void keyPressEvent(QKeyEvent *) override;
     void keyReleaseEvent(QKeyEvent *) override;
