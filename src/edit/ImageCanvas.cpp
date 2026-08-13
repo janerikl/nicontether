@@ -2367,9 +2367,24 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
             QPointF n = normPointAt(ev->pos());
             double dx = n.x() - m_lastEraseNorm.x();
             double dy = n.y() - m_lastEraseNorm.y();
-            if (dx * dx + dy * dy > 0.004 * 0.004) { // throttle stroke samples
+            double dist = std::sqrt(dx * dx + dy * dy);
+            if (dist > 0.004) { // throttle stroke samples
+                // Fast drags can skip past several dab-widths between
+                // consecutive mouse-move events; stamp intermediate dabs
+                // along the segment (spaced at a fraction of the brush
+                // radius) so the stroke's coverage stays continuous instead
+                // of leaving gaps/notches at the erased edge.
+                double radiusNorm = (m_img.isNull() || m_img.width() <= 0)
+                                         ? 0.06
+                                         : m_brushRadius / double(m_img.width());
+                double step = qMax(0.004, radiusNorm * 0.35);
+                int steps = qMax(1, int(dist / step));
+                QPointF prev = m_lastEraseNorm;
+                for (int i = 1; i <= steps; ++i) {
+                    double t = double(i) / steps;
+                    emit eraseAt(prev + QPointF(dx, dy) * t);
+                }
                 m_lastEraseNorm = n;
-                emit eraseAt(n);
             }
         }
         update();

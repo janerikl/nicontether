@@ -1176,8 +1176,14 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                             else if (!m.selectionClipNorm.contains(QPointF(x / W, y / W)))
                                 v = 0.0;
                         }
+                        // Union-combine overlapping dabs (screen blend)
+                        // rather than max: each dab's own smoothstep falloff
+                        // only reaches 1.0 exactly at its center, so with
+                        // max, pixels between two overlapping-but-offset dab
+                        // centers could never reach full coverage, leaving a
+                        // faint uniform residue along the whole stroke.
                         double &c = eraseCov[size_t(y) * w + x];
-                        if (v > c) c = v;
+                        c = 1.0 - (1.0 - c) * (1.0 - v);
                     }
                 }
             }
