@@ -230,6 +230,7 @@ QJsonObject adjustmentsToJson(const Adjustments &a) {
             j["shapeStrokeEnabled"] = m.shapeStrokeEnabled;
             j["shapeStrokeColor"] = m.shapeStrokeColor.name(QColor::HexArgb);
             j["shapeStrokeWidth"] = m.shapeStrokeWidth;
+            j["shapeImagePath"] = m.shapeImagePath;
 
             j["textBoxPosX"] = m.textBoxPos.x();
             j["textBoxPosY"] = m.textBoxPos.y();
@@ -458,6 +459,7 @@ Adjustments adjustmentsFromJson(const QJsonObject &o) {
         m.shapeStrokeEnabled = j["shapeStrokeEnabled"].toBool(true);
         m.shapeStrokeColor = QColor(j["shapeStrokeColor"].toString(QStringLiteral("#ff000000")));
         m.shapeStrokeWidth = j["shapeStrokeWidth"].toDouble(4.0);
+        m.shapeImagePath = j["shapeImagePath"].toString();
 
         m.textBoxPos = QPointF(j["textBoxPosX"].toDouble(0.0), j["textBoxPosY"].toDouble(0.0));
         m.textBoxRotation = j["textBoxRotation"].toDouble(0.0);

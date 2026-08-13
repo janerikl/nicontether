@@ -2244,7 +2244,7 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
     // rotated hit-testing via shapeMarkerAt/textMarkerAt; Paint layers and
     // image layers use simple bounding-box markers (see setPaintMarkers/
     // setImageLayerMarkers).
-    if (ev->button() == Qt::LeftButton && !m_spaceDown) {
+    if (ev->button() == Qt::LeftButton && !m_spaceDown && !m_zoomMode) {
         int hit;
         if ((hit = shapeMarkerAt(ev->pos())) >= 0) { emit objectClicked(MaskType::Shape, hit); return; }
         if ((hit = textMarkerAt(ev->pos())) >= 0) { emit objectClicked(MaskType::TextBox, hit); return; }
@@ -3039,7 +3039,13 @@ void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
         m_marquee = false;
         QRect box = QRect(m_mp0, m_mp1).normalized();
         update();
-        if (box.width() < 8 || box.height() < 8) return; // treat as a click
+        if (box.width() < 8 || box.height() < 8) {
+            // Treat as a click: step zoom in, or out with Alt held, centered
+            // on the click point.
+            double f = (ev->modifiers() & Qt::AltModifier) ? 0.5 : 2.0;
+            zoomTo(m_scale * f, m_mp0);
+            return;
+        }
         // Zoom so the boxed region fills the view.
         double imgW = box.width() / m_scale, imgH = box.height() / m_scale;
         double cx = (box.center().x() - m_topLeft.x()) / m_scale;

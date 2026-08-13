@@ -935,6 +935,8 @@ ShapeOp maskToShapeOp(const Mask &m) {
     op.innerRadiusRatio = m.shapeInnerRadiusRatio;
     op.fillEnabled = m.shapeFillEnabled;
     op.fillColor = m.shapeFillColor;
+    if (m.isShapeImageFilled() && !m.shapeImageCache.isNull())
+        op.fillImage = &m.shapeImageCache;
     op.strokeEnabled = m.shapeStrokeEnabled;
     op.strokeColor = m.shapeStrokeColor;
     op.strokeWidth = m.shapeStrokeWidth;

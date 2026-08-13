@@ -41,6 +41,7 @@ add_executable(photonloom
     src/ui/ToolFlyout.cpp
     src/ui/AppIcon.cpp
     src/ui/BrushPresetMenuButton.cpp
+    src/ui/AssetsPanel.cpp
     src/edit/Adjustments.cpp
     src/edit/RawLoader.cpp
     src/edit/ImageCanvas.cpp
@@ -50,6 +51,7 @@ add_executable(photonloom
     src/edit/AdjustmentPreset.cpp
     src/edit/ViewTemplate.cpp
     src/edit/BrushPreset.cpp
+    src/edit/AssetStamp.cpp
     src/edit/RecentSessions.cpp
     src/edit/RecentFiles.cpp
     src/edit/RecentProjects.cpp

@@ -82,8 +82,10 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     if (path.endsWith(QStringLiteral(".ploom"), Qt::CaseInsensitive)) {
         QImage base;
         const bool ok = EditSidecar::loadProject(path, base, m_adj);
-        for (const Mask &m : m_adj.masks)
+        for (const Mask &m : m_adj.masks) {
             if (m.isImageLayer()) kickoffImageLayerDecode(m.sourceImagePath);
+            if (m.isShapeImageFilled()) loadShapeImageCache(m.shapeImagePath);
+        }
         ensureBackgroundMask();
         setupCanvasAndWiring();
         if (!ok || base.isNull()) {
@@ -107,8 +109,10 @@ RetouchTab::RetouchTab(const QString &path, QWidget *parent)
     EditSidecar::load(m_path, m_adj);
     // Any image layers restored from the sidecar need their source photo
     // decoded again — the cache is never persisted.
-    for (const Mask &m : m_adj.masks)
+    for (const Mask &m : m_adj.masks) {
         if (m.isImageLayer()) kickoffImageLayerDecode(m.sourceImagePath);
+        if (m.isShapeImageFilled()) loadShapeImageCache(m.shapeImagePath);
+    }
     ensureBackgroundMask();
 
     setupCanvasAndWiring();
@@ -2306,6 +2310,62 @@ void RetouchTab::kickoffImageLayerDecode(const QString &path) {
         }
     });
     watcher->setFuture(QtConcurrent::run(RawLoader::loadAny, path));
+}
+
+// Asset-stamp cutouts are small app-managed PNGs (not RAW photos), so a
+// synchronous decode is cheap enough to do inline -- no need for
+// kickoffImageLayerDecode's background-thread machinery.
+void RetouchTab::loadShapeImageCache(const QString &path) {
+    QImage img(path);
+    bool changed = false;
+    for (Mask &m : m_adj.masks) {
+        if (m.shapeImagePath == path && m.shapeImageCache.isNull() && !img.isNull()) {
+            m.shapeImageCache = img;
+            changed = true;
+        }
+    }
+    if (changed) {
+        retone();
+        emit masksChanged();
+    }
+}
+
+// Places `imagePath` (an AssetStamp's stored cutout) as a new image-filled
+// Shape mask, sized to ~25% of the canvas width and matching the asset's own
+// aspect ratio, centered on the canvas. Reuses Shape's existing move/resize/
+// rotate handle interaction -- no new geometry/handle code needed.
+int RetouchTab::insertAssetStamp(const QString &imagePath, const QSize &nativeSize,
+                                 const QString &name) {
+    if (imagePath.isEmpty()) return -1;
+    const QSize canvasSize = previewImage().size();
+    const int canvasW = canvasSize.width();
+    const int canvasH = canvasSize.height();
+    if (canvasW <= 0 || canvasH <= 0) return -1;
+
+    double aspect = (nativeSize.width() > 0 && nativeSize.height() > 0)
+                        ? double(nativeSize.height()) / double(nativeSize.width())
+                        : 1.0;
+    const double w = canvasW * 0.25;
+    const double h = w * aspect;
+
+    Mask m;
+    m.type = MaskType::Shape;
+    m.name = name.isEmpty() ? QStringLiteral("Asset") : name;
+    m.shapeType = ShapeType::Rectangle;
+    m.shapeRect = QRectF(canvasW / 2.0 - w / 2.0, canvasH / 2.0 - h / 2.0, w, h);
+    m.shapeRotation = 0.0;
+    m.shapeFillEnabled = true;
+    m.shapeStrokeEnabled = false;
+    m.shapeImagePath = imagePath;
+
+    int insertAt = 0;
+    m_adj.masks.insert(insertAt, m);
+    m_activeMask = insertAt;
+    loadShapeImageCache(imagePath);
+    retone();
+    markEdited();
+    emit masksChanged();
+    return insertAt;
 }
 
 int RetouchTab::duplicateActiveMask() {

@@ -119,7 +119,13 @@ void applyShapeOp(QImage &img, const ShapeOp &op) {
     }
 
     QPainterPath path = buildShapePath(op);
-    if (op.fillEnabled) {
+    if (op.fillEnabled && op.fillImage && !op.fillImage->isNull()) {
+        p.setPen(Qt::NoPen);
+        p.save();
+        p.setClipPath(path, Qt::IntersectClip);
+        p.drawImage(op.rect, *op.fillImage);
+        p.restore();
+    } else if (op.fillEnabled) {
         p.setPen(Qt::NoPen);
         p.fillPath(path, op.fillColor);
     }

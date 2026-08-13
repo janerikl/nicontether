@@ -3,6 +3,7 @@
 #include <QWidget>
 #include <QImage>
 #include <QRect>
+#include <QSize>
 #include <QTransform>
 #include <QColor>
 #include <QSet>
@@ -168,6 +169,10 @@ public:
     // first so it goes through the same addImageLayer path as any other
     // image layer.
     int addImageLayerFromImage(const QImage &image, const QString &suggestedName);
+    // Places an AssetStamp's cutout as a new image-filled Shape mask, sized
+    // to a fraction of canvas width matching the asset's aspect ratio;
+    // returns its index, or -1 if there's no image/canvas to place it on.
+    int insertAssetStamp(const QString &imagePath, const QSize &nativeSize, const QString &name);
     // Photoshop-style Ctrl/Alt+Backspace: flat-fills the active layer with
     // `color`. Background -> inserts a new full-canvas Paint layer above it;
     // Paint -> appends full coverage to its existing stroke. No-op for mask
@@ -399,6 +404,7 @@ private:
     QImage orientedPreCropSource() const;
     void pushMaskGizmo();     // sync active mask geometry to the canvas
     void kickoffImageLayerDecode(const QString &path); // async-decode an image layer's source
+    void loadShapeImageCache(const QString &path); // sync-decode an image-filled Shape's asset PNG
     QString copyImageLayerAsset(const QString &sourcePath); // copy a layer source next to m_path so it survives move/delete
     void setupCanvasAndWiring(); // shared canvas creation + connect()s for both constructors
     // Inserts a MaskType::Background entry (sourced from this tab's own base

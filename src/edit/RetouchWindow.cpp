@@ -11,6 +11,7 @@
 #include "ui/FilmstripWidget.h"
 #include "ui/LevelsPanel.h"
 #include "ui/LayersPanel.h"
+#include "ui/AssetsPanel.h"
 #include "ui/ToolFlyout.h"
 #include "ui/TetherView.h"
 #include "ui/PreferencesDialog.h"
@@ -717,11 +718,13 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     m_pasteSelectionAction = editMenu->addAction("Paste");
     m_pasteSelectionAction->setShortcut(QKeySequence::Paste);
     m_pasteSelectionAction->setEnabled(false);
+    m_saveSelectionAsAssetAction = editMenu->addAction("Save Selection as Asset...");
     connect(m_deselectAction, &QAction::triggered, this, &RetouchWindow::onDeselect);
     connect(m_invertSelectionAction, &QAction::triggered, this, &RetouchWindow::onInvertSelection);
     connect(m_featherSelectionAction, &QAction::triggered, this, &RetouchWindow::onFeatherSelection);
     connect(m_copySelectionAction, &QAction::triggered, this, &RetouchWindow::onCopySelection);
     connect(m_pasteSelectionAction, &QAction::triggered, this, &RetouchWindow::onPasteSelection);
+    connect(m_saveSelectionAsAssetAction, &QAction::triggered, this, &RetouchWindow::onSaveSelectionAsAsset);
 
     // Center: a stack (editing tabs / tether) with the shared filmstrip below,
     // so the filmstrip is visible in both modes.
@@ -805,6 +808,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     buildHistoryDock();
     buildLevelsDock();
     buildLayersDock();
+    buildAssetsDock();
     buildViewMenu();
 
     // Tether chrome: camera controls dock + tether action toolbar. Visibility is
@@ -2418,6 +2422,37 @@ void RetouchWindow::refreshLevels() {
     }
 }
 
+void RetouchWindow::buildAssetsDock() {
+    auto *dock = new QDockWidget("Assets", this);
+    m_assetsDock = dock;
+    dock->setObjectName("assetsDock");
+    dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+    m_assetsPanel = new AssetsPanel;
+    dock->setWidget(m_assetsPanel);
+    addDockWidget(Qt::RightDockWidgetArea, dock);
+    if (m_layersDock) tabifyDockWidget(m_layersDock, dock);
+
+    connect(m_assetsPanel, &AssetsPanel::insertAssetRequested, this, [this](const AssetStamp &asset) {
+        RetouchTab *tab = currentTab();
+        if (!tab || !tab->isReady()) return;
+        int idx = tab->insertAssetStamp(asset.imagePath, asset.nativeSize, asset.name);
+        if (idx >= 0) {
+            refreshMaskPanel();
+            m_statusLabel->setText(QString("Inserted asset \"%1\"").arg(asset.name));
+        }
+    });
+    connect(m_assetsPanel, &AssetsPanel::deleteAssetRequested, this, [this](const QString &name) {
+        m_assetStampStore.remove(name);
+        refreshAssetsPanel();
+    });
+
+    refreshAssetsPanel();
+}
+
+void RetouchWindow::refreshAssetsPanel() {
+    if (m_assetsPanel) m_assetsPanel->setAssets(m_assetStampStore.all());
+}
+
 void RetouchWindow::buildLayersDock() {
     auto *dock = new QDockWidget("Layers", this);
     m_layersDock = dock;
@@ -2921,6 +2956,46 @@ void RetouchWindow::onCopySelection() {
     m_selectionClipboardOffsetPx = bounds.topLeft();
     m_pasteSelectionAction->setEnabled(true);
     m_statusLabel->setText("Selection copied");
+}
+
+// Extracts the selection the same way onCopySelection does (feather-preserving
+// per-pixel alpha clip, cropped to the selection's bounding box), but saves
+// the result into the AssetStamp library instead of the in-app clipboard, so
+// it can be reused as a resize/rotate-able stamp in any document.
+void RetouchWindow::onSaveSelectionAsAsset() {
+    RetouchTab *tab = currentTab();
+    if (!tab || !tab->isReady() || !tab->hasActiveSelection()) {
+        m_statusLabel->setText("Make a selection first");
+        return;
+    }
+    QImage src = tab->previewImage();
+    if (src.isNull()) return;
+    const double W = src.width();
+    QTransform normToPx;
+    normToPx.scale(W, W);
+    QPainterPath pathPx = normToPx.map(tab->canvas()->selectionPathNorm());
+    QRect bounds = pathPx.boundingRect().toAlignedRect().intersected(src.rect());
+    if (bounds.isEmpty()) return;
+
+    QImage clip(bounds.size(), QImage::Format_ARGB32_Premultiplied);
+    clip.fill(Qt::transparent);
+    QPainter p(&clip);
+    p.setClipPath(pathPx.translated(-bounds.topLeft()));
+    p.drawImage(-bounds.topLeft(), src);
+    p.end();
+
+    bool ok = false;
+    QString name = QInputDialog::getText(this, "Save Selection as Asset", "Asset name:",
+                                         QLineEdit::Normal, QString(), &ok);
+    if (!ok || name.trimmed().isEmpty()) return;
+
+    AssetStamp saved = m_assetStampStore.addOrUpdate(name.trimmed(), clip);
+    if (saved.imagePath.isEmpty()) {
+        m_statusLabel->setText("Failed to save asset");
+        return;
+    }
+    refreshAssetsPanel();
+    m_statusLabel->setText(QString("Saved asset \"%1\"").arg(saved.name));
 }
 
 // Pastes the in-app selection clipboard as a new full-frame image layer

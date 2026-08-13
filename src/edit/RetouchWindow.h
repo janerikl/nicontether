@@ -8,9 +8,12 @@
 
 #include "edit/Adjustments.h"
 #include "edit/AdjustmentPreset.h"
+#include "edit/AssetStamp.h"
 #include "edit/ViewTemplate.h"
 #include "edit/ExportPreset.h"
 #include "ui/ColorSwatchWidget.h"
+
+class AssetsPanel;
 
 class RetouchTab;
 class FilmstripWidget;
@@ -257,6 +260,9 @@ private:
     LayersPanel *m_layersPanel = nullptr;
     void buildLayersDock();
     void refreshMaskPanel(); // refreshes the Layers panel (all sections) from the active tab
+    QDockWidget *m_assetsDock = nullptr;
+    void buildAssetsDock();
+    void refreshAssetsPanel(); // rebuilds the Assets panel from m_assetStampStore
     void wireTabSignals(RetouchTab *tab);
     // Local-mask subtool selected via the tool's Photoshop-style flyout; a plain
     // click on the mask tool creates a mask of this type.
@@ -288,6 +294,7 @@ private:
     class QAction *m_featherSelectionAction = nullptr;
     class QAction *m_copySelectionAction = nullptr;
     class QAction *m_pasteSelectionAction = nullptr;
+    class QAction *m_saveSelectionAsAssetAction = nullptr;
     QImage m_selectionClipboard;         // extracted pixels, transparent outside the copied region
     QPoint m_selectionClipboardOffsetPx; // top-left of m_selectionClipboard within the full image
     int m_lastFeatherPx = 0; // remembered across invocations, like Photoshop's Feather dialog
@@ -296,6 +303,7 @@ private:
     void onFeatherSelection();
     void onCopySelection();
     void onPasteSelection();
+    void onSaveSelectionAsAsset();
 
     Adjustments m_editClipboard;
     bool m_hasEditClipboard = false;
@@ -327,4 +335,9 @@ private:
 
     ExportPresetStore m_presetStore;
     bool m_syncing = false; // guard against feedback while loading dock from tab
+
+    // Asset stamps: user-saved cut-out objects (Select a region, "Save
+    // Selection as Asset"), reusable across any document via the Assets dock.
+    AssetStampStore m_assetStampStore;
+    AssetsPanel *m_assetsPanel = nullptr;
 };

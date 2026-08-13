@@ -330,6 +330,16 @@ struct Mask {
     QColor shapeStrokeColor{0, 0, 0, 255};
     double shapeStrokeWidth = 4.0;
 
+    // Asset-stamp image fill: when set, this Shape mask is filled with a
+    // stored cutout image (scaled to fit shapeRect, clipped to the shape
+    // path, rotated by shapeRotation) instead of shapeFillColor -- reusing
+    // Shape's existing move/resize/rotate handles for placed asset stamps.
+    // shapeImageCache is a transient decode cache like sourceImageCache
+    // above: never serialized, never compared.
+    QString shapeImagePath;
+    QImage shapeImageCache;
+    bool isShapeImageFilled() const { return !shapeImagePath.isEmpty(); }
+
     // TextBox (MaskType::TextBox): a real text layer, mirroring TextOp's
     // fields (distinct from the Text clip-mask fields above, which carry no
     // colour/outline/shadow/background of their own). Same deferred raw
@@ -429,6 +439,7 @@ struct Mask {
                shapeStrokeEnabled == o.shapeStrokeEnabled &&
                shapeStrokeColor == o.shapeStrokeColor &&
                std::abs(shapeStrokeWidth - o.shapeStrokeWidth) < 1e-9 &&
+               shapeImagePath == o.shapeImagePath &&
                textBoxPos == o.textBoxPos &&
                std::abs(textBoxRotation - o.textBoxRotation) < 1e-9 &&
                textBoxText == o.textBoxText && textBoxFamily == o.textBoxFamily &&
@@ -562,6 +573,12 @@ struct ShapeOp {
 
     bool fillEnabled = true;
     QColor fillColor{255, 255, 255, 255};
+    // Asset-stamp image fill: when non-null, the shape is filled by drawing
+    // this image scaled to `rect` (clipped to the shape path) instead of
+    // `fillColor`. Not owned, never compared/serialized -- callers (see
+    // Adjustments.cpp's rasterizeShapeOrTextBox) point it at a decode cache
+    // that outlives the call.
+    const QImage *fillImage = nullptr;
     bool strokeEnabled = true;
     QColor strokeColor{0, 0, 0, 255};
     double strokeWidth = 4.0;
