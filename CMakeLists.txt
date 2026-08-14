@@ -33,6 +33,7 @@ add_executable(photonloom
     src/ui/LevelsPanel.cpp
     src/ui/MaskPanel.cpp
     src/ui/LayersPanel.cpp
+    src/ui/LayerAdjustmentsPanel.cpp
     src/ui/TonePanel.cpp
     src/ui/ColorPanel.cpp
     src/ui/ToneCurvePanel.cpp
@@ -42,6 +43,7 @@ add_executable(photonloom
     src/ui/AppIcon.cpp
     src/ui/BrushPresetMenuButton.cpp
     src/ui/AssetsPanel.cpp
+    src/ui/BrowseTab.cpp
     src/edit/Adjustments.cpp
     src/edit/RawLoader.cpp
     src/edit/ImageCanvas.cpp

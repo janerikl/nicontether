@@ -8,8 +8,10 @@
 #include "edit/RecentSessions.h"
 #include "edit/RecentFiles.h"
 #include "edit/RecentProjects.h"
+#include "ui/BrowseTab.h"
 #include "ui/FilmstripWidget.h"
 #include "ui/LevelsPanel.h"
+#include "ui/LayerAdjustmentsPanel.h"
 #include "ui/LayersPanel.h"
 #include "ui/AssetsPanel.h"
 #include "ui/ToolFlyout.h"
@@ -77,6 +79,45 @@ const QColor kIconOff(220, 220, 220);    // idle: same bright grey as the hover 
 const QColor kIconOn(235, 235, 235);     // active: light
 const QColor kIconDisabled(220, 220, 220, 90); // disabled: idle color, faded
 const QColor kIconHover(20, 20, 20);      // hover (idle tool): near-black, for contrast against the lighter hover background
+
+QPixmap drawMove(const QColor &c) {
+    QPixmap pm(kIconPx, kIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+    const double cx = kIconPx / 2.0, cy = kIconPx / 2.0;
+    const double arm = 10.0, headL = 6.0, headW = 3.5, shaftHalf = 1.2, gap = 2.0;
+
+    // Four short shafts from just outside the center out to the base of
+    // each arrowhead, leaving a gap at the middle so the arms read as
+    // distinct spokes instead of merging into a solid center blob.
+    auto shaft = [&](double dx, double dy) {
+        QPointF perp(-dy, dx);
+        QPointF inner(cx + dx * gap, cy + dy * gap);
+        QPointF outer(cx + dx * (arm - headL), cy + dy * (arm - headL));
+        QPolygonF quad;
+        quad << inner + perp * shaftHalf << outer + perp * shaftHalf
+             << outer - perp * shaftHalf << inner - perp * shaftHalf;
+        p.drawPolygon(quad);
+    };
+    shaft(0, -1);
+    shaft(0, 1);
+    shaft(-1, 0);
+    shaft(1, 0);
+
+    auto head = [&](const QPointF &tip, const QPointF &back, const QPointF &perp) {
+        QPolygonF tri;
+        tri << tip << (back + perp * headW) << (back - perp * headW);
+        p.drawPolygon(tri);
+    };
+    head(QPointF(cx, cy - arm), QPointF(cx, cy - arm + headL), QPointF(1, 0));
+    head(QPointF(cx, cy + arm), QPointF(cx, cy + arm - headL), QPointF(1, 0));
+    head(QPointF(cx - arm, cy), QPointF(cx - arm + headL, cy), QPointF(0, 1));
+    head(QPointF(cx + arm, cy), QPointF(cx + arm - headL, cy), QPointF(0, 1));
+    return pm;
+}
 
 QPixmap drawZoom(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
@@ -231,34 +272,91 @@ QPixmap drawRemoveObject(const QColor &c) {
     return pm;
 }
 
-// Simple, bold paintbrush: a solid filled bristle tip plus a thick handle.
+// House-painting brush: wide flat bristle head, metal ferrule band, and a
+// wooden handle sticking up from it.
 QPixmap drawBrushTool(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    // Solid bristle tip, tapering to a point at the bottom-left.
-    QPainterPath tip;
-    tip.moveTo(3, 25);
-    tip.lineTo(9, 12);
-    tip.lineTo(16, 19);
-    tip.closeSubpath();
+    // Wide bristle head with a ragged bottom edge.
+    QPainterPath bristles;
+    bristles.moveTo(5, 19);
+    bristles.lineTo(23, 19);
+    bristles.lineTo(21, 27);
+    bristles.lineTo(18, 23);
+    bristles.lineTo(15, 27);
+    bristles.lineTo(12, 23);
+    bristles.lineTo(9, 27);
+    bristles.lineTo(7, 23);
+    bristles.closeSubpath();
     p.setPen(Qt::NoPen);
     p.setBrush(c);
-    p.drawPath(tip);
+    p.drawPath(bristles);
 
-    // Thick handle, angled up to the top-right.
-    QPen pen(c, 5);
-    pen.setCapStyle(Qt::RoundCap);
-    p.setPen(pen);
-    p.drawLine(QPointF(12, 16), QPointF(23, 5));
+    // Metal ferrule band clamping the bristles to the handle.
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(c, 2));
+    p.drawRect(QRectF(5, 14, 18, 5));
+
+    // Wooden handle.
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+    p.drawRoundedRect(QRectF(10, 3, 8, 12), 2, 2);
 
     return pm;
 }
 
 // Tilted paint bucket with a drip, plus a small paint-pour blob: the classic
 // flood-fill glyph, distinct from the brush's bristle-tip shape.
+// Lead pencil glyph for the Pen tool: sharpened graphite point, wood taper,
+// hexagonal shaft, and a ferrule + eraser at the top, angled for drawing.
+QPixmap drawCrayonTool(const QColor &c) {
+    QPixmap pm(kIconPx, kIconPx);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    p.translate(kIconPx / 2.0, kIconPx / 2.0);
+    p.rotate(45);
+    p.translate(-kIconPx / 2.0, -kIconPx / 2.0);
+
+    // Graphite point.
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+    QPainterPath lead;
+    lead.moveTo(14, 27);
+    lead.lineTo(12, 22);
+    lead.lineTo(16, 22);
+    lead.closeSubpath();
+    p.drawPath(lead);
+
+    // Sharpened wood taper.
+    QColor fill = c;
+    fill.setAlpha(60);
+    p.setPen(QPen(c, 1.5));
+    p.setBrush(fill);
+    QPainterPath wood;
+    wood.moveTo(12, 22);
+    wood.lineTo(16, 22);
+    wood.lineTo(19, 17);
+    wood.lineTo(9, 17);
+    wood.closeSubpath();
+    p.drawPath(wood);
+
+    // Hexagonal shaft.
+    p.drawRect(QRectF(9, 8, 10, 9));
+
+    // Ferrule band and eraser at the top.
+    p.setBrush(c);
+    p.drawRect(QRectF(9, 6, 10, 2));
+    p.setBrush(fill);
+    p.drawRoundedRect(QRectF(9, 3, 10, 4), 1.5, 1.5);
+
+    return pm;
+}
+
 QPixmap drawPaintBucket(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
     pm.fill(Qt::transparent);
@@ -392,21 +490,28 @@ QPixmap drawSelectBrush(const QColor &c) {
     return pm;
 }
 
-// Two overlapping rectangles (source + destination) glyph for Clone Stamp.
+// Hand-stamper glyph (base pad + tapered body + top handle) for Clone Stamp.
 QPixmap drawCloneStamp(const QColor &c) {
     QPixmap pm(kIconPx, kIconPx);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    QPen dashed(c, 1.5, Qt::DashLine);
-    p.setPen(dashed);
-    p.setBrush(Qt::NoBrush);
-    p.drawRect(QRectF(4, 4, 12, 12));
     p.setPen(QPen(c, 1.5));
     QColor fill = c;
     fill.setAlpha(60);
     p.setBrush(fill);
-    p.drawRect(QRectF(13, 13, 12, 12));
+
+    // Imprint pad at the base.
+    p.drawRect(QRectF(6, 23, 16, 4));
+
+    // Tapered body connecting pad to handle.
+    QPolygonF body;
+    body << QPointF(9, 23) << QPointF(23, 23) << QPointF(19, 13) << QPointF(13, 13);
+    p.drawPolygon(body);
+
+    // Handle on top.
+    p.drawRoundedRect(QRectF(12, 5, 8, 9), 2, 2);
+
     return pm;
 }
 
@@ -433,6 +538,7 @@ QIcon makeToolIcon(QPixmap (*draw)(const QColor &)) {
     return icon;
 }
 
+QIcon makeMoveIcon() { return makeToolIcon(drawMove); }
 QIcon makeZoomIcon() { return makeToolIcon(drawZoom); }
 QIcon makeCropIcon() { return makeToolIcon(drawCrop); }
 QIcon makeHealIcon() { return makeToolIcon(drawHeal); }
@@ -447,6 +553,7 @@ QIcon makeSelectLassoIcon() { return makeToolIcon(drawSelectLasso); }
 QIcon makeSelectWandIcon() { return makeToolIcon(drawSelectWand); }
 QIcon makeSelectBrushIcon() { return makeToolIcon(drawSelectBrush); }
 QIcon makeCloneStampIcon() { return makeToolIcon(drawCloneStamp); }
+QIcon makeCrayonToolIcon() { return makeToolIcon(drawCrayonTool); }
 QIcon makeRemoveObjectIcon() { return makeToolIcon(drawRemoveObject); }
 
 // Two-state icon like makeToolIcon, but with the flyout corner marker baked in.
@@ -582,18 +689,24 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     toolbar->setObjectName("mainToolBar");
     toolbar->setMovable(false);
 
-    // Mode switch: mutually-exclusive Retouch / Tether / SVG at the far left.
+    // Mode switch: mutually-exclusive Browse / Retouch / Tether / SVG at the
+    // far left.
+    m_browseModeAction = toolbar->addAction("Browse");
     m_retouchModeAction = toolbar->addAction("Retouch");
     m_tetherModeAction = toolbar->addAction("Tether");
     m_svgModeAction = toolbar->addAction("SVG");
+    m_browseModeAction->setCheckable(true);
     m_retouchModeAction->setCheckable(true);
     m_tetherModeAction->setCheckable(true);
     m_svgModeAction->setCheckable(true);
     auto *modeGroup = new QActionGroup(this);
     modeGroup->setExclusive(true);
+    modeGroup->addAction(m_browseModeAction);
     modeGroup->addAction(m_retouchModeAction);
     modeGroup->addAction(m_tetherModeAction);
     modeGroup->addAction(m_svgModeAction);
+    connect(m_browseModeAction, &QAction::triggered, this,
+            [this] { setMode(Mode::Browse); });
     connect(m_retouchModeAction, &QAction::triggered, this,
             [this] { setMode(Mode::Retouch); });
     connect(m_tetherModeAction, &QAction::triggered, this,
@@ -754,10 +867,15 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
                 }
             });
 
+    m_browseTab = new BrowseTab;
+    connect(m_browseTab, &BrowseTab::openRequested, this,
+            &RetouchWindow::onBrowseOpenRequested);
+
     m_modeStack = new QStackedWidget;
     m_modeStack->addWidget(m_tabs);         // index 0 = Retouch
     m_modeStack->addWidget(m_tetherView);   // index 1 = Tether
     m_modeStack->addWidget(m_svgEditorTab); // index 2 = SVG
+    m_modeStack->addWidget(m_browseTab);    // index 3 = Browse
 
     m_filmstrip = new FilmstripWidget;
     connect(m_filmstrip, &FilmstripWidget::frameSelected, this,
@@ -922,9 +1040,6 @@ void RetouchWindow::restoreWindowState() {
     } else {
         applyDefaultDockLayout();
     }
-    if (m_layersPanel && settings.contains("window/layersInnerState"))
-        m_layersPanel->restoreInnerDockState(
-            settings.value("window/layersInnerState").toByteArray());
 }
 
 // View menu: toggle visibility of the Tools bar, Adjustments dock, and the
@@ -936,11 +1051,10 @@ void RetouchWindow::buildViewMenu() {
     if (m_historyDock) viewMenu->addAction(m_historyDock->toggleViewAction());
     if (m_levelsDock) viewMenu->addAction(m_levelsDock->toggleViewAction());
     if (m_layersDock) viewMenu->addAction(m_layersDock->toggleViewAction());
-    if (m_layersPanel) {
-        auto *sectionsMenu = viewMenu->addMenu("Layers Sections");
-        for (QDockWidget *d : m_layersPanel->sectionDocks())
-            if (d) sectionsMenu->addAction(d->toggleViewAction());
-    }
+    if (m_assetsDock) viewMenu->addAction(m_assetsDock->toggleViewAction());
+    // m_layerAdjustmentsDock is created lazily (on first section request),
+    // so it has no toggleViewAction() to add here yet; reopening it is done
+    // via the Layers list's right-click menu, not View.
 
     m_filmstripAction = new QAction("Filmstrip", this);
     m_filmstripAction->setCheckable(true);
@@ -961,14 +1075,41 @@ void RetouchWindow::buildViewMenu() {
     });
     viewMenu->addAction(m_rulersAction);
 
+    {
+        auto *gridMenu = viewMenu->addMenu("Composition Grid");
+        auto *group = new QActionGroup(this);
+        group->setExclusive(true);
+        int current = QSettings().value("canvas/compositionGrid", int(GridMode::Off)).toInt();
+        struct Entry { const char *label; GridMode grid; };
+        const Entry entries[] = {
+            {"None", GridMode::Off},
+            {"Rule of Thirds", GridMode::Thirds},
+            {"Golden Ratio", GridMode::GoldenRatio},
+            {"Golden Spiral", GridMode::GoldenSpiral},
+            {"Center Crosshair", GridMode::Crosshair},
+            {"Diagonals", GridMode::Diagonals},
+        };
+        for (const Entry &e : entries) {
+            auto *act = gridMenu->addAction(e.label);
+            act->setCheckable(true);
+            act->setChecked(current == static_cast<int>(e.grid));
+            group->addAction(act);
+            GridMode grid = e.grid;
+            connect(act, &QAction::toggled, this, [this, grid](bool on) {
+                if (!on) return;
+                QSettings().setValue("canvas/compositionGrid", static_cast<int>(grid));
+                for (RetouchTab *tab : m_openTabs)
+                    if (tab->canvas()) tab->canvas()->setCompositionGrid(grid);
+            });
+        }
+    }
+
     viewMenu->addSeparator();
     auto *resetPanelsAction = new QAction("Reset Panels", this);
     connect(resetPanelsAction, &QAction::triggered, this, [this] {
         QSettings settings;
         settings.remove("window/state"); // panels only; leave window/geometry
-        settings.remove("window/layersInnerState");
         applyDefaultDockLayout();
-        if (m_layersPanel) m_layersPanel->resetSections();
     });
     viewMenu->addAction(resetPanelsAction);
 
@@ -1136,6 +1277,15 @@ void RetouchWindow::buildToolPanel() {
         "QToolButton:disabled { background: transparent; }");
     addToolBar(Qt::LeftToolBarArea, m_toolsBar);
 
+    m_moveToggle = new QToolButton;
+    m_moveToggle->setIcon(makeMoveIcon());
+    m_moveToggle->setCheckable(true);
+    m_moveToggle->setShortcut(QKeySequence(Qt::Key_V));
+    m_moveToggle->setToolTip(
+        "Move (V) — drag a shape/text/image layer to move it, or drag on a "
+        "Paint/Brush layer's strokes; clipped to the active selection if one exists");
+    m_toolsBar->addWidget(m_moveToggle);
+
     m_toolZoom = new QToolButton;
     m_toolZoom->setIcon(makeZoomIcon());
     m_toolZoom->setCheckable(true);
@@ -1185,7 +1335,7 @@ void RetouchWindow::buildToolPanel() {
     m_toolsBar->addWidget(m_removeObjectToggle);
 
     m_penToggle = new QToolButton;
-    m_penToggle->setIcon(makeBrushToolIcon()); // TODO: dedicated pencil glyph; reuses the brush icon for now
+    m_penToggle->setIcon(makeCrayonToolIcon());
     m_penToggle->setCheckable(true);
     m_penToggle->setShortcut(QKeySequence(Qt::Key_N));
     m_penToggle->setToolTip("Pen (N) — pencil strokes with grade-driven hardness/texture; Ctrl+wheel resizes");
@@ -1378,15 +1528,17 @@ void RetouchWindow::buildToolPanel() {
             m_toolOptionsStack->setCurrentIndex(3);
             m_toolOptionsBar->setVisible(true);
             tab->setPaintColor(m_colorSwatch->foregroundColor());
-            if (!m_paintSizeCustomized && tab->imageWidth() > 0) {
+            if (!m_paintSizeCustomized) {
                 m_syncingPaintSize = true;
-                m_paintSize->setValue(std::clamp(
-                    int(std::lround(20.0 / tab->imageWidth() * 100.0)), 1, 40));
+                m_paintSize->setValue(20);
                 m_syncingPaintSize = false;
             }
             updatePaintSizePxLabel();
-            tab->setActiveMaskShape(false, 0.0, m_paintHardness->value() / 100.0,
-                                    m_paintSize->value() / 100.0, false);
+            {
+                const int w = tab->imageWidth();
+                const double norm = w > 0 ? m_paintSize->value() / double(w) : 0.006;
+                tab->setActiveMaskShape(false, 0.0, m_paintHardness->value() / 100.0, norm, false);
+            }
             tab->setActiveMaskOpacity(m_paintOpacity->value() / 100.0);
             tab->setPenToolActive(false);
             tab->setMaskForceErase(false);
@@ -1527,6 +1679,15 @@ void RetouchWindow::buildToolPanel() {
         }
         if (tab && tab->isReady()) tab->setShapeMode(on);
         updateShapeOptionsFromTab();
+    });
+    connect(m_moveToggle, &QToolButton::toggled, this, [this](bool on) {
+        RetouchTab *tab = currentTab();
+        if (on) {
+            deactivateOtherToolButtons(m_moveToggle);
+            deactivateAllToolModes(tab);
+            m_toolOptionsBar->setVisible(false); // no per-tool options
+        }
+        if (tab && tab->isReady()) tab->setMoveMode(on);
     });
     connect(m_selectMarqueeToggle, &QToolButton::toggled, this, [this](bool on) {
         RetouchTab *tab = currentTab();
@@ -1721,8 +1882,8 @@ void RetouchWindow::buildToolOptionsBar() {
     auto *brushRow = new QHBoxLayout(brushPage);
     brushRow->setContentsMargins(4, 2, 4, 2);
     m_paintSize = new QSlider(Qt::Horizontal);
-    m_paintSize->setRange(1, 40); // percent of image width, same scale as MaskPanel::m_brushSize
-    m_paintSize->setValue(6); // placeholder until updatePaintSizePxLabel() picks a real default from the image
+    m_paintSize->setRange(1, 2000); // image px (raw pixel diameter at full source resolution)
+    m_paintSize->setValue(20); // placeholder until the Brush-toggle handler picks a real default
     m_paintSize->setMinimumWidth(120);
     m_paintSizePx = new QLabel;
     m_paintSizePx->setMinimumWidth(40);
@@ -1751,13 +1912,19 @@ void RetouchWindow::buildToolOptionsBar() {
         if (!m_syncingPaintSize) m_paintSizeCustomized = true;
         updatePaintSizePxLabel();
         RetouchTab *tab = currentTab();
-        if (tab) tab->setActiveMaskShape(false, 0.0, m_paintHardness->value() / 100.0,
-                                         v / 100.0, false);
+        if (tab) {
+            const int w = tab->imageWidth();
+            const double norm = w > 0 ? v / double(w) : 0.006;
+            tab->setActiveMaskShape(false, 0.0, m_paintHardness->value() / 100.0, norm, false);
+        }
     });
     connect(m_paintHardness, &QSlider::valueChanged, this, [this](int v) {
         RetouchTab *tab = currentTab();
-        if (tab) tab->setActiveMaskShape(false, 0.0, v / 100.0,
-                                         m_paintSize->value() / 100.0, false);
+        if (tab) {
+            const int w = tab->imageWidth();
+            const double norm = w > 0 ? m_paintSize->value() / double(w) : 0.006;
+            tab->setActiveMaskShape(false, 0.0, v / 100.0, norm, false);
+        }
     });
     connect(m_paintOpacity, &QSlider::valueChanged, this, [this](int v) {
         RetouchTab *tab = currentTab();
@@ -1765,11 +1932,16 @@ void RetouchWindow::buildToolOptionsBar() {
     });
     connect(m_brushToolPresets, &BrushPresetMenuButton::presetApplied, this,
             [this](double brushRadius, double hardness) {
-                m_paintSize->setValue(int(std::lround(brushRadius * 100)));
+                RetouchTab *tab = currentTab();
+                const int w = tab ? tab->imageWidth() : 0;
+                if (w > 0) m_paintSize->setValue(std::clamp(int(std::lround(brushRadius * w)), 1, 2000));
                 m_paintHardness->setValue(int(std::lround(hardness * 100)));
             });
     connect(m_brushToolPresets, &QToolButton::pressed, this, [this] {
-        m_brushToolPresets->setCurrentValues(m_paintSize->value() / 100.0,
+        RetouchTab *tab = currentTab();
+        const int w = tab ? tab->imageWidth() : 0;
+        const double norm = w > 0 ? m_paintSize->value() / double(w) : 0.006;
+        m_brushToolPresets->setCurrentValues(norm,
                                              m_paintHardness->value() / 100.0);
     });
 
@@ -1778,7 +1950,7 @@ void RetouchWindow::buildToolOptionsBar() {
     auto *eraseRow = new QHBoxLayout(erasePage);
     eraseRow->setContentsMargins(4, 2, 4, 2);
     m_eraseBrush = new QSlider(Qt::Horizontal);
-    m_eraseBrush->setRange(4, 80);
+    m_eraseBrush->setRange(1, 80);
     m_eraseBrush->setValue(20);
     m_eraseBrush->setMinimumWidth(160);
     eraseRow->addWidget(new QLabel("Brush size:"));
@@ -2464,10 +2636,20 @@ void RetouchWindow::buildLayersDock() {
     if (m_adjustmentsDock) tabifyDockWidget(m_adjustmentsDock, dock);
     dock->hide(); // shown only while the Mask tool is active
 
+    // The per-layer editing sections live in their own LayerAdjustmentsPanel,
+    // created (and docked next to m_layersDock) the first time one is
+    // requested. Built eagerly here (just not docked/shown yet) so
+    // LayersPanel::setAdjustmentsPanel() can wire it up immediately.
+    m_layerAdjustmentsPanel = new LayerAdjustmentsPanel;
+    m_layersPanel->setAdjustmentsPanel(m_layerAdjustmentsPanel);
+
     connect(dock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
         RetouchTab *tab = currentTab();
         if (tab) tab->setMaskPreviewEnabled(visible);
     });
+
+    connect(m_layersPanel, &LayersPanel::sectionRequested, this,
+            &RetouchWindow::showLayerAdjustmentsSection);
 
     connect(m_layersPanel, &LayersPanel::selectMaskRequested, this, [this](int i) {
         RetouchTab *tab = currentTab();
@@ -2619,16 +2801,37 @@ void RetouchWindow::buildLayersDock() {
     });
 }
 
+// Opens (creating on first use) the LayerAdjustmentsPanel dock as a floating
+// window over the canvas, and switches it to the requested section. `section`
+// is a LayerAdjustmentsPanel::Section value, forwarded as a plain int since
+// LayersPanel only forward-declares that type.
+void RetouchWindow::showLayerAdjustmentsSection(int section) {
+    if (!m_layerAdjustmentsPanel) return;
+    if (!m_layerAdjustmentsDock) {
+        auto *dock = new QDockWidget("Layer Adjustments", this);
+        m_layerAdjustmentsDock = dock;
+        dock->setObjectName("layerAdjustmentsDock");
+        dock->setAllowedAreas(Qt::RightDockWidgetArea | Qt::LeftDockWidgetArea);
+        dock->setWidget(m_layerAdjustmentsPanel);
+        addDockWidget(Qt::RightDockWidgetArea, dock);
+        dock->setFloating(true);
+        dock->resize(330, 300);
+        if (m_layersDock) {
+            QPoint pos = m_layersDock->mapToGlobal(QPoint(0, 0));
+            dock->move(pos.x() - dock->width() - 8, pos.y());
+        } else {
+            QPoint pos = mapToGlobal(QPoint(0, 0));
+            dock->move(pos.x() + 200, pos.y() + 60);
+        }
+    }
+    m_layerAdjustmentsPanel->showSection(LayerAdjustmentsPanel::Section(section));
+    m_layerAdjustmentsDock->show();
+    m_layerAdjustmentsDock->raise();
+}
+
 void RetouchWindow::updatePaintSizePxLabel() {
     if (!m_paintSizePx) return;
-    RetouchTab *tab = currentTab();
-    const int w = tab ? tab->imageWidth() : 0;
-    if (w <= 0) {
-        m_paintSizePx->clear();
-        return;
-    }
-    const int px = int(std::lround(m_paintSize->value() / 100.0 * w));
-    m_paintSizePx->setText(QString("%1px").arg(px));
+    m_paintSizePx->setText(QString("%1px").arg(m_paintSize->value()));
 }
 
 // Real pencil grade naming for the Pen tool's Grade slider: -6..-1 = 6B..1B,
@@ -2647,10 +2850,10 @@ void RetouchWindow::updatePenGradeLabel() {
 // tool means adding it to this one list, not to every other tool's handler.
 void RetouchWindow::deactivateOtherToolButtons(QAbstractButton *keep) {
     const QVector<QAbstractButton *> buttons = {
-        m_toolZoom, m_cropToggle, m_healToggle, m_wbPick, m_maskToggle, m_brushToggle,
-        m_bucketToggle, m_eraseToggle, m_textToggle, m_shapeToggle, m_removeObjectToggle,
-        m_penToggle, m_selectMarqueeToggle, m_selectLassoToggle, m_selectWandToggle,
-        m_cloneToggle,
+        m_moveToggle, m_toolZoom, m_cropToggle, m_healToggle, m_wbPick, m_maskToggle,
+        m_brushToggle, m_bucketToggle, m_eraseToggle, m_textToggle, m_shapeToggle,
+        m_removeObjectToggle, m_penToggle, m_selectMarqueeToggle, m_selectLassoToggle,
+        m_selectWandToggle, m_cloneToggle,
     };
     for (QAbstractButton *btn : buttons) {
         if (btn && btn != keep) {
@@ -2666,6 +2869,7 @@ void RetouchWindow::deactivateOtherToolButtons(QAbstractButton *keep) {
 void RetouchWindow::deactivateAllToolModes(RetouchTab *tab) {
     if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
     if (!tab) return;
+    tab->setMoveMode(false);
     tab->setZoomMode(false);
     tab->setCropMode(false);
     tab->setHealMode(false);
@@ -3268,7 +3472,9 @@ void RetouchWindow::wireTabSignals(RetouchTab *tab) {
         if (m_paintSize) {
             m_syncingPaintSize = true;
             QSignalBlocker b(m_paintSize);
-            m_paintSize->setValue(int(std::lround(radiusNorm * 100)));
+            const int w = tab->imageWidth();
+            const int px = w > 0 ? int(std::lround(radiusNorm * w)) : m_paintSize->value();
+            m_paintSize->setValue(std::clamp(px, m_paintSize->minimum(), m_paintSize->maximum()));
             m_syncingPaintSize = false;
             updatePaintSizePxLabel();
         }
@@ -3309,15 +3515,25 @@ void RetouchWindow::setMode(Mode mode) {
     QWidget *page = m_tabs;
     if (mode == Mode::Tether) page = m_tetherView;
     else if (mode == Mode::Svg) page = m_svgEditorTab;
+    else if (mode == Mode::Browse) page = m_browseTab;
     m_modeStack->setCurrentWidget(page);
     applyModeChrome(mode);
+    if (mode == Mode::Browse && m_browseTab) m_browseTab->refresh();
     // Keep the toolbar buttons in sync when called programmatically.
     QSignalBlocker b1(m_tetherModeAction);
     QSignalBlocker b2(m_retouchModeAction);
     QSignalBlocker b3(m_svgModeAction);
+    QSignalBlocker b4(m_browseModeAction);
     m_tetherModeAction->setChecked(mode == Mode::Tether);
     m_retouchModeAction->setChecked(mode == Mode::Retouch);
     m_svgModeAction->setChecked(mode == Mode::Svg);
+    m_browseModeAction->setChecked(mode == Mode::Browse);
+}
+
+void RetouchWindow::onBrowseOpenRequested(const QStringList &paths) {
+    for (const QString &path : paths)
+        openPhoto(path);
+    setMode(Mode::Retouch);
 }
 
 void RetouchWindow::closeEvent(QCloseEvent *event) {
@@ -3328,11 +3544,6 @@ void RetouchWindow::closeEvent(QCloseEvent *event) {
     QSettings settings;
     settings.setValue("window/geometry", saveGeometry());
     settings.setValue("window/state", saveState());
-    // The Layers dock's per-section docks live in an inner QMainWindow that
-    // saveState() above doesn't see (it only covers docks added directly to
-    // this window) — persist that separately.
-    if (m_layersPanel)
-        settings.setValue("window/layersInnerState", m_layersPanel->innerDockState());
     QMainWindow::closeEvent(event);
 }
 
@@ -3440,53 +3651,12 @@ void RetouchWindow::updateShapeOptionsFromTab() {
 
 void RetouchWindow::deselectAllTools() {
     RetouchTab *tab = currentTab();
-    if (m_toolZoom) {
-        QSignalBlocker b(m_toolZoom);
-        m_toolZoom->setChecked(false);
-    }
-    if (tab) tab->setZoomMode(false);
-    if (m_cropToggle) {
-        QSignalBlocker b(m_cropToggle);
-        m_cropToggle->setChecked(false);
-    }
+    // Delegates to the same shared helpers every tool's toggled(true) handler
+    // uses, so this list can't drift out of sync as tools are added (see the
+    // erase tool previously being missing here).
+    deactivateOtherToolButtons(nullptr);
+    deactivateAllToolModes(tab);
     if (m_cropApply) m_cropApply->setEnabled(false);
-    if (m_wbPick) {
-        QSignalBlocker b(m_wbPick);
-        m_wbPick->setChecked(false);
-    }
-    if (tab) tab->setWbPickMode(false);
-    if (m_healToggle) {
-        QSignalBlocker b(m_healToggle);
-        m_healToggle->setChecked(false);
-    }
-    if (tab) tab->setHealMode(false);
-    if (m_maskToggle) {
-        QSignalBlocker b(m_maskToggle);
-        m_maskToggle->setChecked(false);
-    }
-    if (tab) tab->setMaskMode(false);
-    if (m_textToggle) {
-        QSignalBlocker b(m_textToggle);
-        m_textToggle->setChecked(false);
-    }
-    if (tab) tab->setTextMode(false);
-    if (m_shapeToggle) {
-        QSignalBlocker b(m_shapeToggle);
-        m_shapeToggle->setChecked(false);
-    }
-    if (tab) tab->setShapeMode(false);
-    if (m_removeObjectToggle) {
-        QSignalBlocker b(m_removeObjectToggle);
-        m_removeObjectToggle->setChecked(false);
-    }
-    if (tab) tab->setRemoveObjectMode(false);
-    if (m_bucketToggle) {
-        QSignalBlocker b(m_bucketToggle);
-        m_bucketToggle->setChecked(false);
-    }
-    if (tab) tab->setBucketMode(false);
-    if (m_levelsPanel) m_levelsPanel->setTargetPickChecked(false);
-    if (tab) tab->setColorRangePickMode(false);
     if (m_toolOptionsBar) m_toolOptionsBar->setVisible(false);
 }
 

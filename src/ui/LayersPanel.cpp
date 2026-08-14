@@ -2,6 +2,7 @@
 
 #include "ui/ColorPanel.h"
 #include "ui/DetailEffectsPanel.h"
+#include "ui/LayerAdjustmentsPanel.h"
 #include "ui/LevelsPanel.h"
 #include "ui/MaskPanel.h"
 #include "ui/ToneCurvePanel.h"
@@ -12,7 +13,6 @@
 #include <cmath>
 #include <functional>
 #include <QComboBox>
-#include <QDockWidget>
 #include <QDropEvent>
 #include <QEvent>
 #include <QFileDialog>
@@ -29,7 +29,6 @@
 #include <QTreeWidgetItemIterator>
 #include <QCheckBox>
 #include <QHash>
-#include <QMainWindow>
 #include <QMenu>
 #include <QLinearGradient>
 #include <QPainter>
@@ -75,37 +74,6 @@ QString shapeTypeLabel(ShapeType t) {
 // same spirit as the tool-bar icons in RetouchWindow.cpp (no image assets).
 constexpr int kSectionIconPx = 14;
 const QColor kSectionIconColor(190, 190, 190);
-
-QIcon drawChevronIcon(bool expanded) {
-    QPixmap pm(kSectionIconPx, kSectionIconPx);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    QPen pen(kSectionIconColor, 1.6);
-    pen.setCapStyle(Qt::RoundCap);
-    pen.setJoinStyle(Qt::RoundJoin);
-    p.setPen(pen);
-    QPolygonF tri;
-    if (expanded) // down-pointing (content visible)
-        tri << QPointF(3, 5) << QPointF(7, 10) << QPointF(11, 5);
-    else // right-pointing (collapsed)
-        tri << QPointF(5, 2) << QPointF(10, 7) << QPointF(5, 12);
-    p.drawPolyline(tri);
-    return QIcon(pm);
-}
-
-QIcon drawCloseIcon() {
-    QPixmap pm(kSectionIconPx, kSectionIconPx);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    QPen pen(kSectionIconColor, 1.5);
-    pen.setCapStyle(Qt::RoundCap);
-    p.setPen(pen);
-    p.drawLine(QPointF(3, 3), QPointF(11, 11));
-    p.drawLine(QPointF(11, 3), QPointF(3, 11));
-    return QIcon(pm);
-}
 
 // Layer-list action toolbar glyphs (Add/Duplicate/Delete/Group/Ungroup),
 // same drawn-not-loaded-asset style and size as the two icons above.
@@ -180,68 +148,6 @@ QIcon drawUngroupIcon() {
     p.drawLine(QPointF(10, 8), QPointF(14, 8));
     return QIcon(pm);
 }
-
-// Custom title bar for a per-section dock: a chevron that collapses the
-// dock down to just this bar (hides the content widget without closing the
-// dock), a title label, and a close button. Replacing QDockWidget's default
-// title bar this way means the native close button is gone, so this widget
-// draws its own equivalent.
-class SectionTitleBar : public QWidget {
-public:
-    SectionTitleBar(const QString &title, QDockWidget *dock, QWidget *parent = nullptr)
-        : QWidget(parent), m_dock(dock) {
-        auto *layout = new QHBoxLayout(this);
-        layout->setContentsMargins(4, 2, 4, 2);
-        layout->setSpacing(2);
-
-        m_chevron = new QToolButton;
-        m_chevron->setCheckable(true);
-        m_chevron->setChecked(false); // collapsed by default
-        m_chevron->setAutoRaise(true);
-        m_chevron->setIconSize(QSize(kSectionIconPx, kSectionIconPx));
-        connect(m_chevron, &QToolButton::toggled, this, &SectionTitleBar::setExpanded);
-
-        auto *label = new QLabel("<b>" + title + "</b>");
-
-        auto *closeBtn = new QToolButton;
-        closeBtn->setAutoRaise(true);
-        closeBtn->setIcon(drawCloseIcon());
-        closeBtn->setIconSize(QSize(kSectionIconPx, kSectionIconPx));
-        closeBtn->setToolTip("Close this section");
-        connect(closeBtn, &QToolButton::clicked, m_dock, &QDockWidget::close);
-
-        layout->addWidget(m_chevron);
-        layout->addWidget(label, 1);
-        layout->addWidget(closeBtn);
-
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-
-        setExpanded(false); // apply the initial collapsed state to the dock
-    }
-
-private:
-    // Collapsing hides the content by squashing its height to zero rather
-    // than calling setVisible(false) on it: a genuinely hidden widget
-    // contributes no width to its dock's sizeHint, which is what was
-    // shrinking collapsed rows down to this bar's own minimal width (and
-    // dragging the float/close buttons in next to the label). Keeping the
-    // content "visible" but zero-height preserves its width contribution —
-    // matching the expanded row's width, where this already worked — while
-    // still showing nothing.
-    void setExpanded(bool expanded) {
-        m_chevron->setIcon(drawChevronIcon(expanded));
-        if (QWidget *content = m_dock->widget())
-            content->setMaximumHeight(expanded ? QWIDGETSIZE_MAX : 0);
-        if (expanded) {
-            m_dock->setMaximumHeight(QWIDGETSIZE_MAX);
-        } else {
-            m_dock->setMaximumHeight(sizeHint().height());
-        }
-    }
-
-    QDockWidget *m_dock;
-    QToolButton *m_chevron = nullptr;
-};
 
 // Blocks internal drag-and-drop from reparenting a row under another row
 // (i.e. joining/nesting a group via drag) — grouping only happens through
@@ -565,74 +471,25 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
     });
     root->addWidget(m_imageSection);
 
-    // Each editing section is its own QDockWidget nested inside a small
-    // inner QMainWindow, so it gets a real collapse/float/close title bar
-    // while the whole thing still docks/floats as one "Layers" panel.
-    m_inner = new QMainWindow;
-    m_inner->setWindowFlags(Qt::Widget);
-    m_inner->setDockNestingEnabled(true);
-    auto *placeholder = new QWidget;
-    placeholder->setMaximumHeight(0);
-    m_inner->setCentralWidget(placeholder);
-
-    auto addSection = [&](const QString &objName, const QString &title,
-                          QWidget *content) {
-        auto *dock = new QDockWidget(title);
-        dock->setObjectName(objName);
-        dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable);
-        dock->setWidget(content);
-        // Collapsed by default; SectionTitleBar's ctor applies this via
-        // setExpanded(false), which squashes content's height rather than
-        // hiding it (see SectionTitleBar::setExpanded for why).
-        dock->setTitleBarWidget(new SectionTitleBar(title, dock));
-        dock->setSizePolicy(QSizePolicy::Expanding, dock->sizePolicy().verticalPolicy());
-        m_inner->addDockWidget(Qt::TopDockWidgetArea, dock);
-        return dock;
-    };
-
-    m_tonePanel = new TonePanel;
-    m_toneSectionDock = addSection("layerSectionTone", "Tone", m_tonePanel);
-    m_colorPanel = new ColorPanel;
-    m_colorSectionDock = addSection("layerSectionColor", "Colour", m_colorPanel);
-    m_toneCurvePanel = new ToneCurvePanel;
-    m_toneCurveSectionDock = addSection("layerSectionToneCurve", "Tone Curve", m_toneCurvePanel);
-    m_levelsPanel = new LevelsPanel;
-    // The targeted color-adjustment tool only edits the global (base) levels;
-    // hide its toggle in the per-layer panel.
-    m_levelsPanel->setTargetPickVisible(false);
-    m_levelsSectionDock = addSection("layerSectionLevels", "Levels", m_levelsPanel);
-    m_detailEffectsPanel = new DetailEffectsPanel;
-    m_detailEffectsSectionDock = addSection("layerSectionDetailEffects", "Detail & Effects",
-                                            m_detailEffectsPanel);
-    m_maskPanel = new MaskPanel;
-    m_masksSectionDock = addSection("layerSectionMasks", "Masks", m_maskPanel);
-
-    // Remove Object section: a flat checkable list (no grouping/reordering
-    // needed), one row per cached content-aware fill, plus a Delete button —
-    // mirrors the masks list's eye-toggle + Delete pattern above.
-    auto *removalsContent = new QWidget;
-    auto *removalsLayout = new QVBoxLayout(removalsContent);
-    removalsLayout->setContentsMargins(4, 4, 4, 4);
-    m_removalList = new QListWidget;
-    m_removalList->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_removalList->setMinimumHeight(100);
-    removalsLayout->addWidget(m_removalList, 1);
-    auto *removalButtons = new QHBoxLayout;
-    m_deleteRemoval = new QPushButton("Delete");
-    removalButtons->addWidget(m_deleteRemoval);
-    removalButtons->addStretch(1);
-    removalsLayout->addLayout(removalButtons);
-    m_removalsSectionDock = addSection("layerSectionRemovals", "Remove Object", removalsContent);
-
-    // Stack the eight sections top-to-bottom.
-    m_inner->splitDockWidget(m_toneSectionDock, m_colorSectionDock, Qt::Vertical);
-    m_inner->splitDockWidget(m_colorSectionDock, m_toneCurveSectionDock, Qt::Vertical);
-    m_inner->splitDockWidget(m_toneCurveSectionDock, m_levelsSectionDock, Qt::Vertical);
-    m_inner->splitDockWidget(m_levelsSectionDock, m_detailEffectsSectionDock, Qt::Vertical);
-    m_inner->splitDockWidget(m_detailEffectsSectionDock, m_masksSectionDock, Qt::Vertical);
-    m_inner->splitDockWidget(m_masksSectionDock, m_removalsSectionDock, Qt::Vertical);
-
-    root->addWidget(m_inner, 2);
+    // The seven editing sections (Tone, Colour, Tone Curve, Levels,
+    // Detail & Effects, Masks, Remove Object) live in a separate
+    // LayerAdjustmentsPanel, wired up below in setAdjustmentsPanel(); a
+    // right-click on the layer list picks which one is shown.
+    m_maskList->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_maskList, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        QMenu menu(m_maskList);
+        struct Entry { const char *label; int section; };
+        static const Entry kEntries[] = {
+            {"Tone", 0}, {"Colour", 1}, {"Tone Curve", 2}, {"Levels", 3},
+            {"Detail & Effects", 4}, {"Masks", 5}, {"Remove Object", 6},
+        };
+        for (const Entry &e : kEntries) {
+            QAction *act = menu.addAction(e.label);
+            const int section = e.section;
+            connect(act, &QAction::triggered, this, [this, section] { emit sectionRequested(section); });
+        }
+        menu.exec(m_maskList->mapToGlobal(pos));
+    });
 
     auto *addMenu = new QMenu(m_add);
     QAction *addPaintAction = addMenu->addAction("Paint");
@@ -885,6 +742,20 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
                 emit maskBlendChanged(blend);
             });
 
+    clear();
+}
+
+void LayersPanel::setAdjustmentsPanel(LayerAdjustmentsPanel *panel) {
+    Q_ASSERT(panel);
+    m_tonePanel = panel->tonePanel();
+    m_colorPanel = panel->colorPanel();
+    m_toneCurvePanel = panel->toneCurvePanel();
+    m_levelsPanel = panel->levelsPanel();
+    m_detailEffectsPanel = panel->detailEffectsPanel();
+    m_maskPanel = panel->maskPanel();
+    m_removalList = panel->removalList();
+    m_deleteRemoval = panel->deleteRemovalButton();
+
     connect(m_tonePanel, &TonePanel::adjustChanged, this,
             [this](int brightness, int contrast, int highlights, int shadows) {
                 m_curAdjust.brightness = brightness;
@@ -944,7 +815,11 @@ LayersPanel::LayersPanel(QWidget *parent) : QWidget(parent) {
         if (idx >= 0) emit deleteRemovalRequested(idx);
     });
 
-    clear();
+    // The layer list is populated (rebuildList/loadActive) before this panel
+    // is wired up in the usual RetouchWindow startup order, so give the
+    // adjustments panel's widgets their current values immediately.
+    loadActive();
+    rebuildRemovalList();
 }
 
 QVector<int> LayersPanel::selectedMaskIndices() const {
@@ -963,7 +838,7 @@ void LayersPanel::clear() {
     m_activeRemoval = -1;
     m_syncing = true;
     m_maskList->clear();
-    m_removalList->clear();
+    if (m_removalList) m_removalList->clear();
     m_imagePosX->setValue(0);
     m_imagePosY->setValue(0);
     m_imageScaleX->setValue(100);
@@ -1023,24 +898,6 @@ void LayersPanel::setImageWidth(int width) {
     if (m_maskPanel) m_maskPanel->setImageWidth(width);
 }
 
-QVector<QDockWidget *> LayersPanel::sectionDocks() const {
-    return {m_toneSectionDock, m_colorSectionDock, m_toneCurveSectionDock,
-            m_levelsSectionDock, m_detailEffectsSectionDock, m_masksSectionDock,
-            m_removalsSectionDock};
-}
-
-QByteArray LayersPanel::innerDockState() const {
-    return m_inner->saveState();
-}
-
-void LayersPanel::restoreInnerDockState(const QByteArray &state) {
-    m_inner->restoreState(state);
-}
-
-void LayersPanel::resetSections() {
-    for (QDockWidget *d : sectionDocks())
-        if (d) d->show();
-}
 
 namespace {
 constexpr int kThumbPx = 40;

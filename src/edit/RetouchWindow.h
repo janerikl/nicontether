@@ -34,6 +34,8 @@ class TetherView;
 class PreferencesDialog;
 class LevelsPanel;
 class LayersPanel;
+class LayerAdjustmentsPanel;
+class BrowseTab;
 
 // Separate top-level window for retouching photos. Own filmstrip selector plus
 // one tab per open photo, an adjustments dock, and JPEG/PNG export.
@@ -50,7 +52,7 @@ public:
     // Create a new blank/untitled tab (File > New). Never touches the filmstrip.
     void createUntitledTab(const QSize &size);
 
-    enum class Mode { Retouch, Tether, Svg };
+    enum class Mode { Retouch, Tether, Svg, Browse };
     void setMode(Mode mode);
 
 protected:
@@ -90,6 +92,8 @@ private:
     class QAction *m_tetherModeAction = nullptr;
     class QAction *m_retouchModeAction = nullptr;
     class QAction *m_svgModeAction = nullptr;
+    class QAction *m_browseModeAction = nullptr;
+    void onBrowseOpenRequested(const QStringList &paths);
 
     QTabWidget *m_tabs = nullptr;
     FilmstripWidget *m_filmstrip = nullptr;
@@ -102,6 +106,7 @@ private:
     QStackedWidget *m_modeStack = nullptr;
     TetherView *m_tetherView = nullptr;
     class SvgEditorTab *m_svgEditorTab = nullptr;
+    BrowseTab *m_browseTab = nullptr;
     PreferencesDialog *m_prefsDialog = nullptr;
     QDockWidget *m_controlsDock = nullptr; // camera controls, shown in Tether mode
     QToolBar *m_tetherToolBar = nullptr;   // Connect/Disconnect/LiveView/Capture/…
@@ -187,6 +192,7 @@ private:
     QPushButton *m_rotRight = nullptr;
     QPushButton *m_flipH = nullptr;
     QPushButton *m_flipV = nullptr;
+    QToolButton *m_moveToggle = nullptr; // left icon bar: move tool (drag layers/selection content)
     QToolButton *m_toolZoom = nullptr;  // left icon bar: zoom tool (marquee/Ctrl+wheel)
     QToolButton *m_cropToggle = nullptr; // left icon bar: crop tool
     QPushButton *m_cropApply = nullptr;
@@ -260,6 +266,13 @@ private:
     LayersPanel *m_layersPanel = nullptr;
     void buildLayersDock();
     void refreshMaskPanel(); // refreshes the Layers panel (all sections) from the active tab
+    // Hosts the per-layer editing sections (Tone/Colour/Tone Curve/Levels/
+    // Detail & Effects/Masks/Remove Object), one at a time. Created lazily,
+    // split next to m_layersDock, the first time a section is requested via
+    // LayersPanel's right-click context menu (see LayersPanel::sectionRequested).
+    QDockWidget *m_layerAdjustmentsDock = nullptr;
+    LayerAdjustmentsPanel *m_layerAdjustmentsPanel = nullptr;
+    void showLayerAdjustmentsSection(int section);
     QDockWidget *m_assetsDock = nullptr;
     void buildAssetsDock();
     void refreshAssetsPanel(); // rebuilds the Assets panel from m_assetStampStore
