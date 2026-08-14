@@ -399,6 +399,15 @@ void RetouchTab::jumpToHistory(int index) {
 }
 
 void RetouchTab::saveEdits() {
+    // A self-contained project file must be rewritten as a whole (base
+    // pixels + adjustments); the per-photo sidecar path would silently
+    // write a stray .nte.json next to it instead of updating the project.
+    if (m_path.endsWith(QStringLiteral(".ploom"), Qt::CaseInsensitive)) {
+        EditSidecar::saveProject(m_path, m_base, m_adj);
+        m_dirty = false;
+        emit editStateChanged(false, hasEdits());
+        return;
+    }
     EditSidecar::save(m_path, m_adj);
     // Cache the edited look so the filmstrip reflects it across sessions.
     if (!m_lastEdited.isNull())

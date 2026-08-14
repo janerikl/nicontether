@@ -462,7 +462,8 @@ std::vector<uchar> selectionFeatherAlpha(const Mask &m, int w, int h) {
 // that didn't change.
 void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                     const QImage *ref = nullptr, BrushRasterCache *cache = nullptr,
-                    std::vector<QRgb> *colOut = nullptr, bool populateOut = true) {
+                    std::vector<QRgb> *colOut = nullptr, bool populateOut = true,
+                    std::vector<uchar> *eraseOut = nullptr) {
     // Each stroke point carries its own radius/hardness (captured at paint
     // time), so a later brush-size change doesn't invalidate dabs already
     // rasterized — only new points need to be added.
@@ -474,6 +475,7 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
 
     std::vector<uchar> *covBuf = cache ? &cache->cov : &cov;
     std::vector<QRgb> *colBuf = cache ? &cache->col : colOut;
+    std::vector<uchar> *eraseBuf = cache ? &cache->erase : eraseOut;
 
     int startIdx = 0;
     if (canReuse) {
@@ -481,6 +483,7 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
     } else {
         covBuf->assign(size_t(w) * h, 0);
         if (colOut) colBuf->assign(size_t(w) * h, 0);
+        if (eraseBuf) eraseBuf->assign(size_t(w) * h, 0);
     }
 
     const double W = w;
@@ -558,6 +561,10 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                 uchar &dst = (*covBuf)[idx];
                 if (erase) {
                     dst = uchar(std::max(0, int(dst) - int(iv)));
+                    if (eraseBuf) {
+                        uchar &e = (*eraseBuf)[idx];
+                        e = uchar(std::max(int(e), int(iv)));
+                    }
                 } else if (iv >= dst) {
                     dst = iv;
                     if (colOut) {
@@ -674,6 +681,7 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
         if (populateOut) {
             cov = cache->cov;
             if (colOut) *colOut = cache->col;
+            if (eraseOut) *eraseOut = cache->erase;
         }
     }
 }
@@ -1257,10 +1265,11 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             loc = applyLayerContent(img, m.adj);
         }
         std::vector<QRgb> colBuf;
+        std::vector<uchar> eraseBufOut;
         BrushRasterCache *bc = brushCache ? &(*brushCache)[mi] : nullptr;
         if (m.type == MaskType::Brush || paintLayer)
             rasterizeBrush(m, cov, w, h, &img, bc, paintLayer ? &colBuf : nullptr,
-                           /*populateOut=*/false);
+                           /*populateOut=*/false, paintLayer ? &eraseBufOut : nullptr);
         else if (textLayer)
             rasterizeText(m, cov, w, h); // no incremental cache — cheap to redo each render
         // shapeLayer/textBoxLayer already populated `cov` above (in
@@ -1273,6 +1282,7 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         const std::vector<uchar> &covRead =
             (bc && (m.type == MaskType::Brush || paintLayer)) ? bc->cov : cov;
         const std::vector<QRgb> &colRead = bc ? bc->col : colBuf;
+        const std::vector<uchar> &eraseRead = bc ? bc->erase : eraseBufOut;
         // Paint bucket: cumulative flood-filled regions, resampled to this
         // render's resolution and alpha-composited under the stroke
         // coverage/color above — brush dabs are always painted on top of a
@@ -1294,7 +1304,13 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                 for (int x = 0; x < w; ++x) {
                     const size_t idx = size_t(y) * w + x;
                     const uchar sc = hasStroke ? covRead[idx] : 0;
-                    const uchar fc = hasFill ? uchar(qAlpha(fillLine[x])) : 0;
+                    uchar fc = hasFill ? uchar(qAlpha(fillLine[x])) : 0;
+                    // An erase dab must cut through bucket-fill coverage too,
+                    // not just stroke coverage — otherwise erasing over a
+                    // filled region has no visible effect (fc dominates the
+                    // union below unchanged). See eraseRead/BrushRasterCache::erase.
+                    if (fc > 0 && !eraseRead.empty())
+                        fc = uchar(fc * (255 - eraseRead[idx]) / 255);
                     int r = 0, g = 0, b = 0;
                     if (fc > 0) {
                         QRgb c = fillLine[x];

@@ -475,6 +475,10 @@ struct Mask {
 struct BrushRasterCache {
     std::vector<uchar> cov;
     std::vector<QRgb> col; // per-pixel dab color, only populated for Paint-type masks
+    // Cumulative erase-dab strength, independent of `cov` — Paint-type masks
+    // use this to also attenuate bucket-fill coverage (see rasterizeBrush),
+    // since an erase dab must cut through fill as well as stroke coverage.
+    std::vector<uchar> erase;
     int w = 0, h = 0;
     int pointCount = 0;
     double brushRadius = -1;
