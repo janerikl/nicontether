@@ -178,6 +178,12 @@ void RetouchTab::setupCanvasAndWiring() {
     connect(m_canvas, &ImageCanvas::textResizeStarted, this, &RetouchTab::onTextResizeStarted);
     connect(m_canvas, &ImageCanvas::textResized, this, &RetouchTab::onTextResized);
     connect(m_canvas, &ImageCanvas::objectClicked, this, &RetouchTab::onObjectClicked);
+    connect(m_canvas, &ImageCanvas::paintLayerMoveStarted, this,
+            &RetouchTab::onPaintLayerMoveStarted);
+    connect(m_canvas, &ImageCanvas::paintLayerMoveDelta, this,
+            &RetouchTab::onPaintLayerMoveDelta);
+    connect(m_canvas, &ImageCanvas::paintLayerMoveFinished, this,
+            &RetouchTab::onPaintLayerMoveFinished);
     connect(m_canvas, &ImageCanvas::shapeCreateRequested, this, &RetouchTab::onShapeCreateRequested);
     connect(m_canvas, &ImageCanvas::shapeSelected, this, &RetouchTab::onShapeSelected);
     connect(m_canvas, &ImageCanvas::shapeDeselected, this, &RetouchTab::onShapeDeselected);
@@ -1171,6 +1177,8 @@ void RetouchTab::onTextEditCommitted(int index, const QString &text) {
     if (m_textEditIndex == index) m_textEditIndex = -1;
     if (text.trimmed().isEmpty()) {
         m_adj.masks.removeAt(mi);
+        if (m_paintMoveMasterIndex == mi) m_paintMoveMasterIndex = -1;
+        else if (m_paintMoveMasterIndex > mi) --m_paintMoveMasterIndex;
         if (m_activeMask == mi) m_activeMask = -1;
         else if (m_activeMask > mi) --m_activeMask;
         if (m_activeText == index) m_activeText = -1;
@@ -1192,6 +1200,8 @@ void RetouchTab::onTextEditCancelled(int index) {
     if (m_textEditIndex == index) m_textEditIndex = -1;
     if (index == m_newTextIndex && m_adj.masks[mi].textBoxText.isEmpty()) {
         m_adj.masks.removeAt(mi);
+        if (m_paintMoveMasterIndex == mi) m_paintMoveMasterIndex = -1;
+        else if (m_paintMoveMasterIndex > mi) --m_paintMoveMasterIndex;
         if (m_activeMask == mi) m_activeMask = -1;
         else if (m_activeMask > mi) --m_activeMask;
         if (m_activeText == index) m_activeText = -1;
@@ -1219,6 +1229,8 @@ void RetouchTab::onTextDeleteRequested(int index) {
     int mi = textMaskIndex(index);
     if (mi < 0) return;
     m_adj.masks.removeAt(mi);
+    if (m_paintMoveMasterIndex == mi) m_paintMoveMasterIndex = -1;
+    else if (m_paintMoveMasterIndex > mi) --m_paintMoveMasterIndex;
     if (m_activeMask == mi) m_activeMask = -1;
     else if (m_activeMask > mi) --m_activeMask;
     if (m_activeText == index) m_activeText = -1;
@@ -1377,6 +1389,86 @@ void RetouchTab::setShapeMode(bool on) {
     m_canvas->setShapeMode(on);
     if (on) m_canvas->setFocus();
     else { m_activeShape = -1; m_selectedShapes.clear(); }
+}
+
+void RetouchTab::setMoveMode(bool on) {
+    m_canvas->setMoveMode(on);
+    if (on) m_canvas->setFocus();
+}
+
+// Move tool drag start on a Paint/Brush layer: select its mask and snapshot
+// its stroke/fill so onPaintLayerMoveDelta can reapply the drag's total
+// offset (rather than compounding per-event), mirroring shapeMoved.
+void RetouchTab::onPaintLayerMoveStarted(int markerIndex) {
+    // If a Paint layer is already selected in the Layers panel, the Move
+    // tool always drags that layer, regardless of where on the canvas the
+    // click landed -- ignore the spatially hit-tested markerIndex (whose
+    // bounds can be misleading, e.g. a bucket-filled layer's hit box covers
+    // the whole canvas). Only fall back to the spatial hit when nothing
+    // appropriate is currently selected, preserving click-to-select.
+    int maskIndex = -1;
+    if (m_activeMask >= 0 && m_activeMask < m_adj.masks.size() &&
+        m_adj.masks[m_activeMask].type == MaskType::Paint) {
+        maskIndex = m_activeMask;
+    } else {
+        if (markerIndex < 0 || markerIndex >= m_paintMaskIndices.size()) return;
+        maskIndex = m_paintMaskIndices[markerIndex];
+    }
+    if (maskIndex < 0 || maskIndex >= m_adj.masks.size()) return;
+    selectMask(maskIndex);
+    m_paintMoveMaskIndex = maskIndex;
+    const Mask &m = m_adj.masks[maskIndex];
+    m_paintMoveStartStroke = m.stroke;
+    m_paintMoveStartFillMask = m.fillMask;
+    m_paintMoveSelectionOnly = m_canvas->hasActiveSelection();
+    m_paintMoveSelectionPath = m_canvas->selectionPathNorm();
+    // First move of this mask this session (or cache was invalidated by a
+    // fresh fill/reorder/delete elsewhere): snapshot the current fillMask as
+    // the untouched master so subsequent moves never compound edge clipping.
+    if (m_paintMoveMasterIndex != maskIndex) {
+        m_paintMoveMasterIndex = maskIndex;
+        m_paintMoveMasterFillMask = m.fillMask;
+        m_paintMoveMasterOffsetNorm = QPointF();
+    }
+    m_paintMoveLastDelta = QPointF();
+}
+
+void RetouchTab::onPaintLayerMoveDelta(const QPointF &deltaNorm) {
+    if (m_paintMoveMaskIndex < 0 || m_paintMoveMaskIndex >= m_adj.masks.size()) return;
+    Mask &m = m_adj.masks[m_paintMoveMaskIndex];
+    m.stroke = m_paintMoveStartStroke;
+    for (BrushStrokePoint &p : m.stroke) {
+        if (!m_paintMoveSelectionOnly || m_paintMoveSelectionPath.contains(p.pt))
+            p.pt += deltaNorm;
+    }
+    // Bucket-fill coverage only moves along when the whole layer moves — a
+    // selection-clipped partial move leaves it in place, since splitting the
+    // fill raster by the selection path isn't worth the complexity here.
+    if (!m_paintMoveSelectionOnly && !m_paintMoveMasterFillMask.isNull() &&
+        m_paintMoveMasterIndex == m_paintMoveMaskIndex) {
+        m_paintMoveLastDelta = deltaNorm;
+        const QPointF totalNorm = m_paintMoveMasterOffsetNorm + deltaNorm;
+        QImage translated(m_paintMoveMasterFillMask.size(), m_paintMoveMasterFillMask.format());
+        translated.fill(Qt::transparent);
+        QPainter tp(&translated);
+        const double dxPx = totalNorm.x() * m_paintMoveMasterFillMask.width();
+        const double dyPx = totalNorm.y() * m_paintMoveMasterFillMask.height();
+        tp.drawImage(QPointF(dxPx, dyPx), m_paintMoveMasterFillMask);
+        tp.end();
+        m.fillMask = translated;
+    }
+    retone();
+    updateObjectMarkers();
+}
+
+void RetouchTab::onPaintLayerMoveFinished() {
+    if (m_paintMoveMaskIndex >= 0) markEdited();
+    if (m_paintMoveMasterIndex == m_paintMoveMaskIndex)
+        m_paintMoveMasterOffsetNorm += m_paintMoveLastDelta;
+    m_paintMoveMaskIndex = -1;
+    m_paintMoveStartStroke.clear();
+    m_paintMoveStartFillMask = QImage();
+    m_paintMoveLastDelta = QPointF();
 }
 
 void RetouchTab::setActiveShapeType(ShapeType t) {
@@ -1661,6 +1753,8 @@ void RetouchTab::onShapeDeleteRequested(int index) {
     int mi = shapeMaskIndex(index);
     if (mi < 0) return;
     m_adj.masks.removeAt(mi);
+    if (m_paintMoveMasterIndex == mi) m_paintMoveMasterIndex = -1;
+    else if (m_paintMoveMasterIndex > mi) --m_paintMoveMasterIndex;
     if (m_activeMask == mi) m_activeMask = -1;
     else if (m_activeMask > mi) --m_activeMask;
     if (m_activeShape == index) m_activeShape = -1;
@@ -1689,6 +1783,8 @@ void RetouchTab::onShapeGroupDeleteRequested(const QList<int> &indices) {
     std::sort(maskIndices.begin(), maskIndices.end(), std::greater<int>());
     for (int mi : maskIndices) {
         m_adj.masks.removeAt(mi);
+        if (m_paintMoveMasterIndex == mi) m_paintMoveMasterIndex = -1;
+        else if (m_paintMoveMasterIndex > mi) --m_paintMoveMasterIndex;
         if (m_activeMask == mi) m_activeMask = -1;
         else if (m_activeMask > mi) --m_activeMask;
     }
@@ -1811,6 +1907,7 @@ void RetouchTab::groupSelectedShapes() {
     if (maskIndices.size() < 2) return;
     std::sort(maskIndices.begin(), maskIndices.end());
     const int originalTop = maskIndices.last();
+    m_paintMoveMasterIndex = -1; // mask indices are shifting; the cache is unsafe across it
 
     QVector<Mask> members;
     members.reserve(maskIndices.size());
@@ -1962,7 +2059,18 @@ void RetouchTab::onHealAt(const QPoint &imgPoint) {
 // type — image, background, paint, brush, shape, text, text box, or an
 // adjustment mask — since applyMasks applies eraseStrokes to every layer's
 // final compositing weight, not just image-layer pixels.
-void RetouchTab::onEraseAt(const QPointF &ptNorm) {
+//
+// Paint and Brush layers are the exception: they already keep an ORDERED
+// dab history (Mask::stroke) that rasterizeBrush replays sequentially, so a
+// later paint dab can restore coverage an earlier erase dab removed (see
+// stampDab's `erase` branch in Adjustments.cpp) — the same mechanism the
+// Brush tool's own alt-erase already uses. Routing the dedicated Erase
+// tool's dabs into that same ordered stream (instead of the separate,
+// order-independent `eraseStrokes`, which permanently gates the whole
+// layer's final weight) lets drawing over a previously-erased spot on a
+// Paint/Brush layer make it visible again, instead of staying clear
+// forever.
+void RetouchTab::onEraseAt(const QPointF &ptNorm, bool newStroke) {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
     Mask &m = m_adj.masks[m_activeMask];
     m.selectionClipNorm = m_hasSelection ? m_selectionPath : QPainterPath();
@@ -1970,6 +2078,16 @@ void RetouchTab::onEraseAt(const QPointF &ptNorm) {
     double radiusNorm = (m_scaled.isNull() || m_scaled.width() <= 0)
                              ? 0.06
                              : m_eraseRadiusDisplay / double(m_scaled.width());
+    if (m.type == MaskType::Paint || m.type == MaskType::Brush) {
+        // hardness=0.0 reproduces the erase tool's original always-soft,
+        // full-radius smoothstep falloff (see stampDab: inner = hardness *
+        // rad, so hardness=0 -> falloff spans the whole radius).
+        BrushStrokePoint sp{ptNorm, /*erase=*/true, radiusNorm, /*hardness=*/0.0,
+                            m.paintColor.rgb(), newStroke};
+        m.stroke.append(sp);
+        retoneDrag(newStroke);
+        return;
+    }
     m.eraseStrokes.append(ErasePoint{ptNorm, radiusNorm});
     retone();
 }
@@ -2440,6 +2558,7 @@ void RetouchTab::selectMask(int index) {
 
 void RetouchTab::deleteActiveMask() {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return;
+    m_paintMoveMasterIndex = -1; // mask indices are shifting; the cache is unsafe across it
     m_adj.masks.remove(m_activeMask);
     m_activeMask = m_adj.masks.isEmpty() ? -1
                                          : qMin(m_activeMask, m_adj.masks.size() - 1);
@@ -2568,6 +2687,7 @@ void RetouchTab::moveMask(int from, int to) {
     if (from < 0 || from >= m_adj.masks.size() || to < 0 ||
         to >= m_adj.masks.size() || from == to)
         return;
+    m_paintMoveMasterIndex = -1; // mask indices are shifting; the cache is unsafe across it
     m_adj.masks.move(from, to);
     if (m_activeMask == from) m_activeMask = to;
     else if (from < m_activeMask && m_activeMask <= to) --m_activeMask;
@@ -2606,6 +2726,7 @@ void RetouchTab::reorderMasks(const QVector<int> &newOrder, const QVector<int> &
         emit masksChanged();
         return;
     }
+    m_paintMoveMasterIndex = -1; // mask indices are shifting; the cache is unsafe across it
     for (int idx : leftGroupIndices)
         if (idx >= 0 && idx < m_adj.masks.size()) m_adj.masks[idx].groupId.clear();
     for (const auto &join : joinGroups)
@@ -2672,6 +2793,7 @@ void RetouchTab::groupMasks(const QVector<int> &indices) {
     for (int i : sorted)
         if (i < 0 || i >= m_adj.masks.size()) return;
     const int originalTop = sorted.last();
+    m_paintMoveMasterIndex = -1; // mask indices are shifting; the cache is unsafe across it
 
     QVector<Mask> members;
     members.reserve(sorted.size());
@@ -2893,6 +3015,7 @@ void RetouchTab::onBucketFillRequested(const QPointF &ptNorm) {
     const int w = std::max(1, int(std::lround(fullW * s)));
     const int h = std::max(1, int(std::lround(fullH * s)));
     m.fillMask = bucketFillPaintMask(m, ptNorm, m.paintColor, w, h);
+    if (m_paintMoveMasterIndex == m_activeMask) m_paintMoveMasterIndex = -1;
     pushMaskGizmo();
     retone();
     markEdited();
@@ -2925,6 +3048,7 @@ void RetouchTab::fillActiveMask(const QColor &color) {
             QImage fill(w, h, QImage::Format_ARGB32);
             fill.fill(color);
             m.fillMask = fill;
+            if (m_paintMoveMasterIndex == m_activeMask) m_paintMoveMasterIndex = -1;
         }
     } else if (type == MaskType::Background) {
         // Full-canvas coverage regardless of aspect ratio: radius is

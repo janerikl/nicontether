@@ -608,13 +608,13 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
         const double minFrac = kSoftMinFrac + (kHardMinFrac - kSoftMinFrac) * t;
         const double pressure = clampd(sp.pressure, 0.0, 1.0);
         const double frac = minFrac + (1.0 - minFrac) * pressure;
-        const double baseRad = std::max(1.0, sp.radius * W);
-        effRad = std::max(1.0, baseRad * frac);
+        const double baseRad = std::max(0.5, sp.radius * W);
+        effRad = std::max(0.5, baseRad * frac);
     };
 
     for (int i = startIdx; i < m.stroke.size(); ++i) {
         const BrushStrokePoint &sp = m.stroke[i];
-        double rad = std::max(1.0, sp.radius * W);
+        double rad = std::max(0.5, sp.radius * W);
         double hardness = sp.hardness;
         double opacityMul = 1.0, grain = 0.0;
         if (sp.isPen) penParams(sp, rad, hardness, opacityMul, grain);
@@ -642,7 +642,7 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
         if (i > 0 && !sp.newStroke) {
             const BrushStrokePoint &pp = m.stroke[i - 1];
             const double ppx = pp.pt.x() * W, ppy = pp.pt.y() * W;
-            double pprad = std::max(1.0, pp.radius * W);
+            double pprad = std::max(0.5, pp.radius * W);
             double pphardness = pp.hardness;
             double ppOpacityMul = 1.0, ppGrain = 0.0;
             if (pp.isPen) penParams(pp, pprad, pphardness, ppOpacityMul, ppGrain);
@@ -1169,7 +1169,7 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             const std::vector<uchar> featherAlpha = selectionFeatherAlpha(m, w, h);
             for (const ErasePoint &ep : m.eraseStrokes) {
                 const double px = ep.pt.x() * W, py = ep.pt.y() * W;
-                const double rad = std::max(1.0, ep.radius * W);
+                const double rad = std::max(0.5, ep.radius * W);
                 const int x0 = std::max(0, int(px - rad));
                 const int x1 = std::min(w - 1, int(px + rad));
                 const int y0 = std::max(0, int(py - rad));

@@ -40,6 +40,7 @@ constexpr double kMinScale = 0.05;
 constexpr double kMaxScale = 8.0;
 constexpr int kHealBrushMin = 4;
 constexpr int kHealBrushMax = 80;
+constexpr int kEraseBrushMin = 1; // Erase can go down to a literal 1px brush; Heal/Remove-Object keep kHealBrushMin.
 constexpr double kMaskBrushMin = 0.01;
 constexpr double kMaskBrushMax = 0.40;
 constexpr double kMaskBrushStep = 0.005;
@@ -189,6 +190,8 @@ ImageCanvas::ImageCanvas(QWidget *parent) : QWidget(parent) {
     pal.setColor(QPalette::Window, m_backgroundColor);
     setPalette(pal);
     m_showRulers = settings.value("canvas/showRulers", false).toBool();
+    m_compositionGrid = GridMode(settings.value("canvas/compositionGrid",
+                                                 int(GridMode::Off)).toInt());
 }
 
 void ImageCanvas::setImage(const QImage &img) {
@@ -272,6 +275,15 @@ void ImageCanvas::setShapeMode(bool on) {
 
 void ImageCanvas::setActiveShapeType(ShapeType t) {
     m_activeShapeType = t;
+}
+
+void ImageCanvas::setMoveMode(bool on) {
+    m_moveMode = on;
+    if (!on) {
+        m_moveDrag = MoveDrag::None;
+    }
+    setCursor(on ? Qt::SizeAllCursor : Qt::ArrowCursor);
+    update();
 }
 
 void ImageCanvas::setShapeMarkers(const QVector<ShapeMarker> &markers) {
@@ -1187,6 +1199,10 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
     p.setRenderHint(QPainter::SmoothPixmapTransform, m_scale < 1.0);
     p.drawImage(tr, m_img);
 
+    if (m_compositionGrid != GridMode::Off && !m_img.isNull()) {
+        drawCompositionGrid(p, tr);
+    }
+
     if (m_cropMode && (m_drag != Drag::None || !selectionRect().isEmpty())) {
         QRect sel = selectionRect();
         if (!sel.isEmpty()) {
@@ -1702,6 +1718,50 @@ int ImageCanvas::guideVAt(const QPoint &pos) const {
     return -1;
 }
 
+// Composition guide overlay (golden ratio lines, golden spiral, etc.), drawn
+// over the full image rect regardless of tool/mode. Geometry comes from the
+// shared grid::segments() helper also used by the live-view overlay.
+void ImageCanvas::drawCompositionGrid(QPainter &p, const QRect &tr) {
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setBrush(Qt::NoBrush);
+    // Two dashed passes (solid black, offset white) so the lines stay
+    // legible over both light and dark image content.
+    QPen dark(QColor(0, 0, 0, 170), 1, Qt::DashLine);
+    QPen light(QColor(255, 255, 255, 220), 1, Qt::DashLine);
+    light.setDashOffset(4);
+
+    // The spiral construction assumes a golden-ratio (~1.618:1) aspect rect;
+    // fed the raw (usually non-golden) image rect, the alternating square-cut
+    // collapses one dimension early and the spiral gets cut short. Inscribe
+    // the largest centered golden rect in tr and map the spiral into that
+    // instead. Straight-line grids (thirds/golden-ratio/etc.) still span the
+    // full frame, which is what they're meant to do.
+    QRectF base(tr);
+    if (m_compositionGrid == GridMode::GoldenSpiral) {
+        const double phi = 1.6180339887;
+        double w = tr.width(), h = tr.height(), gw, gh;
+        if (w >= h) {
+            if (w / h <= phi) { gw = w; gh = w / phi; }
+            else { gh = h; gw = h * phi; }
+        } else {
+            if (h / w <= phi) { gh = h; gw = h / phi; }
+            else { gw = w; gh = w * phi; }
+        }
+        base = QRectF(tr.left() + (w - gw) / 2.0, tr.top() + (h - gh) / 2.0, gw, gh);
+    }
+
+    for (const grid::Seg &s : grid::segments(m_compositionGrid)) {
+        QPointF a(base.left() + s.x1 * base.width(), base.top() + s.y1 * base.height());
+        QPointF b(base.left() + s.x2 * base.width(), base.top() + s.y2 * base.height());
+        p.setPen(dark);
+        p.drawLine(a, b);
+        p.setPen(light);
+        p.drawLine(a, b);
+    }
+    p.restore();
+}
+
 // Dragged-out guide lines: full-viewport lines in Photoshop's cyan, drawn
 // over the image but under the ruler bands (drawRulers paints last).
 void ImageCanvas::drawGuides(QPainter &p) {
@@ -2095,12 +2155,12 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
     }
 
     // Erase brush: active whenever any layer is selected, regardless of type.
-    if (m_eraseMode && m_hasActiveMask && ev->button() == Qt::LeftButton) {
+    if (m_eraseMode && m_hasActiveMask && ev->button() == Qt::LeftButton && !m_spaceDown) {
         QPointF n = normPointAt(ev->pos());
         m_eraseDragging = true;
         m_lastEraseNorm = n;
         m_mousePos = ev->pos();
-        emit eraseAt(n);
+        emit eraseAt(n, true);
         update();
         return;
     }
@@ -2237,6 +2297,44 @@ void ImageCanvas::mousePressEvent(QMouseEvent *ev) {
         }
     }
 
+    // Move tool: click-drag an existing shape/text body to move it (reusing
+    // ShapeDrag::Moving/TextDrag::Moving, same as those tools' own body-drag
+    // path) or a Paint/Brush layer's content to translate its stroke points.
+    // An active image layer is already draggable unconditionally via the
+    // m_hasActiveImageLayer block above, regardless of tool mode.
+    if (m_moveMode && ev->button() == Qt::LeftButton && !m_spaceDown && !m_zoomMode) {
+        int shapeHit = shapeMarkerAt(ev->pos());
+        if (shapeHit >= 0) {
+            m_activeShapeIndex = shapeHit;
+            m_shapeDrag = ShapeDrag::Moving;
+            m_shapeDragStartMouse = ev->pos();
+            m_shapeDragStartTopLeft = m_shapeMarkers[shapeHit].rect.topLeft();
+            m_shapeDragStartP1 = m_shapeMarkers[shapeHit].p1;
+            m_shapeDragStartP2 = m_shapeMarkers[shapeHit].p2;
+            emit shapeSelected(shapeHit);
+            update();
+            return;
+        }
+        int textHit = textMarkerAt(ev->pos());
+        if (textHit >= 0) {
+            m_activeTextIndex = textHit;
+            m_textDrag = TextDrag::Moving;
+            m_textDragStartMouse = ev->pos();
+            m_textDragStartImgPos = m_textMarkers[textHit].rect.topLeft();
+            emit textSelected(textHit);
+            update();
+            return;
+        }
+        int paintHit = paintMarkerAt(ev->pos());
+        if (paintHit >= 0) {
+            m_moveDrag = MoveDrag::Paint;
+            m_moveDragStartNorm = normPointAt(ev->pos());
+            emit paintLayerMoveStarted(paintHit);
+            setCursor(Qt::ClosedHandCursor);
+            return;
+        }
+    }
+
     // Click-to-select fallback: nothing above (crop/heal/mask/erase/
     // shape/text/etc.) claimed this click, so hit-test every other
     // selectable object — topmost type first — and let RetouchTab select
@@ -2363,7 +2461,7 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
     }
     if (m_eraseMode) {
         m_mousePos = ev->pos();
-        if (m_eraseDragging) {
+        if (m_eraseDragging && !m_spaceDown) {
             QPointF n = normPointAt(ev->pos());
             double dx = n.x() - m_lastEraseNorm.x();
             double dy = n.y() - m_lastEraseNorm.y();
@@ -2382,7 +2480,7 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
                 QPointF prev = m_lastEraseNorm;
                 for (int i = 1; i <= steps; ++i) {
                     double t = double(i) / steps;
-                    emit eraseAt(prev + QPointF(dx, dy) * t);
+                    emit eraseAt(prev + QPointF(dx, dy) * t, false);
                 }
                 m_lastEraseNorm = n;
             }
@@ -2404,7 +2502,11 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         update();
         return;
     }
-    if (m_textMode && m_textDrag != TextDrag::None &&
+    if (m_moveDrag == MoveDrag::Paint) {
+        emit paintLayerMoveDelta(normPointAt(ev->pos()) - m_moveDragStartNorm);
+        return;
+    }
+    if ((m_textMode || m_moveMode) && m_textDrag != TextDrag::None &&
         m_activeTextIndex >= 0 && m_activeTextIndex < m_textMarkers.size()) {
         if (m_textDrag == TextDrag::Moving) {
             QPointF delta = (QPointF(ev->pos()) - QPointF(m_textDragStartMouse)) / m_scale;
@@ -2512,7 +2614,7 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         emit shapeGroupResizeRequested(m_shapeGroupIndices, fixedCorner, scaleX, scaleY);
         return;
     }
-    if (m_shapeMode && m_shapeDrag != ShapeDrag::None &&
+    if ((m_shapeMode || m_moveMode) && m_shapeDrag != ShapeDrag::None &&
         m_activeShapeIndex >= 0 && m_activeShapeIndex < m_shapeMarkers.size()) {
         const ShapeMarker &am = m_shapeMarkers[m_activeShapeIndex];
         if (m_shapeDrag == ShapeDrag::EndpointDrag) {
@@ -2793,6 +2895,12 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
             c = Qt::SizeAllCursor;
         }
         setCursor(c);
+    } else if (m_moveMode) {
+        bool overObject = shapeMarkerAt(ev->pos()) >= 0 || textMarkerAt(ev->pos()) >= 0 ||
+                          paintMarkerAt(ev->pos()) >= 0 ||
+                          (m_hasActiveImageLayer && imageLayerFrameRect().contains(
+                              (QPointF(ev->pos()) - m_topLeft) / m_scale));
+        setCursor(overObject ? Qt::SizeAllCursor : Qt::ArrowCursor);
     } else if (m_healMode) {
         m_mousePos = ev->pos();
         update(); // move the brush-size circle
@@ -2965,6 +3073,13 @@ void ImageCanvas::mouseReleaseEvent(QMouseEvent *ev) {
         }
         return;
     }
+    if (m_moveDrag != MoveDrag::None && ev->button() == Qt::LeftButton) {
+        m_moveDrag = MoveDrag::None;
+        setCursor(Qt::SizeAllCursor);
+        emit paintLayerMoveFinished();
+        update();
+        return;
+    }
     if (m_shapeDrag != ShapeDrag::None && ev->button() == Qt::LeftButton) {
         m_shapeDrag = ShapeDrag::None;
         m_shapeEndpointDragging = -1;
@@ -3101,8 +3216,14 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
         // In heal mode, ctrl+wheel resizes the brush instead of zooming.
         if (m_healMode) {
             double notches = ev->angleDelta().y() / 120.0;
-            int step = int(std::lround(notches * kHealBrushStepPerNotch));
+            m_brushRadiusAccum += notches * kHealBrushStepPerNotch;
+            int step = int(m_brushRadiusAccum); // truncate toward zero, keep the fractional remainder
+            m_brushRadiusAccum -= step;
             m_brushRadius = std::clamp(m_brushRadius + step, kHealBrushMin, kHealBrushMax);
+            // Don't let the remainder pile up while pinned at a limit, or the
+            // next reversal would have to work off a large hidden debt first.
+            if (m_brushRadius == kHealBrushMin) m_brushRadiusAccum = std::max(m_brushRadiusAccum, 0.0);
+            if (m_brushRadius == kHealBrushMax) m_brushRadiusAccum = std::min(m_brushRadiusAccum, 0.0);
             emit healBrushRadiusChanged(m_brushRadius);
             update();
             ev->accept();
@@ -3111,8 +3232,14 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
         // In erase mode, ctrl+wheel resizes the erase brush the same way.
         if (m_eraseMode) {
             double notches = ev->angleDelta().y() / 120.0;
-            int step = int(std::lround(notches * kHealBrushStepPerNotch));
-            m_brushRadius = std::clamp(m_brushRadius + step, kHealBrushMin, kHealBrushMax);
+            m_brushRadiusAccum += notches * kHealBrushStepPerNotch;
+            int step = int(m_brushRadiusAccum); // truncate toward zero, keep the fractional remainder
+            m_brushRadiusAccum -= step;
+            m_brushRadius = std::clamp(m_brushRadius + step, kEraseBrushMin, kHealBrushMax);
+            // Don't let the remainder pile up while pinned at a limit, or the
+            // next reversal would have to work off a large hidden debt first.
+            if (m_brushRadius == kEraseBrushMin) m_brushRadiusAccum = std::max(m_brushRadiusAccum, 0.0);
+            if (m_brushRadius == kHealBrushMax) m_brushRadiusAccum = std::min(m_brushRadiusAccum, 0.0);
             emit eraseBrushRadiusChanged(m_brushRadius);
             update();
             ev->accept();
@@ -3121,8 +3248,14 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
         // In remove-object mode, ctrl+wheel resizes its brush the same way.
         if (m_removeObjectMode) {
             double notches = ev->angleDelta().y() / 120.0;
-            int step = int(std::lround(notches * kHealBrushStepPerNotch));
+            m_brushRadiusAccum += notches * kHealBrushStepPerNotch;
+            int step = int(m_brushRadiusAccum); // truncate toward zero, keep the fractional remainder
+            m_brushRadiusAccum -= step;
             m_brushRadius = std::clamp(m_brushRadius + step, kHealBrushMin, kHealBrushMax);
+            // Don't let the remainder pile up while pinned at a limit, or the
+            // next reversal would have to work off a large hidden debt first.
+            if (m_brushRadius == kHealBrushMin) m_brushRadiusAccum = std::max(m_brushRadiusAccum, 0.0);
+            if (m_brushRadius == kHealBrushMax) m_brushRadiusAccum = std::min(m_brushRadiusAccum, 0.0);
             emit removeObjectBrushRadiusChanged(m_brushRadius);
             update();
             ev->accept();
@@ -3279,6 +3412,12 @@ void ImageCanvas::setShowCheckerboard(bool on) {
 void ImageCanvas::setShowRulers(bool on) {
     if (m_showRulers == on) return;
     m_showRulers = on;
+    update();
+}
+
+void ImageCanvas::setCompositionGrid(GridMode g) {
+    if (m_compositionGrid == g) return;
+    m_compositionGrid = g;
     update();
 }
 

@@ -14,6 +14,7 @@
 #include <QPolygonF>
 
 #include "edit/Adjustments.h"
+#include "ui/GridOverlay.h"
 
 class QDragEnterEvent;
 class QDragLeaveEvent;
@@ -88,6 +89,12 @@ public:
     // handles. Pushed down whenever RetouchTab's selection set changes.
     void setSelectedShapeIndices(const QSet<int> &indices);
 
+    // Move tool: drag an existing shape/text body or image-layer frame to
+    // move it (reuses their own ShapeDrag::Moving/TextDrag::Moving/image-
+    // layer-drag paths), or drag on a Paint/Brush layer's content to
+    // translate its stroke points (and fill, if unselected) — clipped to the
+    // active selection when one exists.
+    void setMoveMode(bool on);
     void setEraseMode(bool on); // erase brush: punches transparency into the selected image layer
     void setRemoveObjectMode(bool on); // remove-object brush: paint over an unwanted object
     // While a stroke's content-aware fill is being computed on a worker
@@ -192,6 +199,11 @@ public:
     // showing image-pixel coordinates at the current zoom/pan.
     void setShowRulers(bool on);
 
+    // Composition guide overlay drawn over the full image, independent of
+    // crop mode. GridMode::Off disables it.
+    void setCompositionGrid(GridMode g);
+    GridMode compositionGrid() const { return m_compositionGrid; }
+
     // Photoshop-style ruler guides: dragged out from the ruler bands.
     // Positions are fractions of the displayed image (0..1) — guidesH of
     // height, guidesV of width — so they survive image-size changes
@@ -258,7 +270,7 @@ signals:
     void shapeGroupResizeStarted(const QList<int> &indices);
     void shapeGroupResizeRequested(const QList<int> &indices, const QPointF &anchorImage,
                                    double scaleX, double scaleY);
-    void eraseAt(const QPointF &ptNorm); // one erase-stroke sample (width-normalized)
+    void eraseAt(const QPointF &ptNorm, bool newStroke); // one erase-stroke sample (width-normalized)
     void eraseFinished();                // drag released -> commit history
     void removeObjectAt(const QPointF &ptNorm); // one remove-object stroke sample (width-normalized)
     void removeObjectFinished();                // drag released -> run inpaint + commit history
@@ -305,6 +317,14 @@ signals:
     void cloneStrokePoint(const QPointF &ptNorm, const QPointF &sourceNorm, bool newStroke,
                           double pressure);
     void cloneFinished(); // drag released -> commit history
+
+    // Move tool dragging a Paint/Brush layer's content. `markerIndex` is a
+    // position within m_paintMarkers (see setPaintMarkers), same convention
+    // as objectClicked. deltaNorm is the total width-normalized offset from
+    // the drag start (not incremental), matching shapeMoved's convention.
+    void paintLayerMoveStarted(int markerIndex);
+    void paintLayerMoveDelta(const QPointF &deltaNorm);
+    void paintLayerMoveFinished(); // drag released -> commit history
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -460,6 +480,11 @@ private:
     Handle m_shapeGroupResizeCorner = Handle::None;
     QRectF m_shapeGroupResizeStartBounds; // shapeGroupBounds() at ResizingGroup drag start (marker space)
 
+    bool m_moveMode = false;
+    enum class MoveDrag { None, Paint };
+    MoveDrag m_moveDrag = MoveDrag::None;
+    QPointF m_moveDragStartNorm;
+
     bool m_eraseMode = false;
     bool m_eraseDragging = false;
     QPointF m_lastEraseNorm{-1, -1};
@@ -471,6 +496,7 @@ private:
     int m_activeRemovalIndex = -1;
     bool m_zoomMode = false; // gates marquee-drag zoom + Ctrl+wheel zoom
     int m_brushRadius = 20; // display px, for the brush cursor
+    double m_brushRadiusAccum = 0.0; // fractional remainder carried between Ctrl+wheel events so small trackpad deltas still add up smoothly instead of rounding to zero
 
     // Selection tool state.
     bool m_selectMarqueeMode = false;
@@ -555,6 +581,8 @@ private:
     QColor m_backgroundColor = QColor(30, 30, 30);
     bool m_showCheckerboard = false;
     bool m_showRulers = false;
+    GridMode m_compositionGrid = GridMode::Off;
+    void drawCompositionGrid(QPainter &p, const QRect &tr); // composition guide overlay over the image rect
 
     // Ruler guides (view-only overlay). Positions are fractions (0..1) of
     // the displayed image's height (m_guidesH) / width (m_guidesV).

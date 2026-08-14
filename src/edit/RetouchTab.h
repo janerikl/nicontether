@@ -115,6 +115,9 @@ public:
     void setRemovalVisible(int index, bool visible);
     void deleteRemoval(int index);
 
+    // Move tool.
+    void setMoveMode(bool on);
+
     // Text tool.
     void setTextMode(bool on);
     void deleteActiveText();
@@ -327,6 +330,9 @@ private slots:
     void onShapeCreateRequested(ShapeType type, const QRectF &imageRect);
     void onShapeSelected(int index);
     void onObjectClicked(MaskType type, int markerIndex);
+    void onPaintLayerMoveStarted(int markerIndex);
+    void onPaintLayerMoveDelta(const QPointF &deltaNorm);
+    void onPaintLayerMoveFinished();
     void onShapeDeselected();
     void onShapeMoved(int index, const QPointF &deltaImage);
     void onShapeResized(int index, const QRectF &newImageRect);
@@ -341,7 +347,7 @@ private slots:
     void onShapeGroupMoveRequested(const QList<int> &indices, const QPointF &deltaImage);
     void onShapeGroupResizeRequested(const QList<int> &indices, const QPointF &anchorImage,
                                      double scaleX, double scaleY);
-    void onEraseAt(const QPointF &ptNorm);
+    void onEraseAt(const QPointF &ptNorm, bool newStroke);
     void onEraseFinished();
     void onRemoveObjectAt(const QPointF &ptNorm);
     void onRemoveObjectFinished();
@@ -442,6 +448,26 @@ private:
     // rebuilt each updateObjectMarkers() call.
     QVector<int> m_paintMaskIndices;
     QVector<int> m_imageLayerMaskIndices;
+
+    // Move tool: Paint/Brush layer drag state, captured at
+    // paintLayerMoveStarted and reapplied (not compounded) on every
+    // paintLayerMoveDelta, mirroring shapeMoved's start-snapshot convention.
+    int m_paintMoveMaskIndex = -1;
+    QVector<BrushStrokePoint> m_paintMoveStartStroke;
+    QImage m_paintMoveStartFillMask;
+    bool m_paintMoveSelectionOnly = false;
+    QPainterPath m_paintMoveSelectionPath;
+    // Session-only cache of the fill mask as it was before ANY move this
+    // session, plus how far it's been moved since. onPaintLayerMoveDelta
+    // always redraws from this untouched master (not from the possibly
+    // already-edge-clipped m.fillMask), so repeated moves don't compound
+    // pixel loss at the frame edges. Invalidated (index reset to -1) by
+    // anything that reassigns fillMask outside the move path, or reorders/
+    // removes masks, since it's not safe across index shifts.
+    int m_paintMoveMasterIndex = -1;
+    QImage m_paintMoveMasterFillMask;
+    QPointF m_paintMoveMasterOffsetNorm; // cumulative committed offset applied to the master
+    QPointF m_paintMoveLastDelta; // this gesture's most recent delta, folded into the offset on finish
     ShapeOp m_shapeDefaults;  // style/type applied to the next newly-created shape
     QRectF m_shapeMoveStartRect;   // active shape's rect at move-drag start
     QPointF m_shapeMoveStartP1, m_shapeMoveStartP2; // active Line's endpoints at move-drag start
