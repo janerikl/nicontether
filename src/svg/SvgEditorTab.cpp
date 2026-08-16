@@ -20,6 +20,7 @@
 
 #include "svg/SvgCanvas.h"
 #include "svg/SvgFileIO.h"
+#include "ui/ShortcutRegistry.h"
 #include "svg/SvgRender.h"
 
 namespace {
@@ -68,14 +69,17 @@ void SvgEditorTab::buildTopBar(QVBoxLayout *rootLayout) {
     auto *openAction = topBar->addAction("Open…");
     openAction->setShortcut(QKeySequence::Open);
     connect(openAction, &QAction::triggered, this, &SvgEditorTab::onOpen);
+    ShortcutRegistry::instance().registerShortcut("svg.open", "Shape Editor", "Open…", openAction, QKeySequence::Open);
 
     auto *saveAction = topBar->addAction("Save");
     saveAction->setShortcut(QKeySequence::Save);
     connect(saveAction, &QAction::triggered, this, &SvgEditorTab::onSave);
+    ShortcutRegistry::instance().registerShortcut("svg.save", "Shape Editor", "Save", saveAction, QKeySequence::Save);
 
     auto *saveAsAction = topBar->addAction("Save As…");
     saveAsAction->setShortcut(QKeySequence::SaveAs);
     connect(saveAsAction, &QAction::triggered, this, &SvgEditorTab::onSaveAs);
+    ShortcutRegistry::instance().registerShortcut("svg.saveAs", "Shape Editor", "Save As…", saveAsAction, QKeySequence::SaveAs);
 
     auto *exportPngAction = topBar->addAction("Export PNG…");
     connect(exportPngAction, &QAction::triggered, this, &SvgEditorTab::onExportPng);

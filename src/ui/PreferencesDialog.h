@@ -6,13 +6,15 @@ class QComboBox;
 class QSpinBox;
 class QPushButton;
 class QWidget;
+class QTreeWidget;
+class QTreeWidgetItem;
 
 // File → Preferences… dialog. Two-column layout: a category list on the
 // left, a QStackedWidget of pages on the right. Currently two pages:
 // "General" (camera-model dropdown and the AF coordinate frame size used by
 // click-to-focus — AF frame is remembered per model in QSettings, this
-// dialog is the single writer) and "Keyboard Shortcuts" (a read-only
-// reference list; no rebinding yet).
+// dialog is the single writer) and "Keyboard Shortcuts" (live, editable —
+// backed by ShortcutRegistry; double-click a shortcut cell to rebind it).
 class PreferencesDialog : public QDialog {
     Q_OBJECT
 public:
@@ -36,11 +38,16 @@ private:
     QString currentModelId() const;
     QWidget *buildGeneralPage();
     QWidget *buildShortcutsPage();
+    void reloadShortcutsTree();
+    void beginEditShortcut(QTreeWidgetItem *item);
 
     QComboBox *m_model = nullptr;
     QSpinBox *m_frameW = nullptr;
     QSpinBox *m_frameH = nullptr;
     QPushButton *m_calibrate = nullptr;
+    QTreeWidget *m_shortcutsTree = nullptr;
+    QPushButton *m_resetShortcut = nullptr;
+    QPushButton *m_resetAllShortcuts = nullptr;
 };
 
 // Returns the persisted AF frame for a model id (per-model override, else the

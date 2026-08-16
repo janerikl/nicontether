@@ -17,6 +17,7 @@
 #include "ui/ToolFlyout.h"
 #include "ui/TetherView.h"
 #include "ui/PreferencesDialog.h"
+#include "ui/ShortcutRegistry.h"
 #include "camera/CameraModels.h"
 #include "ui/ControlsPanel.h"
 #include "ui/ScrubSpinBox.h"
@@ -716,6 +717,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     // Save / Save All / Export live in the File menu only (not the toolbar).
     m_saveAction = new QAction("Save", this);
     m_saveAction->setShortcut(QKeySequence::Save); // Ctrl+S
+    ShortcutRegistry::instance().registerShortcut("file.save", "Menu", "Save", m_saveAction, QKeySequence::Save);
     m_saveAllAction = new QAction("Save All", this);
     m_saveAsProjectAction = new QAction("Save As Photonloom Project…", this);
     m_exportAction = new QAction("Export…", this);
@@ -726,6 +728,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     auto *openProjectAction = new QAction("Open Project…", this);
     auto *newDocAction = new QAction("New…", this);
     newDocAction->setShortcut(QKeySequence::New); // Ctrl+N
+    ShortcutRegistry::instance().registerShortcut("file.new", "Menu", "New…", newDocAction, QKeySequence::New);
     connect(newDocAction, &QAction::triggered, this, &RetouchWindow::onNewDocument);
     connect(openSessionAction, &QAction::triggered, this, &RetouchWindow::onOpenSession);
     connect(openPhotosAction, &QAction::triggered, this, &RetouchWindow::onOpenPhotos);
@@ -768,8 +771,10 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     auto *editMenu = menuBar()->addMenu("Edit");
     m_undoAction = editMenu->addAction("Undo");
     m_undoAction->setShortcut(QKeySequence::Undo); // Ctrl+Z
+    ShortcutRegistry::instance().registerShortcut("edit.undo", "Menu", "Undo", m_undoAction, QKeySequence::Undo);
     m_redoAction = editMenu->addAction("Redo");
     m_redoAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Y)); // Ctrl+Y
+    ShortcutRegistry::instance().registerShortcut("edit.redo", "Menu", "Redo", m_redoAction, QKeySequence(Qt::CTRL | Qt::Key_Y));
     m_undoAction->setEnabled(false);
     m_redoAction->setEnabled(false);
     connect(m_undoAction, &QAction::triggered, this, [this] {
@@ -784,10 +789,13 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     editMenu->addSeparator();
     m_copyEditsAction = editMenu->addAction("Copy Edits");
     m_copyEditsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C));
+    ShortcutRegistry::instance().registerShortcut("edit.copyEdits", "Menu", "Copy Edits", m_copyEditsAction, QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C));
     m_pasteEditsAction = editMenu->addAction("Paste Edits");
     m_pasteEditsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V));
+    ShortcutRegistry::instance().registerShortcut("edit.pasteEdits", "Menu", "Paste Edits", m_pasteEditsAction, QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V));
     m_syncEditsAction = editMenu->addAction("Sync Edits to Selected");
     m_syncEditsAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
+    ShortcutRegistry::instance().registerShortcut("edit.syncEdits", "Menu", "Sync Edits to Selected", m_syncEditsAction, QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
     m_copyEditsAction->setEnabled(false);
     m_pasteEditsAction->setEnabled(false);
     m_syncEditsAction->setEnabled(false);
@@ -801,8 +809,10 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     editMenu->addSeparator();
     m_groupShapesAction = editMenu->addAction("Group Shapes");
     m_groupShapesAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
+    ShortcutRegistry::instance().registerShortcut("edit.groupShapes", "Menu", "Group Shapes/Layers", m_groupShapesAction, QKeySequence(Qt::CTRL | Qt::Key_G));
     m_ungroupShapesAction = editMenu->addAction("Ungroup Shapes");
     m_ungroupShapesAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G));
+    ShortcutRegistry::instance().registerShortcut("edit.ungroupShapes", "Menu", "Ungroup Shapes/Layers", m_ungroupShapesAction, QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G));
     connect(m_groupShapesAction, &QAction::triggered, this, [this] {
         RetouchTab *tab = currentTab();
         if (!tab) return;
@@ -822,14 +832,19 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     editMenu->addSeparator();
     m_deselectAction = editMenu->addAction("Deselect");
     m_deselectAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
+    ShortcutRegistry::instance().registerShortcut("edit.deselect", "Menu", "Deselect", m_deselectAction, QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
     m_invertSelectionAction = editMenu->addAction("Invert Selection");
     m_invertSelectionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I));
+    ShortcutRegistry::instance().registerShortcut("edit.invertSelection", "Menu", "Invert Selection", m_invertSelectionAction, QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I));
     m_featherSelectionAction = editMenu->addAction("Feather Selection...");
     m_featherSelectionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_D));
+    ShortcutRegistry::instance().registerShortcut("edit.featherSelection", "Menu", "Feather Selection…", m_featherSelectionAction, QKeySequence(Qt::CTRL | Qt::ALT | Qt::SHIFT | Qt::Key_D));
     m_copySelectionAction = editMenu->addAction("Copy");
     m_copySelectionAction->setShortcut(QKeySequence::Copy);
+    ShortcutRegistry::instance().registerShortcut("edit.copySelection", "Menu", "Copy", m_copySelectionAction, QKeySequence::Copy);
     m_pasteSelectionAction = editMenu->addAction("Paste");
     m_pasteSelectionAction->setShortcut(QKeySequence::Paste);
+    ShortcutRegistry::instance().registerShortcut("edit.pasteSelection", "Menu", "Paste", m_pasteSelectionAction, QKeySequence::Paste);
     m_pasteSelectionAction->setEnabled(false);
     m_saveSelectionAsAssetAction = editMenu->addAction("Save Selection as Asset...");
     connect(m_deselectAction, &QAction::triggered, this, &RetouchWindow::onDeselect);
@@ -985,6 +1000,9 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     m_fileMenu->addSeparator();
     QAction *prefsAction = new QAction("Preferences…", this);
     prefsAction->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Comma), QKeySequence(Qt::Key_F12)});
+    // Registered with its primary sequence only — rebinding via the registry
+    // reduces this action to a single shortcut instead of the two defaults.
+    ShortcutRegistry::instance().registerShortcut("file.preferences", "Menu", "Preferences…", prefsAction, QKeySequence(Qt::CTRL | Qt::Key_Comma));
     connect(prefsAction, &QAction::triggered, this, [this] {
         m_prefsDialog->show();
         m_prefsDialog->raise();
@@ -1000,6 +1018,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
     auto *escShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), this);
     escShortcut->setContext(Qt::WindowShortcut);
     connect(escShortcut, &QShortcut::activated, this, &RetouchWindow::deselectAllTools);
+    ShortcutRegistry::instance().registerShortcut("canvas.deselectTools", "Canvas", "Deselect all tools", escShortcut, QKeySequence(Qt::Key_Escape));
 
     // Ctrl+0 fits the image to the window, same as the Fit button.
     auto *fitShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_0), this);
@@ -1008,6 +1027,7 @@ RetouchWindow::RetouchWindow(QWidget *parent) : QMainWindow(parent) {
         RetouchTab *tab = currentTab();
         if (tab && tab->isReady()) tab->zoomFit();
     });
+    ShortcutRegistry::instance().registerShortcut("canvas.fitToWindow", "Canvas", "Fit to window", fitShortcut, QKeySequence(Qt::CTRL | Qt::Key_0));
 
     // Restore saved window geometry + dock layout, or fall back to defaults.
     // Restore runs *after* setMode so persisted show/hide of the editing docks
@@ -1281,6 +1301,7 @@ void RetouchWindow::buildToolPanel() {
     m_moveToggle->setIcon(makeMoveIcon());
     m_moveToggle->setCheckable(true);
     m_moveToggle->setShortcut(QKeySequence(Qt::Key_V));
+    ShortcutRegistry::instance().registerShortcut("tool.move", "Tools", "Move", m_moveToggle, QKeySequence(Qt::Key_V));
     m_moveToggle->setToolTip(
         "Move (V) — drag a shape/text/image layer to move it, or drag on a "
         "Paint/Brush layer's strokes; clipped to the active selection if one exists");
@@ -1290,6 +1311,7 @@ void RetouchWindow::buildToolPanel() {
     m_toolZoom->setIcon(makeZoomIcon());
     m_toolZoom->setCheckable(true);
     m_toolZoom->setShortcut(QKeySequence(Qt::Key_Z));
+    ShortcutRegistry::instance().registerShortcut("tool.zoom", "Tools", "Zoom", m_toolZoom, QKeySequence(Qt::Key_Z));
     m_toolZoom->setToolTip("Zoom (Z) — drag to marquee-zoom, Ctrl+wheel to zoom");
     m_toolsBar->addWidget(m_toolZoom);
 
@@ -1297,6 +1319,7 @@ void RetouchWindow::buildToolPanel() {
     m_cropToggle->setIcon(makeCropIcon());
     m_cropToggle->setCheckable(true);
     m_cropToggle->setShortcut(QKeySequence(Qt::Key_C));
+    ShortcutRegistry::instance().registerShortcut("tool.crop", "Tools", "Crop", m_cropToggle, QKeySequence(Qt::Key_C));
     m_cropToggle->setToolTip("Crop (C)");
     m_toolsBar->addWidget(m_cropToggle);
 
@@ -1304,6 +1327,7 @@ void RetouchWindow::buildToolPanel() {
     m_healToggle->setIcon(makeHealIcon());
     m_healToggle->setCheckable(true);
     m_healToggle->setShortcut(QKeySequence(Qt::Key_H));
+    ShortcutRegistry::instance().registerShortcut("tool.heal", "Tools", "Spot Heal", m_healToggle, QKeySequence(Qt::Key_H));
     m_healToggle->setToolTip("Spot Heal (H) — click blemishes; Ctrl+wheel resizes brush");
     m_toolsBar->addWidget(m_healToggle);
 
@@ -1311,6 +1335,7 @@ void RetouchWindow::buildToolPanel() {
     m_brushToggle->setIcon(makeBrushToolIcon());
     m_brushToggle->setCheckable(true);
     m_brushToggle->setShortcut(QKeySequence(Qt::Key_B));
+    ShortcutRegistry::instance().registerShortcut("tool.brush", "Tools", "Brush", m_brushToggle, QKeySequence(Qt::Key_B));
     m_brushToggle->setToolTip("Brush (B) — paint with the foreground color; Ctrl+wheel resizes brush");
     m_toolsBar->addWidget(m_brushToggle);
 
@@ -1324,6 +1349,7 @@ void RetouchWindow::buildToolPanel() {
     m_eraseToggle->setIcon(makeEraseIcon());
     m_eraseToggle->setCheckable(true);
     m_eraseToggle->setShortcut(QKeySequence(Qt::Key_E));
+    ShortcutRegistry::instance().registerShortcut("tool.erase", "Tools", "Erase", m_eraseToggle, QKeySequence(Qt::Key_E));
     m_eraseToggle->setToolTip("Erase (E) — erase brush strokes on a paint layer, or paint transparency onto an image layer; Ctrl+wheel resizes brush");
     m_toolsBar->addWidget(m_eraseToggle);
 
@@ -1331,6 +1357,7 @@ void RetouchWindow::buildToolPanel() {
     m_removeObjectToggle->setIcon(makeRemoveObjectIcon());
     m_removeObjectToggle->setCheckable(true);
     m_removeObjectToggle->setShortcut(QKeySequence(Qt::Key_J));
+    ShortcutRegistry::instance().registerShortcut("tool.removeObject", "Tools", "Remove Object", m_removeObjectToggle, QKeySequence(Qt::Key_J));
     m_removeObjectToggle->setToolTip("Remove Object (J) — paint over an object to remove it; Ctrl+wheel resizes brush");
     m_toolsBar->addWidget(m_removeObjectToggle);
 
@@ -1338,6 +1365,7 @@ void RetouchWindow::buildToolPanel() {
     m_penToggle->setIcon(makeCrayonToolIcon());
     m_penToggle->setCheckable(true);
     m_penToggle->setShortcut(QKeySequence(Qt::Key_N));
+    ShortcutRegistry::instance().registerShortcut("tool.pen", "Tools", "Pen", m_penToggle, QKeySequence(Qt::Key_N));
     m_penToggle->setToolTip("Pen (N) — pencil strokes with grade-driven hardness/texture; Ctrl+wheel resizes");
     m_toolsBar->addWidget(m_penToggle);
 
@@ -1345,6 +1373,7 @@ void RetouchWindow::buildToolPanel() {
     m_textToggle->setIcon(makeTextIcon());
     m_textToggle->setCheckable(true);
     m_textToggle->setShortcut(QKeySequence(Qt::Key_T));
+    ShortcutRegistry::instance().registerShortcut("tool.text", "Tools", "Text", m_textToggle, QKeySequence(Qt::Key_T));
     m_textToggle->setToolTip("Text (T) — click to place, drag to move, drag the handle to rotate");
     m_toolsBar->addWidget(m_textToggle);
 
@@ -1352,6 +1381,7 @@ void RetouchWindow::buildToolPanel() {
     m_shapeToggle->setIcon(makeShapeIcon());
     m_shapeToggle->setCheckable(true);
     m_shapeToggle->setShortcut(QKeySequence(Qt::Key_U));
+    ShortcutRegistry::instance().registerShortcut("tool.shape", "Tools", "Shape", m_shapeToggle, QKeySequence(Qt::Key_U));
     m_shapeToggle->setToolTip("Shape (U) — drag to draw, drag handles to move/resize/rotate");
     m_toolsBar->addWidget(m_shapeToggle);
 
@@ -1359,6 +1389,7 @@ void RetouchWindow::buildToolPanel() {
     m_selectMarqueeToggle->setIcon(makeSelectMarqueeIcon());
     m_selectMarqueeToggle->setCheckable(true);
     m_selectMarqueeToggle->setShortcut(QKeySequence(Qt::Key_M));
+    ShortcutRegistry::instance().registerShortcut("tool.selectMarquee", "Tools", "Rectangular Selection", m_selectMarqueeToggle, QKeySequence(Qt::Key_M));
     m_selectMarqueeToggle->setToolTip(
         "Rectangular Selection (M) — drag to select; Shift adds, Alt subtracts");
     m_toolsBar->addWidget(m_selectMarqueeToggle);
@@ -1367,6 +1398,7 @@ void RetouchWindow::buildToolPanel() {
     m_selectLassoToggle->setIcon(makeSelectLassoIcon());
     m_selectLassoToggle->setCheckable(true);
     m_selectLassoToggle->setShortcut(QKeySequence(Qt::Key_L));
+    ShortcutRegistry::instance().registerShortcut("tool.selectLasso", "Tools", "Lasso Selection", m_selectLassoToggle, QKeySequence(Qt::Key_L));
     m_selectLassoToggle->setToolTip(
         "Lasso Selection (L) — drag a freehand outline; Shift adds, Alt subtracts");
     m_toolsBar->addWidget(m_selectLassoToggle);
@@ -1375,6 +1407,7 @@ void RetouchWindow::buildToolPanel() {
     m_selectWandToggle->setIcon(makeSelectWandIcon());
     m_selectWandToggle->setCheckable(true);
     m_selectWandToggle->setShortcut(QKeySequence(Qt::Key_W));
+    ShortcutRegistry::instance().registerShortcut("tool.selectWand", "Tools", "Magic Wand", m_selectWandToggle, QKeySequence(Qt::Key_W));
     m_selectWandToggle->setToolTip(
         "Magic Wand (W) — click to select similar colors; Shift adds, Alt subtracts");
     m_toolsBar->addWidget(m_selectWandToggle);
@@ -1383,6 +1416,7 @@ void RetouchWindow::buildToolPanel() {
     m_selectBrushToggle->setIcon(makeSelectBrushIcon());
     m_selectBrushToggle->setCheckable(true);
     m_selectBrushToggle->setShortcut(QKeySequence(Qt::Key_Q));
+    ShortcutRegistry::instance().registerShortcut("tool.selectBrush", "Tools", "Selection Brush", m_selectBrushToggle, QKeySequence(Qt::Key_Q));
     m_selectBrushToggle->setToolTip(
         "Selection Brush (Q) — drag to add to the selection; Alt subtracts");
     m_toolsBar->addWidget(m_selectBrushToggle);
@@ -1391,6 +1425,7 @@ void RetouchWindow::buildToolPanel() {
     m_cloneToggle->setIcon(makeCloneStampIcon());
     m_cloneToggle->setCheckable(true);
     m_cloneToggle->setShortcut(QKeySequence(Qt::Key_S));
+    ShortcutRegistry::instance().registerShortcut("tool.clone", "Tools", "Clone Stamp", m_cloneToggle, QKeySequence(Qt::Key_S));
     m_cloneToggle->setToolTip(
         "Clone Stamp (S) — Alt+click to set the source, drag to paint from it");
     m_toolsBar->addWidget(m_cloneToggle);
@@ -1399,6 +1434,7 @@ void RetouchWindow::buildToolPanel() {
     m_maskToggle->setIcon(makeFlyoutToolIcon(maskGlyph(m_activeMaskSubtool)));
     m_maskToggle->setCheckable(true);
     m_maskToggle->setShortcut(QKeySequence(Qt::Key_K));
+    ShortcutRegistry::instance().registerShortcut("tool.mask", "Tools", "Local Masks", m_maskToggle, QKeySequence(Qt::Key_K));
     m_maskToggle->setToolTip("Local Masks (K) — click to add; hold for radial / graduated / brush");
     m_toolsBar->addWidget(m_maskToggle);
     connect(m_maskToggle, &FlyoutToolButton::flyoutRequested, this,
@@ -1409,8 +1445,10 @@ void RetouchWindow::buildToolPanel() {
 
     auto *swapShortcut = new QShortcut(QKeySequence(Qt::Key_X), this);
     connect(swapShortcut, &QShortcut::activated, m_colorSwatch, &ColorSwatchWidget::swapColors);
+    ShortcutRegistry::instance().registerShortcut("canvas.swapColors", "Canvas", "Swap foreground/background color", swapShortcut, QKeySequence(Qt::Key_X));
     auto *resetShortcut = new QShortcut(QKeySequence(Qt::Key_D), this);
     connect(resetShortcut, &QShortcut::activated, m_colorSwatch, &ColorSwatchWidget::resetColors);
+    ShortcutRegistry::instance().registerShortcut("canvas.resetColors", "Canvas", "Reset colors", resetShortcut, QKeySequence(Qt::Key_D));
 
     // Photoshop-style fill shortcuts: Ctrl+Backspace = background color,
     // Alt+Backspace = foreground color.
@@ -1419,11 +1457,13 @@ void RetouchWindow::buildToolPanel() {
         RetouchTab *tab = currentTab();
         if (tab && tab->isReady()) tab->fillActiveMask(m_colorSwatch->backgroundColor());
     });
+    ShortcutRegistry::instance().registerShortcut("canvas.fillBackground", "Canvas", "Fill with background color", fillBgShortcut, QKeySequence(Qt::CTRL | Qt::Key_Backspace));
     auto *fillFgShortcut = new QShortcut(QKeySequence(Qt::ALT | Qt::Key_Backspace), this);
     connect(fillFgShortcut, &QShortcut::activated, this, [this] {
         RetouchTab *tab = currentTab();
         if (tab && tab->isReady()) tab->fillActiveMask(m_colorSwatch->foregroundColor());
     });
+    ShortcutRegistry::instance().registerShortcut("canvas.fillForeground", "Canvas", "Fill with foreground color", fillFgShortcut, QKeySequence(Qt::ALT | Qt::Key_Backspace));
 
     connect(m_colorSwatch, &ColorSwatchWidget::foregroundColorChanged, this,
             [this](const QColor &c) {
@@ -2684,20 +2724,10 @@ void RetouchWindow::buildLayersDock() {
     connect(m_layersPanel, &LayersPanel::duplicateMaskRequested, this, [this] {
         RetouchTab *tab = currentTab();
         if (!tab) return;
-        const int idx = tab->activeMaskIndex();
-        const bool isBackground = idx >= 0 && idx < tab->masks().size() &&
-                                  tab->masks()[idx].type == MaskType::Background;
-        if (isBackground && !tab->path().isEmpty()) {
-            // Only one Background-type layer is ever allowed per image (it's
-            // auto-created once, not user-creatable) — "duplicating" it
-            // instead adds a real, independent image layer sourced from the
-            // same photo, placed just above Background.
-            int newIdx = tab->addImageLayer(tab->path());
-            tab->setMaskName(newIdx, QStringLiteral("Background copy"));
-            tab->selectMask(newIdx);
-        } else {
-            tab->duplicateActiveMask();
-        }
+        // duplicateActiveMask() itself demotes a Background duplicate to a
+        // regular layer (only one Background-type mask is ever allowed),
+        // while preserving the crop and per-layer adjustments baked into it.
+        tab->duplicateActiveMask();
         refreshMaskPanel();
     });
     connect(m_layersPanel, &LayersPanel::maskAdjustChanged, this,
@@ -3550,11 +3580,18 @@ void RetouchWindow::closeEvent(QCloseEvent *event) {
 void RetouchWindow::applyModeChrome(Mode mode) {
     const bool tether = (mode == Mode::Tether);
     const bool retouch = (mode == Mode::Retouch);
+    const bool browse = (mode == Mode::Browse);
 
     // Tether chrome.
     if (m_tetherToolBar) m_tetherToolBar->setVisible(tether);
     if (m_controlsDock)  m_controlsDock->setVisible(tether);
     if (m_tetherView)    m_tetherView->setActive(tether);
+
+    // Shared filmstrip: irrelevant in Browse mode (it has its own thumbnail
+    // grid), so hide it there regardless of the View > Filmstrip toggle.
+    const bool filmstripWanted = !m_filmstripAction || m_filmstripAction->isChecked();
+    if (m_filmstrip)   m_filmstrip->setVisible(!browse && filmstripWanted);
+    if (m_beforeAfter) m_beforeAfter->setVisible(!browse && filmstripWanted);
 
     // Editing chrome (Retouch mode only — hidden for both Tether and Svg).
     if (!retouch) deselectAllTools(); // exit any active tool + hide the options row

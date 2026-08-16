@@ -2049,7 +2049,17 @@ void RetouchTab::onHealAt(const QPoint &imgPoint) {
     op.x = int(oriented.x());
     op.y = int(oriented.y());
     op.radius = qMax(2, int(m_healRadiusDisplay * inv));
-    m_adj.heals.append(op);
+    // An active image/duplicated layer has its own independent pixels (see
+    // Mask::heals) — heal those instead of the tab's base image so healing a
+    // copy doesn't silently no-op (the copy has nothing of its own to show
+    // the edit) or bleed into the layer it was duplicated from. The true
+    // Background mask mirrors m_base itself, so it keeps using the base path.
+    if (m_activeMask >= 0 && m_activeMask < m_adj.masks.size() &&
+        m_adj.masks[m_activeMask].isImageLayer()) {
+        m_adj.masks[m_activeMask].heals.append(op);
+    } else {
+        m_adj.heals.append(op);
+    }
     rebuildGeom();
     markEdited();
 }
@@ -2498,10 +2508,49 @@ int RetouchTab::insertAssetStamp(const QString &imagePath, const QSize &nativeSi
 int RetouchTab::duplicateActiveMask() {
     if (m_activeMask < 0 || m_activeMask >= m_adj.masks.size()) return -1;
     Mask copy = m_adj.masks[m_activeMask];
+    // Only one Background-type mask is ever allowed; a duplicate becomes a
+    // regular full-frame layer instead. The Background's own content isn't a
+    // real independent buffer (it just mirrors m_base live — see
+    // orientedPreCropSource()), so simply re-typing it would leave the
+    // "copy" as a pass-through with no pixels of its own to edit. Freeze the
+    // layer's current pixels into a real, independently-editable image layer
+    // (same on-disk mechanism as addImageLayer) so heals/future edits on the
+    // copy stick without touching the original.
+    if (copy.type == MaskType::Background) {
+        QImage snapshot = orientedPreCropSource(); // full-res, oriented, pre-crop
+        QString baseDir = m_path.isEmpty() ? QDir::tempPath() : QFileInfo(m_path).absolutePath();
+        QString baseName = m_path.isEmpty() ? QStringLiteral("layer")
+                                             : QFileInfo(m_path).completeBaseName();
+        QString uuid = QUuid::createUuid().toString(QUuid::Id128).left(8);
+        QString pngPath = QDir(baseDir).filePath(
+            QStringLiteral("%1.layer.%2.png").arg(baseName, uuid));
+        if (!snapshot.isNull()) {
+            copy.type = MaskType::None;
+            copy.sourceImagePath = pngPath;
+            copy.sourceImageCache = snapshot; // already in memory: layer works instantly
+            copy.sourceImageOffset = QPointF(0.0, 0.0);
+            copy.sourceImageScale = QPointF(1.0, 1.0);
+            // The snapshot already has the original's heals baked in (they
+            // were applied by orientedPreCropSource() above); starting the
+            // copy's own list empty means new heal clicks on the copy affect
+            // only the copy, not a phantom re-application of the original's.
+            copy.heals.clear();
+            // Encoding a full-res PNG synchronously here would freeze the UI
+            // for several seconds; write it in the background instead (the
+            // in-memory cache above already makes the layer fully usable).
+            (void)QtConcurrent::run([snapshot, pngPath] { snapshot.save(pngPath); });
+        } else {
+            copy.type = MaskType::None; // fallback: old pass-through behavior
+        }
+    }
     copy.groupId.clear(); // a lone duplicate leaves its group, even if the original had one
     copy.name = copy.name.isEmpty() ? QStringLiteral("Layer copy")
                                     : copy.name + QStringLiteral(" copy");
-    int insertAt = m_activeMask + 1;
+    // masks[0] is the topmost/frontmost layer (see LayersPanel::doRebuildList),
+    // so the copy must land at the original's own index (pushing the
+    // original one slot higher/backward) to appear one layer up/in-front —
+    // inserting at +1 would instead place it behind the original.
+    int insertAt = m_activeMask;
     m_adj.masks.insert(insertAt, copy);
     m_activeMask = insertAt;
     m_maskMode = (copy.type != MaskType::None);

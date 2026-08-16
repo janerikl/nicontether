@@ -1,5 +1,6 @@
 #include "edit/Adjustments.h"
 
+#include "edit/HealTool.h"
 #include "edit/ShapeTool.h"
 #include "edit/TextTool.h"
 
@@ -1210,6 +1211,12 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             p.setRenderHint(QPainter::SmoothPixmapTransform, true);
             p.drawImage(frame.topLeft(), fitted);
             p.end();
+            // Heal ops owned by this layer (see Mask::heals) — applied in the
+            // same untoned, oriented-image/pre-crop pixel space as the global
+            // Adjustments::heals, but only to this layer's own content, so a
+            // duplicated/independent layer can be healed without touching the
+            // original it was copied from.
+            if (!m.heals.isEmpty()) applyHeal(loc, m.heals);
             loc = applyLayerContent(loc, m.adj);
         } else if (backgroundLayer) {
             // Full-frame, non-repositionable: just the tab's base photo

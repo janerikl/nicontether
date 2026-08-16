@@ -1,6 +1,7 @@
 #include "ui/PreferencesDialog.h"
 
 #include "camera/CameraModels.h"
+#include "ui/ShortcutRegistry.h"
 
 #include <QComboBox>
 #include <QSpinBox>
@@ -17,6 +18,9 @@
 #include <QTreeWidget>
 #include <QHeaderView>
 #include <QFont>
+#include <QKeySequenceEdit>
+#include <QMessageBox>
+#include <QMap>
 
 void afFrameForModel(const QString &id, int &w, int &h) {
     QSettings s;
@@ -110,83 +114,120 @@ QWidget *PreferencesDialog::buildGeneralPage() {
 }
 
 namespace {
-// One keyboard shortcut reference entry: display name + key text. Grouped
-// under a category heading in the Keyboard Shortcuts page. Reference-only —
-// this mirrors the shortcuts wired via setShortcut()/QShortcut in
-// RetouchWindow.cpp and TetherView.cpp; it doesn't rebind anything.
-struct ShortcutEntry {
-    const char *action;
-    const char *keys;
-};
-struct ShortcutGroup {
-    const char *heading;
-    std::initializer_list<ShortcutEntry> entries;
-};
-constexpr ShortcutGroup kShortcutGroups[] = {
-    {"Menu", {
-        {"New…", "Ctrl+N"},
-        {"Save", "Ctrl+S"},
-        {"Undo", "Ctrl+Z"},
-        {"Redo", "Ctrl+Y"},
-        {"Copy Edits", "Ctrl+Shift+C"},
-        {"Paste Edits", "Ctrl+Shift+V"},
-        {"Sync Edits to Selected", "Ctrl+Shift+S"},
-        {"Group Shapes/Layers", "Ctrl+G"},
-        {"Ungroup Shapes/Layers", "Ctrl+Shift+G"},
-        {"Preferences…", "Ctrl+, / F12"},
-    }},
-    {"Tools", {
-        {"Zoom", "Z"},
-        {"Crop", "C"},
-        {"Spot Heal", "H"},
-        {"Brush", "B"},
-        {"Erase", "E"},
-        {"Remove Object", "J"},
-        {"Text", "T"},
-        {"Shape", "U"},
-        {"Local Masks", "K"},
-        {"Erase instead of paint (while Brush is active)", "Alt + drag"},
-        {"Resize brush (while Brush/Erase is active)", "Ctrl + scroll wheel"},
-    }},
-    {"Canvas", {
-        {"Deselect all tools", "Esc"},
-        {"Fit to window", "Ctrl+0"},
-        {"Swap foreground/background color", "X"},
-        {"Reset colors", "D"},
-        {"Fill with background color", "Ctrl+Backspace"},
-        {"Fill with foreground color", "Alt+Backspace"},
-        {"Capture (tethering)", "Space"},
-    }},
-    {"Layers", {
-        {"Delete selected layer", "Delete"},
-    }},
-};
+// Role used to stash the registry id on each leaf row so we know which
+// binding a given tree item refers to.
+constexpr int kShortcutIdRole = Qt::UserRole + 1;
 } // namespace
 
 QWidget *PreferencesDialog::buildShortcutsPage() {
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
 
-    auto *tree = new QTreeWidget;
-    tree->setColumnCount(2);
-    tree->setHeaderLabels({"Action", "Shortcut"});
-    tree->setRootIsDecorated(true);
-    tree->setAlternatingRowColors(true);
-    tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_shortcutsTree = new QTreeWidget;
+    m_shortcutsTree->setColumnCount(2);
+    m_shortcutsTree->setHeaderLabels({"Action", "Shortcut"});
+    m_shortcutsTree->setRootIsDecorated(true);
+    m_shortcutsTree->setAlternatingRowColors(true);
+    m_shortcutsTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_shortcutsTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    layout->addWidget(m_shortcutsTree);
 
-    for (const ShortcutGroup &group : kShortcutGroups) {
-        auto *heading = new QTreeWidgetItem(tree, {group.heading});
-        QFont f = heading->font(0);
-        f.setBold(true);
-        heading->setFont(0, f);
-        heading->setFlags(heading->flags() & ~Qt::ItemIsSelectable);
-        for (const ShortcutEntry &e : group.entries)
-            new QTreeWidgetItem(heading, {e.action, e.keys});
-        heading->setExpanded(true);
-    }
-    layout->addWidget(tree);
+    auto *hint = new QLabel("Double-click a shortcut to rebind it.");
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    auto *buttons = new QHBoxLayout;
+    m_resetShortcut = new QPushButton("Reset to Default");
+    m_resetShortcut->setEnabled(false);
+    m_resetAllShortcuts = new QPushButton("Reset All");
+    buttons->addWidget(m_resetShortcut);
+    buttons->addWidget(m_resetAllShortcuts);
+    buttons->addStretch(1);
+    layout->addLayout(buttons);
+
+    reloadShortcutsTree();
+
+    connect(m_shortcutsTree, &QTreeWidget::itemDoubleClicked, this,
+            [this](QTreeWidgetItem *item, int column) {
+                if (column != 1) return;
+                beginEditShortcut(item);
+            });
+    connect(m_shortcutsTree, &QTreeWidget::itemSelectionChanged, this, [this] {
+        auto items = m_shortcutsTree->selectedItems();
+        m_resetShortcut->setEnabled(!items.isEmpty() &&
+                                     !items.first()->data(0, kShortcutIdRole).toString().isEmpty());
+    });
+    connect(m_resetShortcut, &QPushButton::clicked, this, [this] {
+        auto items = m_shortcutsTree->selectedItems();
+        if (items.isEmpty()) return;
+        const QString id = items.first()->data(0, kShortcutIdRole).toString();
+        if (id.isEmpty()) return;
+        ShortcutRegistry::instance().resetToDefault(id);
+        reloadShortcutsTree();
+    });
+    connect(m_resetAllShortcuts, &QPushButton::clicked, this, [this] {
+        if (QMessageBox::question(this, "Reset All Shortcuts",
+                                   "Reset every keyboard shortcut back to its default?") !=
+            QMessageBox::Yes)
+            return;
+        ShortcutRegistry::instance().resetAllToDefaults();
+        reloadShortcutsTree();
+    });
+
     return page;
+}
+
+void PreferencesDialog::reloadShortcutsTree() {
+    m_shortcutsTree->clear();
+
+    QMap<QString, QTreeWidgetItem *> headings;
+    for (const ShortcutRegistry::Entry &e : ShortcutRegistry::instance().entries()) {
+        QTreeWidgetItem *heading = headings.value(e.category, nullptr);
+        if (!heading) {
+            heading = new QTreeWidgetItem(m_shortcutsTree, {e.category});
+            QFont f = heading->font(0);
+            f.setBold(true);
+            heading->setFont(0, f);
+            heading->setFlags(heading->flags() & ~Qt::ItemIsSelectable);
+            heading->setExpanded(true);
+            headings.insert(e.category, heading);
+        }
+        auto *row = new QTreeWidgetItem(heading, {e.label, e.get().toString()});
+        row->setData(0, kShortcutIdRole, e.id);
+    }
+    m_resetShortcut->setEnabled(false);
+}
+
+void PreferencesDialog::beginEditShortcut(QTreeWidgetItem *item) {
+    const QString id = item->data(0, kShortcutIdRole).toString();
+    if (id.isEmpty()) return; // category heading row
+
+    auto *editor = new QKeySequenceEdit(QKeySequence::fromString(item->text(1)));
+    m_shortcutsTree->setItemWidget(item, 1, editor);
+    editor->setFocus();
+
+    connect(editor, &QKeySequenceEdit::editingFinished, this, [this, item, id, editor] {
+        const QKeySequence seq = editor->keySequence();
+        m_shortcutsTree->setItemWidget(item, 1, nullptr);
+        editor->deleteLater();
+
+        const QString conflictId = ShortcutRegistry::instance().idBoundTo(seq);
+        if (!conflictId.isEmpty() && conflictId != id) {
+            QString conflictLabel;
+            for (const ShortcutRegistry::Entry &e : ShortcutRegistry::instance().entries())
+                if (e.id == conflictId) conflictLabel = e.label;
+            if (QMessageBox::question(
+                    this, "Shortcut Already In Use",
+                    QString("\"%1\" is already used by \"%2\". Reassign it to this action?")
+                        .arg(seq.toString(), conflictLabel)) != QMessageBox::Yes) {
+                reloadShortcutsTree();
+                return;
+            }
+        }
+
+        ShortcutRegistry::instance().rebind(id, seq);
+        reloadShortcutsTree();
+    });
 }
 
 QString PreferencesDialog::currentModelId() const {

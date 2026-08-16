@@ -215,6 +215,17 @@ struct ErasePoint {
     }
 };
 
+// A single spot-heal: a circular region (in oriented-image coordinates, i.e.
+// after rotation/flip but before crop) that gets replaced with a nearby patch.
+struct HealOp {
+    int x = 0;
+    int y = 0;
+    int radius = 0;
+    bool operator==(const HealOp &o) const {
+        return x == o.x && y == o.y && radius == o.radius;
+    }
+};
+
 // One adjustment layer in the stack. All geometry is stored normalized to the
 // image WIDTH (x' = x/W, y' = y/W) so it is resolution-independent and scales
 // uniformly between the display preview and full-res export. Applied after
@@ -395,6 +406,13 @@ struct Mask {
     // text, text box, or an adjustment mask).
     QVector<ErasePoint> eraseStrokes;
 
+    // Spot-heal ops owned by this layer, in the same oriented-image,
+    // pre-crop coordinate space as Adjustments::heals — but applied to this
+    // layer's own pixel content (image/background layers only; see
+    // applyMasks in Adjustments.cpp) instead of the tab's base image, so
+    // healing a duplicated/independent layer doesn't touch the original.
+    QVector<HealOp> heals;
+
     // Active-selection clip (width-normalized), baked in by RetouchTab
     // whenever a marquee/lasso/magic-wand selection is active while this
     // layer is being painted/erased — new pixels only land inside it, tested
@@ -417,6 +435,7 @@ struct Mask {
                std::abs(radiusY - o.radiusY) < 1e-9 &&
                std::abs(angle - o.angle) < 1e-9 && p0 == o.p0 && p1 == o.p1 &&
                stroke == o.stroke && eraseStrokes == o.eraseStrokes &&
+               heals == o.heals &&
                std::abs(brushRadius - o.brushRadius) < 1e-9 &&
                std::abs(hardness - o.hardness) < 1e-9 && autoMask == o.autoMask &&
                std::abs(penGrade - o.penGrade) < 1e-9 &&
@@ -486,17 +505,6 @@ struct BrushRasterCache {
     bool autoMask = false;
     BrushStrokePoint lastPoint;
     bool valid = false;
-};
-
-// A single spot-heal: a circular region (in oriented-image coordinates, i.e.
-// after rotation/flip but before crop) that gets replaced with a nearby patch.
-struct HealOp {
-    int x = 0;
-    int y = 0;
-    int radius = 0;
-    bool operator==(const HealOp &o) const {
-        return x == o.x && y == o.y && radius == o.radius;
-    }
 };
 
 // One text overlay. `pos` is in oriented-image pixel space, pre-crop (same

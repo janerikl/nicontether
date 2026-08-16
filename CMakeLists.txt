@@ -16,11 +16,14 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GPHOTO2 REQUIRED IMPORTED_TARGET libgphoto2)
 pkg_check_modules(LIBRAW REQUIRED IMPORTED_TARGET libraw)
 pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)
+pkg_check_modules(LIBMTP REQUIRED IMPORTED_TARGET libmtp)
 
 add_executable(photonloom
     src/main.cpp
     src/camera/CameraWorker.cpp
     src/camera/CameraController.cpp
+    src/device/MtpWorker.cpp
+    src/device/MtpController.cpp
     src/capture/SessionManager.cpp
     src/capture/NefPreview.cpp
     src/ui/TetherView.cpp
@@ -28,6 +31,7 @@ add_executable(photonloom
     src/ui/PannableScrollArea.cpp
     src/ui/ControlsPanel.cpp
     src/ui/PreferencesDialog.cpp
+    src/ui/ShortcutRegistry.cpp
     src/ui/FilmstripWidget.cpp
     src/ui/HistogramWidget.cpp
     src/ui/LevelsPanel.cpp
@@ -46,6 +50,7 @@ add_executable(photonloom
     src/ui/BrowseTab.cpp
     src/edit/Adjustments.cpp
     src/edit/RawLoader.cpp
+    src/edit/RawMetadata.cpp
     src/edit/ImageCanvas.cpp
     src/edit/RetouchTab.cpp
     src/edit/RetouchWindow.cpp
@@ -75,7 +80,7 @@ add_executable(photonloom
 
 target_include_directories(photonloom PRIVATE src)
 target_link_libraries(photonloom PRIVATE
-    Qt6::Widgets Qt6::Concurrent Qt6::Svg PkgConfig::GPHOTO2 PkgConfig::LIBRAW PkgConfig::LIBZIP)
+    Qt6::Widgets Qt6::Concurrent Qt6::Svg PkgConfig::GPHOTO2 PkgConfig::LIBRAW PkgConfig::LIBZIP PkgConfig::LIBMTP)
 
 # `sudo cmake --install build` copies the binary to ${CMAKE_INSTALL_PREFIX}/bin
 # (default /usr/local/bin).

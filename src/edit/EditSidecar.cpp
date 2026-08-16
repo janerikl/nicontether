@@ -264,6 +264,10 @@ QJsonObject adjustmentsToJson(const Adjustments &a) {
             for (const ErasePoint &ep : m.eraseStrokes)
                 erases.append(QJsonArray{ep.pt.x(), ep.pt.y(), ep.radius});
             j["eraseStrokes"] = erases;
+            QJsonArray maskHeals;
+            for (const HealOp &hp : m.heals)
+                maskHeals.append(QJsonObject{{"x", hp.x}, {"y", hp.y}, {"r", hp.radius}});
+            j["heals"] = maskHeals;
             QJsonObject ad;
             ad["brightness"] = m.adj.brightness;
             ad["contrast"] = m.adj.contrast;
@@ -511,6 +515,10 @@ Adjustments adjustmentsFromJson(const QJsonObject &o) {
             if (p.size() >= 3)
                 m.eraseStrokes.append(ErasePoint{
                     QPointF(p[0].toDouble(), p[1].toDouble()), p[2].toDouble()});
+        }
+        for (const QJsonValue &hv : j["heals"].toArray()) {
+            QJsonObject h = hv.toObject();
+            m.heals.append(HealOp{h["x"].toInt(), h["y"].toInt(), h["r"].toInt()});
         }
         QJsonObject ad = j["adj"].toObject();
         m.adj.brightness = ad["brightness"].toInt();

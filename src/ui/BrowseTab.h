@@ -3,10 +3,15 @@
 #include <QWidget>
 #include <QString>
 #include <QStringList>
+#include <QVector>
+
+#include "device/MtpEntry.h"
 
 class QListWidget;
 class QListWidgetItem;
 class QPushButton;
+class QLabel;
+class MtpController;
 
 // Visual browser for picking photos to open in Retouch. Left side lists
 // capture sessions (dated folders under SessionManager's base dir, plus
@@ -31,14 +36,29 @@ signals:
 private:
     void populateSourceList();
     void loadFolder(const QString &dir);
+    void loadDeviceGrid();
     void onSourceActivated(QListWidgetItem *item);
     void onGridActivated(QListWidgetItem *item);
+    void onGridSelectionChanged();
     void onOpenClicked();
+    void onImportClicked();
     void browseForFolder();
+    void onDeviceConnected(const QString &name);
+    void onDeviceDisconnected();
+    void onFilesListed(const QVector<MtpEntry> &entries);
+    void onThumbnailReady(quint32 id, const QImage &image);
+    void onImportComplete(const QStringList &savedPaths);
 
     QListWidget *m_sourceList = nullptr;
     QListWidget *m_grid = nullptr;
+    QLabel *m_previewImage = nullptr;
+    QLabel *m_previewMeta = nullptr;
     QPushButton *m_openButton = nullptr;
     QPushButton *m_browseButton = nullptr;
     QString m_currentDir;
+
+    MtpController *m_mtpController = nullptr;
+    QString m_deviceName;      // empty when no device connected
+    bool m_deviceSelected = false; // true while the grid shows device contents
+    QVector<MtpEntry> m_deviceEntries;
 };

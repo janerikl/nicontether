@@ -72,29 +72,59 @@ void applyHealOp(QImage &img, const HealOp &op) {
     const int W = img.width(), H = img.height();
     if (r < 1 || W == 0 || H == 0) return;
 
-    // Find the smoothest source patch among candidate directions.
-    static const double dirs[8][2] = {
+    // Reference colour of the surroundings (a ring outside the healed area,
+    // so the blemish itself is excluded), used both to steer source-patch
+    // selection and to colour-match the copied patch.
+    double tmr, tmg, tmb;
+    ringMean(img, op.x, op.y, r, int(r * 1.6), tmr, tmg, tmb);
+
+    // Find the best source patch among candidate directions/distances: one
+    // that is both smooth (low variance) and close in colour to the target's
+    // surroundings, so a same-toned patch is preferred over a merely-flat one
+    // that happens to be a different shade.
+    static const double dirs[16][2] = {
         {1, 0}, {-1, 0}, {0, 1}, {0, -1},
+        {0.924, 0.383}, {0.383, 0.924}, {-0.383, 0.924}, {-0.924, 0.383},
+        {-0.924, -0.383}, {-0.383, -0.924}, {0.383, -0.924}, {0.924, -0.383},
         {0.707, 0.707}, {-0.707, 0.707}, {0.707, -0.707}, {-0.707, -0.707}};
-    const double dist = r * 2.4;
+    static const double dists[2] = {2.2, 2.8};
     int bestX = 0, bestY = 0;
-    double bestVar = 1e18;
+    double bestScore = 1e18;
     bool found = false;
-    for (auto &d : dirs) {
-        int sx = op.x + int(d[0] * dist);
-        int sy = op.y + int(d[1] * dist);
-        if (sx - r < 0 || sy - r < 0 || sx + r >= W || sy + r >= H) continue;
-        double v = circleVariance(img, sx, sy, r);
-        if (v < bestVar) { bestVar = v; bestX = sx; bestY = sy; found = true; }
+    if (W <= 2 * r || H <= 2 * r) return; // image too small to sample any patch
+    for (double distMul : dists) {
+        const double dist = r * distMul;
+        for (auto &d : dirs) {
+            int sx = op.x + int(d[0] * dist);
+            int sy = op.y + int(d[1] * dist);
+            // Clamp into bounds rather than discarding: keeps candidates
+            // usable near canvas edges/corners instead of silently failing
+            // to find any source patch at all.
+            sx = std::clamp(sx, r, W - 1 - r);
+            sy = std::clamp(sy, r, H - 1 - r);
+            // Clamping can pull a candidate back toward the target near an
+            // edge/corner; skip it if the source and target discs would
+            // overlap, since the compositing pass reads and writes the same
+            // image in place and requires clean (non-overlapping) source data.
+            double ddx = sx - op.x, ddy = sy - op.y;
+            if (ddx * ddx + ddy * ddy < double(4 * r * r)) continue;
+            double v = circleVariance(img, sx, sy, r);
+            double smr, smg, smb;
+            circleMean(img, sx, sy, r, smr, smg, smb);
+            double cdr = smr - tmr, cdg = smg - tmg, cdb = smb - tmb;
+            double colorDist2 = cdr * cdr + cdg * cdg + cdb * cdb;
+            // Colour mismatch dominates the score so a same-toned but
+            // slightly textured patch beats a flat but wrong-toned one.
+            double score = v + colorDist2 * 4.0;
+            if (score < bestScore) { bestScore = score; bestX = sx; bestY = sy; found = true; }
+        }
     }
     if (!found) return; // no room to sample a source
 
-    // Brightness match: shift source so its mean equals the target's
-    // surroundings (a ring outside the healed area, so the blemish itself is
-    // excluded from the reference).
-    double smr, smg, smb, tmr, tmg, tmb;
+    // Brightness/colour match: shift source so its mean equals the target's
+    // surroundings.
+    double smr, smg, smb;
     circleMean(img, bestX, bestY, r, smr, smg, smb);
-    ringMean(img, op.x, op.y, r, int(r * 1.6), tmr, tmg, tmb);
     const double dr = tmr - smr, dg = tmg - smg, db = tmb - smb;
 
     // Copy source→target with a feathered alpha (source patch does not overlap

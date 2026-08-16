@@ -1,4 +1,5 @@
 #include "ui/TetherView.h"
+#include "ui/ShortcutRegistry.h"
 
 #include "camera/CameraController.h"
 #include "ui/LiveViewWidget.h"
@@ -108,6 +109,7 @@ void TetherView::buildUi() {
     m_captureShortcut->setContext(Qt::ApplicationShortcut);
     connect(m_captureShortcut, &QShortcut::activated,
             m_controller, &CameraController::capture);
+    ShortcutRegistry::instance().registerShortcut("tether.capture", "Tether", "Capture (tethering)", m_captureShortcut, QKeySequence(Qt::Key_Space));
 
     // Center: the live view fills the widget.
     auto *vbox = new QVBoxLayout(this);
