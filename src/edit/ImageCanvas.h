@@ -171,6 +171,15 @@ public:
     // Alt+drag rather than a separate erase mechanism.
     void setMaskForceErase(bool on);
     void setActiveMask(bool has, const Mask &m);
+    // Drops this canvas's shared reference to the active mask's stroke
+    // history just before the caller appends a new point to its own copy.
+    // Without this, m_activeMask.stroke stays a live QVector COW-share of
+    // the document's stroke vector between dabs, so every append() during a
+    // drawing stroke forces Qt to deep-copy the entire stroke-so-far before
+    // adding the one new point — turning an O(1) append into O(n) and a full
+    // stroke into O(n^2), which is what made long pen/paint strokes
+    // progressively laggier. Call this right before appending.
+    void releaseActiveMaskStroke();
     // Live coverage preview shown while painting a brush mask, independent of
     // whether any local adjustment sliders have been touched yet.
     // Existing heal spots, shown as a reddish overlay while hovering in heal

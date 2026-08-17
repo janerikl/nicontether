@@ -2094,6 +2094,9 @@ void RetouchTab::onEraseAt(const QPointF &ptNorm, bool newStroke) {
         // rad, so hardness=0 -> falloff spans the whole radius).
         BrushStrokePoint sp{ptNorm, /*erase=*/true, radiusNorm, /*hardness=*/0.0,
                             m.paintColor.rgb(), newStroke};
+        // See onMaskBrushPoint: drop the canvas's shared stroke reference
+        // first so this append doesn't force a full COW deep-copy.
+        m_canvas->releaseActiveMaskStroke();
         m.stroke.append(sp);
         retoneDrag(newStroke);
         return;
@@ -2136,6 +2139,9 @@ void RetouchTab::onCloneStrokePoint(const QPointF &ptNorm, const QPointF &source
     sp.penGrade = m.penGrade;
     sp.isClone = true;
     sp.cloneSourcePt = sourceNorm;
+    // See onMaskBrushPoint: drop the canvas's shared stroke reference first
+    // so this append doesn't force a full COW deep-copy.
+    m_canvas->releaseActiveMaskStroke();
     m.stroke.append(sp);
     pushMaskGizmo();
     retoneDrag(newStroke);
@@ -3030,6 +3036,10 @@ void RetouchTab::onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStr
     sp.pressure = pressure;
     sp.isPen = m_penToolActive;
     sp.penGrade = m.penGrade;
+    // Drop the canvas's shared copy of the stroke before appending, or Qt's
+    // QVector copy-on-write forces a full deep-copy of the stroke-so-far on
+    // every dab (see releaseActiveMaskStroke).
+    m_canvas->releaseActiveMaskStroke();
     m.stroke.append(sp);
     pushMaskGizmo(); // show the painted coverage right away
     retoneDrag(newStroke);

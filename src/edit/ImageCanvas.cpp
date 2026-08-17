@@ -913,6 +913,10 @@ void ImageCanvas::setMaskForceErase(bool on) {
     m_maskForceErase = on;
 }
 
+void ImageCanvas::releaseActiveMaskStroke() {
+    m_activeMask.stroke = QVector<BrushStrokePoint>();
+}
+
 void ImageCanvas::setActiveMask(bool has, const Mask &m) {
     m_hasActiveMask = has;
     m_activeMask = m;
