@@ -2,9 +2,62 @@
 
 #include <libraw/libraw.h>
 
-namespace RawLoader {
+#include <QDataStream>
+#include <QFile>
+#include <QFileInfo>
 
-QImage load(const QString &rawPath) {
+namespace RawLoader {
+namespace {
+
+// Full-resolution demosaic is the single most CPU-heavy step in opening a
+// RAW file. The decoded pixels never change for a given source file (there's
+// no half_size/quality shortcut here — see RawLoader.h), so cache the result
+// next to the source and skip LibRaw entirely on repeat opens. Invalidated by
+// source size+mtime, so re-exporting/replacing the NEF picks up fresh data.
+QString cachePathFor(const QString &rawPath) { return rawPath + QStringLiteral(".nte.rawcache"); }
+
+constexpr quint32 kCacheMagic = 0x4E524331; // "NRC1"
+
+QImage loadFromCache(const QString &rawPath) {
+    const QFileInfo srcInfo(rawPath);
+    QFile f(cachePathFor(rawPath));
+    if (!f.open(QIODevice::ReadOnly)) return QImage();
+
+    QDataStream in(&f);
+    in.setVersion(QDataStream::Qt_6_0);
+    quint32 magic = 0;
+    qint64 srcSize = 0, srcMTime = 0;
+    qint32 width = 0, height = 0, bytesPerLine = 0, format = 0;
+    in >> magic >> srcSize >> srcMTime >> width >> height >> bytesPerLine >> format;
+    if (in.status() != QDataStream::Ok || magic != kCacheMagic) return QImage();
+    if (srcSize != srcInfo.size() || srcMTime != srcInfo.lastModified().toMSecsSinceEpoch())
+        return QImage(); // source changed since the cache was written
+
+    QImage img(width, height, static_cast<QImage::Format>(format));
+    if (img.isNull()) return QImage();
+    for (int y = 0; y < height; ++y) {
+        if (in.readRawData(reinterpret_cast<char *>(img.scanLine(y)), bytesPerLine) != bytesPerLine)
+            return QImage();
+    }
+    return img;
+}
+
+void saveToCache(const QString &rawPath, const QImage &img) {
+    const QFileInfo srcInfo(rawPath);
+    QFile f(cachePathFor(rawPath));
+    if (!f.open(QIODevice::WriteOnly)) return;
+
+    QDataStream out(&f);
+    out.setVersion(QDataStream::Qt_6_0);
+    out << kCacheMagic << static_cast<qint64>(srcInfo.size())
+        << static_cast<qint64>(srcInfo.lastModified().toMSecsSinceEpoch())
+        << static_cast<qint32>(img.width()) << static_cast<qint32>(img.height())
+        << static_cast<qint32>(img.bytesPerLine()) << static_cast<qint32>(img.format());
+    for (int y = 0; y < img.height(); ++y)
+        out.writeRawData(reinterpret_cast<const char *>(img.constScanLine(y)), img.bytesPerLine());
+}
+
+QImage decode(const QString &rawPath) {
     LibRaw raw;
 
     // 16-bit sRGB output with camera white balance — a natural-looking base.
@@ -51,6 +104,17 @@ QImage load(const QString &rawPath) {
     LibRaw::dcraw_clear_mem(out);
     raw.recycle();
     return result;
+}
+
+} // namespace
+
+QImage load(const QString &rawPath) {
+    QImage cached = loadFromCache(rawPath);
+    if (!cached.isNull()) return cached;
+
+    QImage img = decode(rawPath);
+    if (!img.isNull()) saveToCache(rawPath, img);
+    return img;
 }
 
 QImage loadAny(const QString &path) {

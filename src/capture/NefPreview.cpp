@@ -1,12 +1,34 @@
 #include "capture/NefPreview.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QByteArray>
+#include <QHash>
+#include <QList>
 #include <vector>
 #include <algorithm>
 
 namespace NefPreview {
 namespace {
+
+// A photo's embedded preview is looked up from more than one place in the
+// same short window (e.g. BrowseTab's grid/preview-pane on selection, then
+// RetouchWindow's filmstrip on open) — this avoids re-scanning the whole
+// multi-ten-MB file's bytes for each lookup. Small and UI-thread-only, so a
+// plain bounded map is enough; keyed by path+size+mtime so a replaced file
+// on disk isn't served a stale preview.
+struct CacheKey {
+    QString path;
+    qint64 size = 0;
+    qint64 mtimeMs = 0;
+    bool operator==(const CacheKey &o) const {
+        return size == o.size && mtimeMs == o.mtimeMs && path == o.path;
+    }
+};
+
+constexpr int kCacheCapacity = 8;
+QList<CacheKey> g_cacheOrder;
+QHash<QString, QPair<CacheKey, QImage>> g_cache; // keyed by path for lookup
 
 // Given the offset of a JPEG SOI (0xFFD8) in `p`, walk the JPEG segment markers
 // to find the true end (one past the EOI). This correctly handles 0xFF00 byte
@@ -53,6 +75,12 @@ qsizetype jpegEnd(const uchar *p, qsizetype n, qsizetype start) {
 } // namespace
 
 QImage extract(const QString &nefPath) {
+    const QFileInfo fi(nefPath);
+    const CacheKey key{nefPath, fi.size(), fi.lastModified().toMSecsSinceEpoch()};
+    auto it = g_cache.constFind(nefPath);
+    if (it != g_cache.constEnd() && it->first == key)
+        return it->second;
+
     QFile f(nefPath);
     if (!f.open(QIODevice::ReadOnly)) return QImage();
     const QByteArray data = f.readAll();
@@ -82,13 +110,23 @@ QImage extract(const QString &nefPath) {
     std::sort(streams.begin(), streams.end(),
               [](const auto &a, const auto &b) { return a.second > b.second; });
 
+    QImage result;
     for (const auto &s : streams) {
         QImage img;
         if (img.loadFromData(p + s.first, static_cast<int>(s.second), "JPEG") &&
-            !img.isNull())
-            return img;
+            !img.isNull()) {
+            result = img;
+            break;
+        }
     }
-    return QImage();
+
+    g_cache.insert(nefPath, {key, result});
+    g_cacheOrder.append(key);
+    if (g_cacheOrder.size() > kCacheCapacity) {
+        g_cache.remove(g_cacheOrder.first().path);
+        g_cacheOrder.removeFirst();
+    }
+    return result;
 }
 
 } // namespace NefPreview
