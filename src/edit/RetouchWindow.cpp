@@ -1784,6 +1784,10 @@ void RetouchWindow::buildToolPanel() {
             }
             if (!tab->canActivateTool(MaskType::Paint)) {
                 tab->addMask(MaskType::Paint);
+                // addMask() turns on drag-mask mode for the new Paint layer,
+                // which would swallow Clone's own alt-click/drag handling
+                // below (see the comment further down). Turn it back off.
+                tab->setMaskMode(false);
                 refreshMaskPanel();
             }
             if (!tab->canActivateTool(MaskType::Paint)) {
@@ -1805,8 +1809,11 @@ void RetouchWindow::buildToolPanel() {
             // addMask()/canActivateTool above already make the Paint layer
             // "active" so its gizmo/overlay still shows via the normal
             // selection mechanism.
-            tab->setActiveMaskShape(false, 0.0, m_cloneHardness->value() / 100.0,
-                                    m_cloneSize->value() / 100.0, false);
+            {
+                const int w = tab->imageWidth();
+                const double norm = w > 0 ? m_cloneSize->value() / double(w) : 0.006;
+                tab->setActiveMaskShape(false, 0.0, 1.0, norm, false);
+            }
             if (m_layersDock) { m_layersDock->show(); m_layersDock->raise(); }
             refreshMaskPanel();
         } else {
@@ -2315,27 +2322,26 @@ void RetouchWindow::buildToolOptionsBar() {
     auto *cloneRow = new QHBoxLayout(clonePage);
     cloneRow->setContentsMargins(4, 2, 4, 2);
     m_cloneSize = new QSlider(Qt::Horizontal);
-    m_cloneSize->setRange(1, 40);
-    m_cloneSize->setValue(10);
+    m_cloneSize->setRange(1, 400);
+    m_cloneSize->setValue(20);
     m_cloneSize->setMinimumWidth(140);
     cloneRow->addWidget(new QLabel("Size:"));
     cloneRow->addWidget(m_cloneSize);
-    m_cloneHardness = new QSlider(Qt::Horizontal);
-    m_cloneHardness->setRange(0, 100);
-    m_cloneHardness->setValue(60);
-    m_cloneHardness->setMinimumWidth(120);
-    cloneRow->addWidget(new QLabel("Hardness:"));
-    cloneRow->addWidget(m_cloneHardness);
     cloneRow->addStretch(1);
     m_toolOptionsStack->addWidget(clonePage);
 
+    // Clone always stamps at full hardness (hard edge): a soft edge blends a
+    // dab sampled from elsewhere in the photo against destination pixels of
+    // a slightly different tone, which shows up as a visible halo/ring right
+    // at the dab boundary. A hard edge avoids that seam.
     auto applyCloneShape = [this] {
         RetouchTab *tab = currentTab();
-        if (tab) tab->setActiveMaskShape(false, 0.0, m_cloneHardness->value() / 100.0,
-                                        m_cloneSize->value() / 100.0, false);
+        if (!tab) return;
+        const int w = tab->imageWidth();
+        const double norm = w > 0 ? m_cloneSize->value() / double(w) : 0.006;
+        tab->setActiveMaskShape(false, 0.0, 1.0, norm, false);
     };
     connect(m_cloneSize, &QSlider::valueChanged, this, [applyCloneShape](int) { applyCloneShape(); });
-    connect(m_cloneHardness, &QSlider::valueChanged, this, [applyCloneShape](int) { applyCloneShape(); });
 
     // --- Selection Brush page (index 11) ---
     auto *selectBrushPage = new QWidget;
@@ -3507,6 +3513,14 @@ void RetouchWindow::wireTabSignals(RetouchTab *tab) {
             m_paintSize->setValue(std::clamp(px, m_paintSize->minimum(), m_paintSize->maximum()));
             m_syncingPaintSize = false;
             updatePaintSizePxLabel();
+        }
+        // Clone paints into the same Paint-type mask and shares this signal
+        // for its ctrl+wheel resize; keep the Clone Size slider in sync too.
+        if (m_cloneSize) {
+            QSignalBlocker b(m_cloneSize);
+            const int w = tab->imageWidth();
+            const int px = w > 0 ? int(std::lround(radiusNorm * w)) : m_cloneSize->value();
+            m_cloneSize->setValue(std::clamp(px, m_cloneSize->minimum(), m_cloneSize->maximum()));
         }
     });
     connect(tab, &RetouchTab::selectBrushChanged, this, [this, tab](double radiusNorm) {

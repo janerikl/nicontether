@@ -260,7 +260,6 @@ private:
     QSlider *m_selectBrushSize = nullptr;
     QToolButton *m_cloneToggle = nullptr; // left icon bar: clone-stamp tool (requires a Paint layer already selected)
     QSlider *m_cloneSize = nullptr;
-    QSlider *m_cloneHardness = nullptr;
     ColorSwatchWidget *m_colorSwatch = nullptr; // left icon bar: fg/bg color swatch
     QDockWidget *m_layersDock = nullptr;
     LayersPanel *m_layersPanel = nullptr;

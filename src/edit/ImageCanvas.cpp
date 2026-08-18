@@ -1631,6 +1631,19 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         p.drawRect(rect().adjusted(2, 2, -2, -2));
     }
 
+    // Clone stamp brush-footprint cursor: shows the current brush size at
+    // the mouse position before/while clicking, same convention as the
+    // Local-mask gizmo's Brush/Paint cursor (m.brushRadius * image width *
+    // zoom), so it stays accurate across image resolutions and zoom levels.
+    if (m_cloneMode && m_hasActiveMask && !m_img.isNull()) {
+        double rad = m_activeMask.brushRadius * m_img.width() * m_scale;
+        p.save();
+        p.setPen(QPen(QColor(255, 255, 255, 200), 1));
+        p.setBrush(QColor(120, 200, 255, 30));
+        p.drawEllipse(QPointF(m_mousePos), rad, rad);
+        p.restore();
+    }
+
     // Clone stamp source marker: a small crosshair at the sampled point.
     if (m_cloneMode && m_cloneSourceNorm.x() >= 0 && !m_img.isNull()) {
         QPointF src = normToWidgetTransform().map(
@@ -2404,6 +2417,13 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
             m_lastCloneNorm = n;
             emit cloneStrokePoint(n, n + m_cloneOffsetNorm, false, 1.0);
         }
+        update();
+        return;
+    }
+    if (m_cloneMode) {
+        // Not dragging (handled above): just track the cursor so the brush
+        // footprint preview follows the mouse before the user clicks.
+        m_mousePos = ev->pos();
         update();
         return;
     }
@@ -3267,6 +3287,19 @@ void ImageCanvas::wheelEvent(QWheelEvent *ev) {
         }
         // In brush-mask mode, ctrl+wheel resizes the mask brush the same way.
         if (m_maskMode && (m_maskKind == MaskType::Brush || m_maskKind == MaskType::Paint)) {
+            double notches = ev->angleDelta().y() / 120.0;
+            double r = std::clamp(m_activeMask.brushRadius + notches * kMaskBrushStep,
+                                  kMaskBrushMin, kMaskBrushMax);
+            emit maskBrushRadiusChanged(r);
+            update();
+            ev->accept();
+            return;
+        }
+        // In clone-stamp mode, ctrl+wheel resizes the clone brush the same
+        // way as the mask brush (clone paints into a Paint-type mask, so
+        // reusing maskBrushRadiusChanged keeps m_activeMask.brushRadius and
+        // the Clone Size slider in sync via the same propagation path).
+        if (m_cloneMode && m_hasActiveMask) {
             double notches = ev->angleDelta().y() / 120.0;
             double r = std::clamp(m_activeMask.brushRadius + notches * kMaskBrushStep,
                                   kMaskBrushMin, kMaskBrushMax);
