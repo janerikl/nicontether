@@ -7,6 +7,7 @@
 #include <QElapsedTimer>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <cstdio>
 #include <cstring>
 
@@ -192,5 +193,13 @@ int main(int argc, char *argv[]) {
 
     RetouchWindow window;
     window.show();
+
+    // Launched via "Open With…"/double-click (desktop file's %f/%u), or a
+    // plain `photonloom <file>` from the shell: open it directly instead of
+    // coming up blank. argv[1] is never one of the debug-flag branches above
+    // since those all `return` before reaching here.
+    if (argc >= 2 && QFileInfo::exists(argv[1]))
+        window.openPhoto(argv[1]);
+
     return app.exec();
 }

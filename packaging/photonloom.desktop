@@ -2,7 +2,8 @@
 Type=Application
 Name=Photonloom
 Comment=Tethered capture and photo editing
-Exec=photonloom
+Exec=photonloom %f
 Icon=photonloom
 Terminal=false
 Categories=Graphics;Photography;
+MimeType=image/x-nikon-nef;image/x-canon-cr2;image/x-canon-cr3;image/x-sony-arw;image/x-adobe-dng;image/x-fuji-raf;image/x-panasonic-rw2;image/x-olympus-orf;image/jpeg;image/png;image/tiff;
