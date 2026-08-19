@@ -505,6 +505,15 @@ struct BrushRasterCache {
     bool autoMask = false;
     BrushStrokePoint lastPoint;
     bool valid = false;
+    // Drag-preview dirty-rect fast path (see applyMasks' paintLayer branch):
+    // the fully-composited `img` this mask produced last drag frame, so the
+    // next frame can patch in just the newest dab's bounding box instead of
+    // recompositing the whole buffer. Only valid when the mask has no erase
+    // strokes/bucket fill this frame (those aren't append-only, so a partial
+    // patch could miss pixels outside the new dab's rect) - see
+    // paintDirtyRectEligible in Adjustments.cpp.
+    QImage lastComposite;
+    bool lastCompositeValid = false;
 };
 
 // One text overlay. `pos` is in oriented-image pixel space, pre-crop (same
@@ -816,7 +825,11 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
                         int belowSnapshotIndex = -1,
                         QImage *belowSnapshotOut = nullptr,
                         int resumeFromIndex = -1,
-                        const QImage *resumeImg = nullptr);
+                        const QImage *resumeImg = nullptr,
+                        // Forwarded to applyMasks' dirtyRectOut - see its doc
+                        // comment. Only ever populated on the resumeImg/drag
+                        // path; left untouched otherwise.
+                        QRect *dirtyRectOut = nullptr);
 
 // Composites just the "interactive tier" of masks — MaskType::Paint (the
 // free-draw brush/paint tool), MaskType::Shape, and MaskType::TextBox — on
@@ -870,5 +883,12 @@ QString historyStepLabel(const Adjustments &prev, const Adjustments &curr);
 // instead of visible banding. No-op passthrough (via convertToFormat) if
 // `img` isn't 16-bit per channel.
 QImage ditherTo8Bit(const QImage &img);
+
+// Companion to ditherTo8Bit() for ImageCanvas's drag-preview dirty-rect path
+// (see applyMasks' dirtyRectOut / RenderWorker::done's dirtyRect): patches
+// just `r` of `out` (already Format_ARGB32, same size as `img`) from `img`,
+// instead of re-dithering the whole buffer when only a small region actually
+// changed since the last frame. `r` must be within `img`/`out`'s bounds.
+void ditherRegionInto(QImage &out, const QImage &img, const QRect &r);
 
 Q_DECLARE_METATYPE(Adjustments)

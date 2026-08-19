@@ -40,7 +40,13 @@ public:
         double radius = 0.0;
     };
 
-    void setImage(const QImage &img); // already-adjusted image to show
+    // already-adjusted image to show. `dirtyRect` (image pixel space): when
+    // valid and the image size/format hasn't changed, only that region is
+    // re-dithered into the displayed 8-bit buffer and repainted on screen,
+    // instead of the whole image - see the doc comment on setImage()'s
+    // definition. Leave at the default (invalid QRect) to redo everything,
+    // as before.
+    void setImage(const QImage &img, const QRect &dirtyRect = QRect());
     void setPlaceholder(const QString &text);
     void setCropMode(bool on);
     void setCropAspect(double widthOverHeight); // 0 = freeform

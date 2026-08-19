@@ -43,14 +43,23 @@ void RenderWorker::render(const QImage &src, const Adjustments &adj, int maskSna
 void RenderWorker::renderDragFrame(const QImage &belowSnapshot, int dragMaskIndex,
                                    const Adjustments &adj, const QTransform &orientedToGeom,
                                    double geomRotationDeg, double scale) {
+    QRect dirtyRect;
     QImage result = applyAdjustments(QImage(), adj, &m_brushCache, -1, nullptr,
                                      orientedToGeom, geomRotationDeg, scale,
-                                     -1, nullptr, dragMaskIndex, &belowSnapshot);
-    emit done(result, QImage(), QImage(), -1);
+                                     -1, nullptr, dragMaskIndex, &belowSnapshot, &dirtyRect);
+    emit done(result, QImage(), QImage(), -1, dirtyRect);
 }
 
 namespace {
 constexpr int kDisplayMaxDim = 1600; // interactive preview resolution cap
+// A prior attempt at cutting drag-time CPU downscaled the drag-preview
+// buffer (m_dragBelowSnapshot) below kDisplayMaxDim, since applyMasks' paint
+// compositing used to be O(w*h) per frame regardless of dab size. That
+// worked but visibly softened the in-progress stroke. applyMasks now patches
+// only the bounding box around the newest dab into a cached previous-frame
+// composite (see BrushRasterCache::lastComposite in Adjustments.h/.cpp),
+// so per-frame cost tracks dab size, not buffer resolution - the downscale
+// is no longer needed and m_dragBelowSnapshot is used at full resolution.
 
 Adjustments toneOnly(const Adjustments &a) {
     Adjustments t = a; // copy all tone/colour/detail fields
@@ -785,6 +794,32 @@ void RetouchTab::requestDragRender(const QImage &belowSnapshot, int dragMaskInde
         m_hasPending = true;
         return;
     }
+    // Each drag frame recomposites the active layer's full buffer (see
+    // applyMasks), so without a cap a fast mouse re-queues a new render the
+    // instant the previous one finishes, pinning a CPU core for the whole
+    // stroke. Coalesce bursts down to ~60fps instead; final (non-drag)
+    // renders go through requestRender() and are unaffected.
+    if (m_lastDragRenderTime.isValid() &&
+        m_lastDragRenderTime.elapsed() < kDragRenderMinIntervalMs) {
+        m_pendingDragBelow = belowSnapshot;
+        m_pendingDragIndex = dragMaskIndex;
+        m_pendingAdj = adj;
+        m_pendingIsDrag = true;
+        m_hasPending = true;
+        if (!m_dragThrottlePending) {
+            m_dragThrottlePending = true;
+            const int delay = kDragRenderMinIntervalMs - int(m_lastDragRenderTime.elapsed());
+            QTimer::singleShot(std::max(0, delay), this, [this]() {
+                m_dragThrottlePending = false;
+                if (m_hasPending && m_pendingIsDrag && !m_rendering) {
+                    m_hasPending = false;
+                    requestDragRender(m_pendingDragBelow, m_pendingDragIndex, m_pendingAdj);
+                }
+            });
+        }
+        return;
+    }
+    m_lastDragRenderTime.start();
     m_rendering = true;
     QMetaObject::invokeMethod(m_renderWorker, "renderDragFrame", Qt::QueuedConnection,
                               Q_ARG(QImage, belowSnapshot), Q_ARG(int, dragMaskIndex),
@@ -795,7 +830,8 @@ void RetouchTab::requestDragRender(const QImage &belowSnapshot, int dragMaskInde
 }
 
 void RetouchTab::onRenderDone(const QImage &result, const QImage &maskSnapshot,
-                              const QImage &belowSnapshot, int belowSnapshotIndex) {
+                              const QImage &belowSnapshot, int belowSnapshotIndex,
+                              const QRect &dirtyRect) {
     m_lastEdited = result;
     if (!maskSnapshot.isNull()) m_maskPreviewImage = maskSnapshot;
     // Only trust the below-snapshot if it's still for the currently active
@@ -805,9 +841,21 @@ void RetouchTab::onRenderDone(const QImage &result, const QImage &maskSnapshot,
         m_dragSnapshotIndex = belowSnapshotIndex;
         m_dragSnapshotValid = true;
     }
-    if (!m_showingOriginal) m_canvas->setImage(m_lastEdited);
-    emit previewUpdated();
-    if (m_maskPreviewEnabled) emit maskPreviewUpdated();
+    if (!m_showingOriginal) m_canvas->setImage(m_lastEdited, dirtyRect);
+    // Skip the expensive per-frame side effects these signals trigger
+    // (RetouchWindow recomputes the Levels histogram over the *whole* image
+    // and regenerates the filmstrip thumbnail - both O(image area) - see
+    // RetouchWindow's previewUpdated/maskPreviewUpdated handlers) while
+    // actively dragging a brush. `dirtyRect` valid means this was a
+    // dirty-rect drag frame where only a tiny region actually changed, so a
+    // stale histogram/thumbnail for the ~100ms until the stroke settles is
+    // imperceptible - they catch up via the full render m_fullRenderTimer
+    // triggers once dragging stops (see retoneDrag/retoneFull), which always
+    // reports an invalid dirtyRect.
+    if (!dirtyRect.isValid()) {
+        emit previewUpdated();
+        if (m_maskPreviewEnabled) emit maskPreviewUpdated();
+    }
     m_rendering = false;
     if (m_hasPending) {
         m_hasPending = false;

@@ -10,6 +10,7 @@
 #include <QMap>
 #include <QList>
 #include <QPainterPath>
+#include <QElapsedTimer>
 
 #include "edit/Adjustments.h"
 
@@ -40,8 +41,14 @@ public slots:
     void renderDragFrame(const QImage &belowSnapshot, int dragMaskIndex, const Adjustments &adj,
                          const QTransform &orientedToGeom, double geomRotationDeg, double scale);
 signals:
+    // `dirtyRect`: for a drag frame where applyMasks' Paint-layer dirty-rect
+    // fast path was used, the exact sub-rect of `result` that actually
+    // changed from the previous frame (image pixel space) - an invalid/
+    // default QRect (the only value render() ever sends) means "unknown,
+    // assume the whole image changed." See ImageCanvas::setImage.
     void done(const QImage &result, const QImage &maskSnapshot,
-             const QImage &belowSnapshot, int belowSnapshotIndex);
+             const QImage &belowSnapshot, int belowSnapshotIndex,
+             const QRect &dirtyRect = QRect());
 
 private:
     // Persists across calls (this worker's queued slot invocations run
@@ -352,7 +359,8 @@ private slots:
     void onRemoveObjectAt(const QPointF &ptNorm);
     void onRemoveObjectFinished();
     void onRenderDone(const QImage &result, const QImage &maskSnapshot,
-                      const QImage &belowSnapshot, int belowSnapshotIndex);
+                      const QImage &belowSnapshot, int belowSnapshotIndex,
+                      const QRect &dirtyRect = QRect());
     void onMaskRadial(const QPointF &centerNorm, double radiusNorm);
     void onMaskLinear(const QPointF &p0Norm, const QPointF &p1Norm);
     void onMaskBrushPoint(const QPointF &ptNorm, bool erase, bool newStroke, double pressure = 1.0);
@@ -535,6 +543,14 @@ private:
     bool m_pendingIsDrag = false; // pending request is a requestDragRender, not requestRender
     QImage m_pendingDragBelow;
     int m_pendingDragIndex = -1;
+    // Caps how often drag-preview renders are dispatched: each one recomposites
+    // the full active-layer buffer (see applyMasks), so without this a fast
+    // mouse re-queues a new full render the instant the previous one finishes,
+    // pinning a CPU core for the whole stroke. Final (non-drag) renders are
+    // unthrottled. See requestDragRender()/onRenderDone().
+    QElapsedTimer m_lastDragRenderTime;
+    bool m_dragThrottlePending = false; // a delayed dispatch is already scheduled
+    static constexpr int kDragRenderMinIntervalMs = 16; // ~60fps cap
 
     // Cache for retoneDrag(): the composite through everything below
     // m_dragSnapshotIndex, captured the last time a full render requested it.

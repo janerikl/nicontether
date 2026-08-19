@@ -194,8 +194,31 @@ ImageCanvas::ImageCanvas(QWidget *parent) : QWidget(parent) {
                                                  int(GridMode::Off)).toInt());
 }
 
-void ImageCanvas::setImage(const QImage &img) {
+void ImageCanvas::setImage(const QImage &img, const QRect &dirtyRect) {
     bool sizeChanged = (img.size() != m_img.size());
+    // While actively dragging a brush, applyMasks' dirty-rect fast path
+    // (see Adjustments.cpp) knows only a small region around the newest dab
+    // actually changed. Re-dithering and repainting the whole canvas every
+    // mouse-move frame regardless was a major remaining cost even after that
+    // fast path landed - ditherTo8Bit() and this widget's paintEvent
+    // (checkerboard + smooth image blit) are both O(image area) per call.
+    // Patch just the changed region instead when the caller knows it (a
+    // default/invalid dirtyRect means "unknown", e.g. from a full/settled
+    // render, so fall through to the normal whole-image path below).
+    const bool canPatch = dirtyRect.isValid() && !sizeChanged && !m_img.isNull() &&
+                          m_img.format() == QImage::Format_ARGB32;
+    if (canPatch) {
+        const QRect r = dirtyRect.intersected(QRect(QPoint(0, 0), img.size()));
+        if (r.isEmpty()) return; // nothing actually changed this frame
+        ditherRegionInto(m_img, img, r);
+        // Map the image-space dirty rect to widget space with the same
+        // topLeft+scale transform as targetRect(), plus a small margin so
+        // the smooth-scaled blit's edge bleed doesn't leave a seam.
+        const QRectF screenR(m_topLeft.x() + r.x() * m_scale, m_topLeft.y() + r.y() * m_scale,
+                             r.width() * m_scale, r.height() * m_scale);
+        update(screenR.toAlignedRect().adjusted(-2, -2, 2, 2));
+        return;
+    }
     // The editing pipeline works in 16-bit; the screen is 8-bit, so dither
     // down here rather than letting Qt's paint engine silently truncate
     // (which would reintroduce banding on-screen).
@@ -1200,7 +1223,13 @@ void ImageCanvas::paintEvent(QPaintEvent *) {
         }
         p.drawTiledPixmap(tr, checker);
     }
-    p.setRenderHint(QPainter::SmoothPixmapTransform, m_scale < 1.0);
+    // m_img can be a downscaled preview buffer (capped to kDisplayMaxDim)
+    // even at 1:1 canvas zoom, so gate smoothing on whether drawImage is
+    // actually rescaling the buffer, not just on the canvas zoom level -
+    // otherwise that internal downscale gets stretched back up with
+    // nearest-neighbor sampling, turning antialiased brush-dab edges into
+    // visible blocky steps.
+    p.setRenderHint(QPainter::SmoothPixmapTransform, m_img.size() != tr.size());
     p.drawImage(tr, m_img);
 
     if (m_compositionGrid != GridMode::Off && !m_img.isNull()) {
@@ -2459,6 +2488,7 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         return;
     }
     if (m_maskMode) {
+        const QPoint oldMousePos = m_mousePos;
         m_mousePos = ev->pos();
         if (m_maskDragging) {
             QPointF n = normPointAt(ev->pos());
@@ -2480,7 +2510,30 @@ void ImageCanvas::mouseMoveEvent(QMouseEvent *ev) {
         } else if (m_maskKind == MaskType::Brush) {
             m_maskErasing = m_maskForceErase || ev->modifiers().testFlag(Qt::AltModifier);
         }
-        update();
+        // Every mouse-move here repaints just to move the cursor-circle
+        // overlay (the stroke content itself, if any, arrives later/async
+        // via setImage()'s own dirty rect - see Adjustments.cpp). A bare
+        // update() repaints the whole canvas (checkerboard + full smooth
+        // image blit) purely to redraw a thin circle outline, which was a
+        // major remaining cost while dragging a Brush/Paint stroke even
+        // after setImage() itself got patched down to a small rect.
+        // Restrict to the circle's old+new bounding box for that common
+        // case; other mask kinds (Radial/Linear gizmos, or a Brush mask
+        // with a full-canvas coverage overlay) keep the full repaint since
+        // their dirty extent isn't a simple fixed-radius circle.
+        const bool simpleCursor = m_hasActiveMask && !m_img.isNull() &&
+            (m_activeMask.type == MaskType::Brush || m_activeMask.type == MaskType::Paint) &&
+            !(m_activeMask.type == MaskType::Brush && !m_maskOverlay.isNull());
+        if (simpleCursor) {
+            const double rad = m_activeMask.brushRadius * m_img.width() * m_scale + 2.0;
+            const QRect r1(QPointF(oldMousePos.x() - rad, oldMousePos.y() - rad).toPoint(),
+                          QSizeF(rad * 2, rad * 2).toSize());
+            const QRect r2(QPointF(m_mousePos.x() - rad, m_mousePos.y() - rad).toPoint(),
+                          QSizeF(rad * 2, rad * 2).toSize());
+            update(r1.united(r2));
+        } else {
+            update();
+        }
         return;
     }
     if (m_eraseMode) {

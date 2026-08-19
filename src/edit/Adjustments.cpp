@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <vector>
 
@@ -464,7 +465,18 @@ std::vector<uchar> selectionFeatherAlpha(const Mask &m, int w, int h) {
 void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                     const QImage *ref = nullptr, BrushRasterCache *cache = nullptr,
                     std::vector<QRgb> *colOut = nullptr, bool populateOut = true,
-                    std::vector<uchar> *eraseOut = nullptr) {
+                    std::vector<uchar> *eraseOut = nullptr,
+                    // When non-null, set (only when this call reused the
+                    // cache and appended >=1 new point, i.e. a true
+                    // incremental step) to the union of the newly-stamped
+                    // dabs' bounding boxes, in `cov`'s own pixel space. Left
+                    // untouched (caller must check *incrementalOut) on a
+                    // full/from-scratch rebuild, since then the whole buffer
+                    // changed. Lets a caller that separately caches the
+                    // final composited output (see BrushRasterCache::
+                    // lastComposite) patch just this rect instead of
+                    // recompositing everything.
+                    QRect *touchedRectOut = nullptr, bool *incrementalOut = nullptr) {
     // Each stroke point carries its own radius/hardness (captured at paint
     // time), so a later brush-size change doesn't invalidate dabs already
     // rasterized — only new points need to be added.
@@ -613,6 +625,13 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
         effRad = std::max(0.5, baseRad * frac);
     };
 
+    double touchedX0 = 1e18, touchedY0 = 1e18, touchedX1 = -1e18, touchedY1 = -1e18;
+    auto growTouched = [&](double cx, double cy, double r) {
+        touchedX0 = std::min(touchedX0, cx - r);
+        touchedY0 = std::min(touchedY0, cy - r);
+        touchedX1 = std::max(touchedX1, cx + r);
+        touchedY1 = std::max(touchedY1, cy + r);
+    };
     for (int i = startIdx; i < m.stroke.size(); ++i) {
         const BrushStrokePoint &sp = m.stroke[i];
         double rad = std::max(0.5, sp.radius * W);
@@ -644,6 +663,7 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
             const BrushStrokePoint &pp = m.stroke[i - 1];
             const double ppx = pp.pt.x() * W, ppy = pp.pt.y() * W;
             double pprad = std::max(0.5, pp.radius * W);
+            growTouched(ppx, ppy, pprad); // interpolated sub-dabs span pp..sp
             double pphardness = pp.hardness;
             double ppOpacityMul = 1.0, ppGrain = 0.0;
             if (pp.isPen) penParams(pp, pprad, pphardness, ppOpacityMul, ppGrain);
@@ -668,6 +688,17 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
         }
 
         stampDab(px, py, rad, hardness, sp.erase, dabColor, grain, sp.isClone, cloneOffsetPx);
+        growTouched(px, py, rad);
+    }
+
+    if (incrementalOut) *incrementalOut = canReuse;
+    if (touchedRectOut && canReuse && touchedX1 >= touchedX0) {
+        const int rx0 = std::max(0, int(std::floor(touchedX0)) - 1);
+        const int ry0 = std::max(0, int(std::floor(touchedY0)) - 1);
+        const int rx1 = std::min(w - 1, int(std::ceil(touchedX1)) + 1);
+        const int ry1 = std::min(h - 1, int(std::ceil(touchedY1)) + 1);
+        if (rx1 >= rx0 && ry1 >= ry0)
+            *touchedRectOut = QRect(rx0, ry0, rx1 - rx0 + 1, ry1 - ry0 + 1);
     }
 
     if (cache) {
@@ -1032,7 +1063,16 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                // Inclusive lower bound for the loop, used internally when
                // recursing into just a group's own member span; leave at the
                // default (0) to composite the whole stack, as before.
-               int stopAtIndex = 0) {
+               int stopAtIndex = 0,
+               // Set only when the Paint-layer dirty-rect fast path (below)
+               // was used, to the exact pixel rect that changed from the
+               // caller's `img`/`resumeImg` - lets a caller that only cares
+               // about the visible delta (ImageCanvas::setImage) skip
+               // re-processing the rest of the buffer too. Left untouched
+               // (caller must treat a default/invalid QRect as "unknown,
+               // assume everything changed") whenever the fast path wasn't
+               // used for any mask this call.
+               QRect *dirtyRectOut = nullptr) {
     if (resumeImg) img = *resumeImg;
     const int w = img.width(), h = img.height();
     if (w == 0 || h == 0) return;
@@ -1112,6 +1152,31 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         }
         if (mi == belowSnapshotIndex && belowSnapshotOut) *belowSnapshotOut = img;
         const Mask &m = masks[mi];
+        // Shared by the full per-pixel blend loop below and the drag-preview
+        // dirty-rect fast path (see the Paint-layer short-circuit further
+        // down) so both stay byte-for-byte identical instead of the fast
+        // path silently drifting from the real blend-mode math over time.
+        auto blendPixel = [&](QRgba64 src, QRgba64 locPx, double wgt) -> QRgba64 {
+            double br, bg, bb;
+            const bool isHSL = m.blend == BlendMode::Hue || m.blend == BlendMode::Saturation ||
+                               m.blend == BlendMode::Color || m.blend == BlendMode::Luminosity;
+            if (isHSL) {
+                QRgba64 blended = blendHSLTriple(m.blend, src, locPx);
+                br = blended.red();
+                bg = blended.green();
+                bb = blended.blue();
+            } else {
+                br = blendChannel(m.blend, src.red(), locPx.red());
+                bg = blendChannel(m.blend, src.green(), locPx.green());
+                bb = blendChannel(m.blend, src.blue(), locPx.blue());
+            }
+            const double inv = 1.0 - wgt;
+            return qRgba64(
+                clamp16(int(std::lround(src.red() * inv + br * wgt))),
+                clamp16(int(std::lround(src.green() * inv + bg * wgt))),
+                clamp16(int(std::lround(src.blue() * inv + bb * wgt))),
+                clamp16(int(std::lround(src.alpha() * inv + 65535.0 * wgt))));
+        };
         const bool interactiveType = m.type == MaskType::Paint ||
                                      m.type == MaskType::Shape ||
                                      m.type == MaskType::TextBox;
@@ -1156,6 +1221,89 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             continue;
         }
         if (textBoxLayer && m.textBoxText.trimmed().isEmpty() && m.eraseStrokes.isEmpty()) {
+            if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
+            continue;
+        }
+        std::vector<QRgb> colBuf;
+        std::vector<uchar> eraseBufOut;
+        BrushRasterCache *bc = brushCache ? &(*brushCache)[mi] : nullptr;
+        // Only meaningful for Paint-type masks (see rasterizeBrush's
+        // touchedRectOut/incrementalOut doc comment); left at defaults
+        // (empty rect, false) for Brush-type adjustment masks below, which
+        // don't use the dirty-rect fast path.
+        QRect touchedRect;
+        bool incremental = false;
+        if (m.type == MaskType::Brush || paintLayer)
+            rasterizeBrush(m, cov, w, h, &img, bc, paintLayer ? &colBuf : nullptr,
+                           /*populateOut=*/false, paintLayer ? &eraseBufOut : nullptr,
+                           paintLayer ? &touchedRect : nullptr, paintLayer ? &incremental : nullptr);
+        // Drag-preview dirty-rect fast path: applyMasks' paintLayer
+        // compositing below is O(w*h) per call regardless of how small the
+        // new dab is, which makes every mouse-move frame while actively
+        // painting expensive. While dragging (resumeImg set - see
+        // applyAdjustments/RenderWorker::renderDragFrame) with no erase
+        // strokes or bucket fill added this frame, only the bounding box
+        // around the newest dab(s) actually changed (rasterizeBrush's
+        // incremental cache only ever grows coverage there - see stampDab's
+        // max-combine), so patch just that region into the previous frame's
+        // fully-composited result (BrushRasterCache::lastComposite) instead.
+        // Falls through to the normal full-buffer path below whenever the
+        // fast path isn't usable (first frame of a stroke, cache had to
+        // rebuild from scratch, erase/fill present, or no cached composite
+        // yet); that path re-primes lastComposite for the next frame.
+        if (paintLayer && bc && resumeImg && m.eraseStrokes.isEmpty() && m.fillMask.isNull() &&
+            incremental && bc->lastCompositeValid && bc->lastComposite.size() == img.size()) {
+            if (touchedRect.isEmpty()) {
+                // No new points landed this frame (e.g. a duplicate/
+                // sub-threshold mouse-move) - the previous composite is
+                // still exactly correct, nothing to redo.
+                img = bc->lastComposite;
+            } else {
+                img = bc->lastComposite;
+                img.detach(); // one deliberate copy now, not one per scanLine() write below
+                // Mirrors the fc=0 (no bucket fill - guaranteed by the
+                // eligibility check above), hasStroke=true specialization of
+                // the general paintFinalCov/blend computation below, so the
+                // two stay numerically identical; only restricted to
+                // touchedRect instead of the whole buffer. `patchLoc` plays
+                // the same role as `loc` there (paintColor fallback fill,
+                // then per-dab color written wherever coverage > 0).
+                QImage patchLoc(w, h, QImage::Format_RGBA64);
+                patchLoc.fill(m.paintColor);
+                const int x0 = touchedRect.left(), x1 = touchedRect.right();
+                const int y0 = touchedRect.top(), y1 = touchedRect.bottom();
+                for (int y = y0; y <= y1; ++y) {
+                    QRgba64 *line = reinterpret_cast<QRgba64 *>(patchLoc.scanLine(y));
+                    for (int x = x0; x <= x1; ++x) {
+                        const size_t idx = size_t(y) * w + x;
+                        const uchar sc = bc->cov[idx];
+                        if (sc == 0) continue;
+                        const QRgb c = bc->col[idx];
+                        const double a = sc / 255.0;
+                        const int r = int(qRed(c) * a);
+                        const int g = int(qGreen(c) * a);
+                        const int b = int(qBlue(c) * a);
+                        line[x] = qRgba64(quint16(r * 257), quint16(g * 257), quint16(b * 257),
+                                          line[x].alpha());
+                    }
+                }
+                const double op = clampd(m.opacity, 0.0, 1.0);
+                for (int y = y0; y <= y1; ++y) {
+                    QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
+                    const QRgba64 *locLine = reinterpret_cast<const QRgba64 *>(patchLoc.constScanLine(y));
+                    for (int x = x0; x <= x1; ++x) {
+                        const size_t idx = size_t(y) * w + x;
+                        const uchar sc = bc->cov[idx];
+                        if (sc == 0) continue; // paintFinalCov == fc + sc - fc*sc/255 == sc when fc == 0
+                        const double wgt = (sc / 255.0) * op;
+                        if (wgt <= 0.0) continue;
+                        line[x] = blendPixel(line[x], locLine[x], wgt);
+                    }
+                }
+            }
+            bc->lastComposite = img;
+            bc->lastCompositeValid = true;
+            if (dirtyRectOut && !touchedRect.isEmpty()) *dirtyRectOut = touchedRect;
             if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
             continue;
         }
@@ -1271,13 +1419,10 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         } else {
             loc = applyLayerContent(img, m.adj);
         }
-        std::vector<QRgb> colBuf;
-        std::vector<uchar> eraseBufOut;
-        BrushRasterCache *bc = brushCache ? &(*brushCache)[mi] : nullptr;
-        if (m.type == MaskType::Brush || paintLayer)
-            rasterizeBrush(m, cov, w, h, &img, bc, paintLayer ? &colBuf : nullptr,
-                           /*populateOut=*/false, paintLayer ? &eraseBufOut : nullptr);
-        else if (textLayer)
+        // bc/colBuf/eraseBufOut/rasterizeBrush already ran earlier (right
+        // after the early-exit checks, before the dirty-rect fast-path
+        // short-circuit above); only the text case still needs handling here.
+        if (textLayer)
             rasterizeText(m, cov, w, h); // no incremental cache — cheap to redo each render
         // shapeLayer/textBoxLayer already populated `cov` above (in
         // rasterizeShapeOrTextBox), read straight from it, same as text.
@@ -1373,29 +1518,20 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                     wgt *= (1.0 - eraseCov[size_t(y) * w + x]);
                 wgt *= op;
                 if (wgt <= 0.0) continue;
-                QRgba64 src = line[x];
-                QRgba64 locPx = locLine[x];
-                double br, bg, bb;
-                const bool isHSL = m.blend == BlendMode::Hue || m.blend == BlendMode::Saturation ||
-                                   m.blend == BlendMode::Color || m.blend == BlendMode::Luminosity;
-                if (isHSL) {
-                    // Hue/Saturation/Color/Luminosity act on the full RGB
-                    // triple, not independently per channel.
-                    QRgba64 blended = blendHSLTriple(m.blend, src, locPx);
-                    br = blended.red();
-                    bg = blended.green();
-                    bb = blended.blue();
-                } else {
-                    br = blendChannel(m.blend, src.red(), locPx.red());
-                    bg = blendChannel(m.blend, src.green(), locPx.green());
-                    bb = blendChannel(m.blend, src.blue(), locPx.blue());
-                }
-                double inv = 1.0 - wgt;
-                line[x] = qRgba64(
-                    clamp16(int(std::lround(src.red() * inv + br * wgt))),
-                    clamp16(int(std::lround(src.green() * inv + bg * wgt))),
-                    clamp16(int(std::lround(src.blue() * inv + bb * wgt))),
-                    clamp16(int(std::lround(src.alpha() * inv + 65535.0 * wgt))));
+                line[x] = blendPixel(line[x], locLine[x], wgt);
+            }
+        }
+        // Prime/refresh the dirty-rect fast path's cache (see above) with
+        // this frame's full result, so the *next* drag frame for this mask
+        // can patch instead of recomposite. Skipped (and any stale value
+        // invalidated) whenever erase strokes or a bucket fill are present,
+        // since the fast path's append-only assumption doesn't hold then.
+        if (paintLayer && bc) {
+            if (m.eraseStrokes.isEmpty() && m.fillMask.isNull()) {
+                bc->lastComposite = img;
+                bc->lastCompositeValid = true;
+            } else {
+                bc->lastCompositeValid = false;
             }
         }
         if (mi == snapshotAfterIndex && snapshotOut) *snapshotOut = img;
@@ -1903,6 +2039,31 @@ QImage ditherTo8Bit(const QImage &img) {
     return out;
 }
 
+void ditherRegionInto(QImage &out, const QImage &img, const QRect &r) {
+    if (img.format() != QImage::Format_RGBA64 &&
+        img.format() != QImage::Format_RGBX64 &&
+        img.format() != QImage::Format_RGBA64_Premultiplied) {
+        // Not the 16-bit format the fast dirty-rect path expects to see
+        // here (shouldn't normally happen for the live render pipeline's
+        // output) - stay correct by falling back to a full convert-and-copy
+        // of just the region.
+        const QImage conv = img.convertToFormat(QImage::Format_ARGB32);
+        for (int y = r.top(); y <= r.bottom(); ++y)
+            memcpy(out.scanLine(y) + r.left() * 4, conv.constScanLine(y) + r.left() * 4,
+                  size_t(r.width()) * 4);
+        return;
+    }
+    for (int y = r.top(); y <= r.bottom(); ++y) {
+        const QRgba64 *src = reinterpret_cast<const QRgba64 *>(img.scanLine(y));
+        QRgb *dst = reinterpret_cast<QRgb *>(out.scanLine(y));
+        for (int x = r.left(); x <= r.right(); ++x) {
+            const QRgba64 p = src[x];
+            dst[x] = qRgba(dither16to8(p.red(), x, y), dither16to8(p.green(), x, y),
+                           dither16to8(p.blue(), x, y), p.alpha() >> 8);
+        }
+    }
+}
+
 bool Adjustments::hasCurve() const {
     if (curve.size() < 2) return false;
     for (const QPointF &p : curve)
@@ -1936,7 +2097,8 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
                         const QTransform &orientedToGeom, double geomRotationDeg,
                         double scale,
                         int belowSnapshotIndex, QImage *belowSnapshotOut,
-                        int resumeFromIndex, const QImage *resumeImg) {
+                        int resumeFromIndex, const QImage *resumeImg,
+                        QRect *dirtyRectOut) {
     if (resumeImg) {
         // Fast per-move drag path: orientation, crop, global tone, and every
         // mask below resumeFromIndex are already baked into *resumeImg (it
@@ -1951,7 +2113,7 @@ QImage applyAdjustments(const QImage &base, const Adjustments &adj,
         if (!adj.masks.isEmpty()) {
             applyMasks(img, adj.masks, brushCache, maskSnapshotIndex, maskSnapshotOut,
                       MaskPass::All, orientedToGeom, geomRotationDeg, scale,
-                      -1, nullptr, resumeFromIndex, resumeImg);
+                      -1, nullptr, resumeFromIndex, resumeImg, nullptr, 0, dirtyRectOut);
         } else {
             img = *resumeImg;
         }
