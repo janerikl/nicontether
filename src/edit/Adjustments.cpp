@@ -592,12 +592,18 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                 // one stroke blend into a smooth outline instead of a
                 // scalloped or double-darkened one (see stampDab's comment).
                 // A different run (an earlier, already-finished stroke, or a
-                // never-painted pixel): the new dab always wins wherever it
-                // has any coverage, so a later stroke paints over an earlier
-                // one regardless of which one's geometric coverage is higher.
+                // never-painted pixel): alpha-over the new dab's coverage on
+                // top of whatever is there — never *below* it, or a soft,
+                // low-coverage edge pixel of the new dab would punch a hole
+                // through an already fully-opaque older stroke — while still
+                // making the new stroke's color win wherever it has any
+                // coverage, so a later stroke visibly paints over an earlier
+                // one.
                 const bool samePriorRun = (pixRun == runId);
-                if (samePriorRun ? (iv >= dst) : true) {
-                    dst = iv;
+                const uchar newCov = samePriorRun ? iv
+                    : uchar(iv + (int(dst) * (255 - iv)) / 255);
+                if (samePriorRun ? (iv >= dst) : (iv > 0)) {
+                    dst = newCov;
                     pixRun = runId;
                     if (colOut) {
                         if (canClone) {
