@@ -498,6 +498,15 @@ struct BrushRasterCache {
     // use this to also attenuate bucket-fill coverage (see rasterizeBrush),
     // since an erase dab must cut through fill as well as stroke coverage.
     std::vector<uchar> erase;
+    // Per-pixel id of the stroke-run (delimited by BrushStrokePoint::newStroke)
+    // that last wrote each pixel's `cov`/`col` — lets rasterizeBrush tell a
+    // later, independent stroke's dab from a self-overlapping dab of the same
+    // drag, so a later stroke always paints over an earlier one instead of
+    // losing to it whenever its own geometric coverage happens to be lower
+    // (e.g. a hard/thin Pencil dab landing where a soft Brush dab already
+    // reached full coverage).
+    std::vector<uint32_t> runId;
+    uint32_t lastRunId = 0;
     int w = 0, h = 0;
     int pointCount = 0;
     double brushRadius = -1;

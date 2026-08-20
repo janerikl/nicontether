@@ -489,14 +489,19 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
     std::vector<uchar> *covBuf = cache ? &cache->cov : &cov;
     std::vector<QRgb> *colBuf = cache ? &cache->col : colOut;
     std::vector<uchar> *eraseBuf = cache ? &cache->erase : eraseOut;
+    std::vector<uint32_t> localRunId;
+    std::vector<uint32_t> *runIdBuf = cache ? &cache->runId : &localRunId;
 
     int startIdx = 0;
+    uint32_t runCounter = 0;
     if (canReuse) {
         startIdx = cache->pointCount;
+        runCounter = cache->lastRunId;
     } else {
         covBuf->assign(size_t(w) * h, 0);
         if (colOut) colBuf->assign(size_t(w) * h, 0);
         if (eraseBuf) eraseBuf->assign(size_t(w) * h, 0);
+        runIdBuf->assign(size_t(w) * h, 0);
     }
 
     const double W = w;
@@ -526,7 +531,8 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
     // for how it's derived), so each covered pixel samples the
     // correspondingly offset pixel from `ref` instead of one flat `color`.
     auto stampDab = [&](double px, double py, double rad, double hardness, bool erase, QRgb color,
-                        double grain = 0.0, bool isClone = false, QPointF cloneOffsetPx = QPointF()) {
+                        uint32_t runId, double grain = 0.0, bool isClone = false,
+                        QPointF cloneOffsetPx = QPointF()) {
         const double inner = clampd(hardness, 0.0, 1.0) * rad;
         const double band = std::max(1e-6, rad - inner);
         const int x0 = std::max(0, int(px - rad));
@@ -578,8 +584,21 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                         uchar &e = (*eraseBuf)[idx];
                         e = uchar(std::max(int(e), int(iv)));
                     }
-                } else if (iv >= dst) {
+                    continue;
+                }
+                uint32_t &pixRun = (*runIdBuf)[idx];
+                // Same run (self-overlap within one continuous drag): keep
+                // the max-coverage envelope so overlapping soft-edged dabs of
+                // one stroke blend into a smooth outline instead of a
+                // scalloped or double-darkened one (see stampDab's comment).
+                // A different run (an earlier, already-finished stroke, or a
+                // never-painted pixel): the new dab always wins wherever it
+                // has any coverage, so a later stroke paints over an earlier
+                // one regardless of which one's geometric coverage is higher.
+                const bool samePriorRun = (pixRun == runId);
+                if (samePriorRun ? (iv >= dst) : true) {
                     dst = iv;
+                    pixRun = runId;
                     if (colOut) {
                         if (canClone) {
                             int sx = std::clamp(int(std::lround(x * cloneScale + cloneOffsetPx.x())),
@@ -634,6 +653,7 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
     };
     for (int i = startIdx; i < m.stroke.size(); ++i) {
         const BrushStrokePoint &sp = m.stroke[i];
+        if (sp.newStroke) ++runCounter;
         double rad = std::max(0.5, sp.radius * W);
         double hardness = sp.hardness;
         double opacityMul = 1.0, grain = 0.0;
@@ -681,16 +701,17 @@ void rasterizeBrush(const Mask &m, std::vector<uchar> &cov, int w, int h,
                 stampDab(ppx + dx * t, ppy + dy * t,
                          pprad + (rad - pprad) * t,
                          pphardness + (hardness - pphardness) * t,
-                         sp.erase, dabColor,
+                         sp.erase, dabColor, runCounter,
                          ppGrain + (grain - ppGrain) * t,
                          sp.isClone, interpOffsetPx);
             }
         }
 
-        stampDab(px, py, rad, hardness, sp.erase, dabColor, grain, sp.isClone, cloneOffsetPx);
+        stampDab(px, py, rad, hardness, sp.erase, dabColor, runCounter, grain, sp.isClone, cloneOffsetPx);
         growTouched(px, py, rad);
     }
 
+    if (cache) cache->lastRunId = runCounter;
     if (incrementalOut) *incrementalOut = canReuse;
     if (touchedRectOut && canReuse && touchedX1 >= touchedX0) {
         const int rx0 = std::max(0, int(std::floor(touchedX0)) - 1);
