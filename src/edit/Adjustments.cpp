@@ -1242,16 +1242,24 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         // new dab is, which makes every mouse-move frame while actively
         // painting expensive. While dragging (resumeImg set - see
         // applyAdjustments/RenderWorker::renderDragFrame) with no erase
-        // strokes or bucket fill added this frame, only the bounding box
-        // around the newest dab(s) actually changed (rasterizeBrush's
-        // incremental cache only ever grows coverage there - see stampDab's
-        // max-combine), so patch just that region into the previous frame's
-        // fully-composited result (BrushRasterCache::lastComposite) instead.
-        // Falls through to the normal full-buffer path below whenever the
-        // fast path isn't usable (first frame of a stroke, cache had to
-        // rebuild from scratch, erase/fill present, or no cached composite
-        // yet); that path re-primes lastComposite for the next frame.
-        if (paintLayer && bc && resumeImg && m.eraseStrokes.isEmpty() && m.fillMask.isNull() &&
+        // strokes added this frame, only the bounding box around the newest
+        // dab(s) actually changed (rasterizeBrush's incremental cache only
+        // ever grows coverage there - see stampDab's max-combine), so patch
+        // just that region into the previous frame's fully-composited result
+        // (BrushRasterCache::lastComposite) instead. A bucket-fill/
+        // Ctrl+Backspace `fillMask` is fine too, as long as it's the same one
+        // (by cacheKey) the cache was last fully primed against — see
+        // BrushRasterCache::fillMaskCacheKey. Falls through to the normal
+        // full-buffer path below whenever the fast path isn't usable (first
+        // frame of a stroke, cache had to rebuild from scratch, erase
+        // present, the fill just changed, or no cached composite yet); that
+        // path re-primes lastComposite (and the fill cache) for the next
+        // frame.
+        const bool hasFillNow = !m.fillMask.isNull();
+        const bool fillCacheUsable = !hasFillNow ||
+            (bc && bc->fillScaledValid && bc->fillMaskCacheKey == m.fillMask.cacheKey() &&
+             bc->fillScaledCache.size() == img.size());
+        if (paintLayer && bc && resumeImg && m.eraseStrokes.isEmpty() && fillCacheUsable &&
             incremental && bc->lastCompositeValid && bc->lastComposite.size() == img.size()) {
             if (touchedRect.isEmpty()) {
                 // No new points landed this frame (e.g. a duplicate/
@@ -1261,28 +1269,44 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
             } else {
                 img = bc->lastComposite;
                 img.detach(); // one deliberate copy now, not one per scanLine() write below
-                // Mirrors the fc=0 (no bucket fill - guaranteed by the
-                // eligibility check above), hasStroke=true specialization of
-                // the general paintFinalCov/blend computation below, so the
-                // two stay numerically identical; only restricted to
-                // touchedRect instead of the whole buffer. `patchLoc` plays
-                // the same role as `loc` there (paintColor fallback fill,
-                // then per-dab color written wherever coverage > 0).
+                // Mirrors the hasStroke=true specialization of the general
+                // paintFinalCov/blend computation below (fc from the cached
+                // scaled fill, sc from this dab's coverage), so the two stay
+                // numerically identical; only restricted to touchedRect
+                // instead of the whole buffer. `patchLoc` plays the same role
+                // as `loc` there (paintColor fallback fill, then fill/dab
+                // color written wherever coverage > 0).
                 QImage patchLoc(w, h, QImage::Format_RGBA64);
                 patchLoc.fill(m.paintColor);
                 const int x0 = touchedRect.left(), x1 = touchedRect.right();
                 const int y0 = touchedRect.top(), y1 = touchedRect.bottom();
+                std::vector<uchar> patchFinalCov(size_t(touchedRect.width()) * touchedRect.height(), 0);
                 for (int y = y0; y <= y1; ++y) {
                     QRgba64 *line = reinterpret_cast<QRgba64 *>(patchLoc.scanLine(y));
+                    const QRgb *fillLine = hasFillNow
+                        ? reinterpret_cast<const QRgb *>(bc->fillScaledCache.constScanLine(y))
+                        : nullptr;
                     for (int x = x0; x <= x1; ++x) {
                         const size_t idx = size_t(y) * w + x;
                         const uchar sc = bc->cov[idx];
-                        if (sc == 0) continue;
-                        const QRgb c = bc->col[idx];
-                        const double a = sc / 255.0;
-                        const int r = int(qRed(c) * a);
-                        const int g = int(qGreen(c) * a);
-                        const int b = int(qBlue(c) * a);
+                        const uchar fc = hasFillNow ? uchar(qAlpha(fillLine[x])) : 0;
+                        if (sc == 0 && fc == 0) continue;
+                        int r = 0, g = 0, b = 0;
+                        if (fc > 0) {
+                            const QRgb fcColor = fillLine[x];
+                            r = qRed(fcColor);
+                            g = qGreen(fcColor);
+                            b = qBlue(fcColor);
+                        }
+                        if (sc > 0) {
+                            const QRgb c = bc->col[idx];
+                            const double a = sc / 255.0;
+                            r = int(qRed(c) * a + r * (1.0 - a));
+                            g = int(qGreen(c) * a + g * (1.0 - a));
+                            b = int(qBlue(c) * a + b * (1.0 - a));
+                        }
+                        const uchar finalCov = uchar(std::min(255, fc + sc - (fc * sc) / 255));
+                        patchFinalCov[size_t(y - y0) * touchedRect.width() + (x - x0)] = finalCov;
                         line[x] = qRgba64(quint16(r * 257), quint16(g * 257), quint16(b * 257),
                                           line[x].alpha());
                     }
@@ -1292,10 +1316,10 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
                     QRgba64 *line = reinterpret_cast<QRgba64 *>(img.scanLine(y));
                     const QRgba64 *locLine = reinterpret_cast<const QRgba64 *>(patchLoc.constScanLine(y));
                     for (int x = x0; x <= x1; ++x) {
-                        const size_t idx = size_t(y) * w + x;
-                        const uchar sc = bc->cov[idx];
-                        if (sc == 0) continue; // paintFinalCov == fc + sc - fc*sc/255 == sc when fc == 0
-                        const double wgt = (sc / 255.0) * op;
+                        const uchar finalCov =
+                            patchFinalCov[size_t(y - y0) * touchedRect.width() + (x - x0)];
+                        if (finalCov == 0) continue;
+                        const double wgt = (finalCov / 255.0) * op;
                         if (wgt <= 0.0) continue;
                         line[x] = blendPixel(line[x], locLine[x], wgt);
                     }
@@ -1524,10 +1548,20 @@ void applyMasks(QImage &img, const QVector<Mask> &masks,
         // Prime/refresh the dirty-rect fast path's cache (see above) with
         // this frame's full result, so the *next* drag frame for this mask
         // can patch instead of recomposite. Skipped (and any stale value
-        // invalidated) whenever erase strokes or a bucket fill are present,
-        // since the fast path's append-only assumption doesn't hold then.
+        // invalidated) whenever erase strokes are present, since the fast
+        // path's append-only assumption doesn't hold then. A bucket-fill/
+        // Ctrl+Backspace fill doesn't disqualify the cache — it's static
+        // across a drag — but its scaled copy + cacheKey are refreshed here
+        // too, so the fast path can tell a *new* fill apart from this one.
         if (paintLayer && bc) {
-            if (m.eraseStrokes.isEmpty() && m.fillMask.isNull()) {
+            if (hasFill) {
+                bc->fillScaledCache = fillScaled;
+                bc->fillMaskCacheKey = m.fillMask.cacheKey();
+                bc->fillScaledValid = true;
+            } else {
+                bc->fillScaledValid = false;
+            }
+            if (m.eraseStrokes.isEmpty()) {
                 bc->lastComposite = img;
                 bc->lastCompositeValid = true;
             } else {

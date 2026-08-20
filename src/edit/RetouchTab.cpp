@@ -3146,7 +3146,15 @@ void RetouchTab::fillActiveMask(const QColor &color) {
         // the stroke coverage/color (see applyMasks), so strokes painted
         // after the fill are always visible on top of it regardless of
         // their own hardness/opacity.
-        m.paintColor = color;
+        //
+        // Deliberately NOT touching m.paintColor here: it doubles as "the
+        // color new brush/pen dabs will use" (see onMaskBrushPoint), so
+        // setting it to the fill color would silently make every stroke
+        // painted after this fill use that color too — e.g. Ctrl+Backspace
+        // (fill with background color, usually white) would leave the brush
+        // painting invisible white-on-white until the user reselected a
+        // color. The fill's own color is fully captured by `fill`/
+        // `m.fillMask` below, independent of m.paintColor.
         if (!m_geomImg.isNull()) {
             const int fullW = m_geomImg.width(), fullH = m_geomImg.height();
             const double s = fullW > 1600 ? 1600.0 / fullW : 1.0;

@@ -509,11 +509,23 @@ struct BrushRasterCache {
     // the fully-composited `img` this mask produced last drag frame, so the
     // next frame can patch in just the newest dab's bounding box instead of
     // recompositing the whole buffer. Only valid when the mask has no erase
-    // strokes/bucket fill this frame (those aren't append-only, so a partial
-    // patch could miss pixels outside the new dab's rect) - see
-    // paintDirtyRectEligible in Adjustments.cpp.
+    // strokes this frame (those aren't append-only, so a partial patch could
+    // miss pixels outside the new dab's rect) - see paintDirtyRectEligible in
+    // Adjustments.cpp.
     QImage lastComposite;
     bool lastCompositeValid = false;
+    // A bucket-fill/Ctrl+Backspace `fillMask` is static across a drag (only a
+    // fresh fill or bucket-fill click replaces it), so the fast path can
+    // still apply with one present — it just needs this frame's per-pixel
+    // fill alpha/color to fold into the touched-rect patch the same way the
+    // full-buffer path does. Cached here (already scaled to this mask's w/h)
+    // so a drag frame doesn't have to rescale the fill image every time;
+    // `fillMaskCacheKey` (QImage::cacheKey(), which changes iff the pixel
+    // data changes) detects a fill actually changing since the last full
+    // recompute primed this cache, without needing a full pixel compare.
+    QImage fillScaledCache;
+    qint64 fillMaskCacheKey = 0;
+    bool fillScaledValid = false;
 };
 
 // One text overlay. `pos` is in oriented-image pixel space, pre-crop (same
